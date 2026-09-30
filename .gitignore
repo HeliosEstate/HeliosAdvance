@@ -1,0 +1,23 @@
+/bin/
+/dist/
+/hadv-service
+/hadv-service.exe
+*.test
+*.out
+coverage.*
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+/data/
+*.local.md
+*.local.yml
+*.local.yaml
+*.local.json
+.env
+.env.*
+# Stop-hook state, per checkout
+/.helios-red
+/.helios-stop-red

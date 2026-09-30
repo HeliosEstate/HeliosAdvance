@@ -1,0 +1,91 @@
+# The mechanical half of the rules: what a linter can decide is decided here, so
+# check.sh, CI and the loop enforce it without anyone reading prose.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errorlint
+    - forbidigo
+    - gochecknoinits
+    - goconst
+    - goheader
+    - gosec
+    - interfacebloat
+    - nilerr
+    - noctx
+    - nolintlint
+    - paralleltest
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - thelper
+    - tparallel
+    - usetesting
+  settings:
+    errcheck:
+      check-blank: true
+      check-type-assertions: true
+    goheader:
+      values:
+        regexp:
+          year: 20\d\d
+      template: |-
+        SPDX-FileCopyrightText: {{ year }} Pascal Fairchild
+        SPDX-License-Identifier: AGPL-3.0-only
+    depguard:
+      rules:
+        # A new module is a new line here, in the same PR as its written cost-benefit.
+        dependencies:
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance
+          deny:
+            - pkg: math/rand
+              desc: use crypto/rand
+            - pkg: log
+              desc: use log/slog, structured
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: use log/slog
+        - pattern: ^io\.ReadAll$
+          msg: bound the read (io.LimitReader) before draining it
+        - pattern: ^os\.(Getenv|LookupEnv)$
+          msg: secrets and settings come through internal/secrets and the settings store
+        - pattern: ^time\.Sleep$
+          msg: tests synchronise on events or the fake clock, never on a sleep
+    gosec:
+      excludes:
+        - G104 # errcheck already reports an unchecked error
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: receiver-naming
+        - name: var-naming
+        - name: exported
+        - name: unused-parameter
+  exclusions:
+    rules:
+      - path: internal/secrets/
+        linters: [forbidigo]
+        text: os\.(Getenv|LookupEnv)
+      # The sleep ban is for tests; production code may sleep on a context.
+      - path-except: _test\.go
+        linters: [forbidigo]
+        text: time\.Sleep
+      - path: _test\.go
+        linters: [forbidigo]
+        text: io\.ReadAll
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

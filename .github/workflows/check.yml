@@ -1,0 +1,33 @@
+name: check
+
+on:
+  pull_request:
+    branches: [development, main]
+  push:
+    branches: [development, main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install gates
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: check.sh
+        env:
+          RACE: -race
+          BASE: origin/${{ github.base_ref || 'development' }}
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then bash check.sh --mutation; else bash check.sh; fi

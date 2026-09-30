@@ -1,0 +1,66 @@
+HELIOS ADVANCE BBS SCRIPTING API EXCEPTION
+
+Version 1.0
+
+This is an additional permission under section 7 of the GNU Affero General
+Public License, version 3 ("AGPLv3"), as published by the Free Software
+Foundation. It supplements, and does not replace, the AGPLv3 under which the
+Helios Advance BBS Program is licensed (see the LICENSE file for the full text
+of the AGPLv3). In the event of any conflict, the AGPLv3 governs except to the
+extent this exception grants additional permission.
+
+
+1. Additional Definitions.
+
+"The Program" (equivalently, "the HADV Engine") means Helios Advance BBS and all
+of its source code and object code that is covered by the AGPLv3. This includes,
+without limitation, the Go engine, its embedded Lua runtime, the implementation
+of the public `bbs.*` scripting bindings, and any C, Go, or other code compiled
+or otherwise linked into the Engine binary.
+
+"Public Scripting API" means the public `bbs.*` Lua API namespace exposed by the
+Engine for the purpose of implementing BBS menus, display, and user-flow logic.
+
+"Eligible Script" means a Lua script, a theme, or a collection of Lua scripts
+and theme assets that interacts with the Engine, if at all, solely through the
+Public Scripting API, and that does not otherwise incorporate, embed, or link
+any part of the Engine's source or object code, and does not modify or replace
+the implementation of the Public Scripting API or any other part of the Engine.
+
+
+2. Grant of Additional Permission.
+
+You have permission to author, use, propagate, license, distribute, sell, or
+keep private any Eligible Script under terms of your own choosing, including
+terms that are incompatible with the AGPLv3.
+
+Loading or running an Eligible Script together with the Engine, and conveying an
+Eligible Script that is designed to be interpreted by the Engine, do not by
+themselves cause the Eligible Script to be a "modified version" of, a "work
+based on", or a covered work derived from the Program within the meaning of the
+AGPLv3. Accordingly, such an Eligible Script is not subject to the requirements
+of the AGPLv3, including the corresponding-source obligations of its section 13
+(Remote Network Interaction), solely by reason of being loaded, run, or conveyed
+for use with the Engine.
+
+
+3. Preservation of Copyleft for the Engine.
+
+This exception applies only to Eligible Scripts as defined above. It grants no
+additional permission with respect to the Engine itself or to any work that is
+not an Eligible Script.
+
+In particular, a fork or modified version of the Engine, a modified or
+alternative implementation of the Public Scripting API or its `bbs.*` bindings,
+and any C, Go, or other code compiled or linked into the Engine binary remain
+fully governed by the AGPLv3, including its section 13 network-interaction
+requirements. Nothing in this exception permits the removal of, or non-compliance
+with, the AGPLv3 as applied to the Engine.
+
+
+4. Section 7 Status.
+
+This Scripting API Exception is an additional permission within the meaning of
+section 7 of the AGPLv3. As provided in that section, any recipient may remove
+this additional permission from any covered work they receive; doing so leaves
+the AGPLv3 alone in force for that copy of the Engine.
