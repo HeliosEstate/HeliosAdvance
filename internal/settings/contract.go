@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/audit"
-	"github.com/heliosestate/heliosadvance/internal/registry"
+	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
 // Scope is whether a setting is one value for the board or one per server.
@@ -69,7 +69,7 @@ type Declaration struct {
 // for a board-wide setting and refused (WrongScope) if given for one.
 type Target struct {
 	Name   string
-	Server registry.ServerID
+	Server board.ServerID
 }
 
 // SetResult is the outcome of Set or Clear.

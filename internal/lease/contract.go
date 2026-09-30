@@ -17,7 +17,7 @@ package lease
 import (
 	"context"
 
-	"github.com/heliosestate/heliosadvance/internal/registry"
+	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
 // Generation increases on every Acquire for a server. A holder presents it on Renew and
@@ -50,19 +50,19 @@ type Lease interface {
 	// superseded, so a second process started with the same bootstrap record evicts the
 	// first, which learns at its next renewal. A misconfiguration is contained to that
 	// server and never blocks a restart.
-	Acquire(ctx context.Context, id registry.ServerID) (Generation, error)
+	Acquire(ctx context.Context, id board.ServerID) (Generation, error)
 
 	// Renew is one write: it succeeds only if the row's generation matches and the server
 	// is admitted.
-	Renew(ctx context.Context, id registry.ServerID, generation Generation) (RenewalResult, error)
+	Renew(ctx context.Context, id board.ServerID, generation Generation) (RenewalResult, error)
 
 	// Release is clean shutdown: the lease is expired now rather than in three intervals,
 	// so a planned stop frees the nodes immediately. Same generation check; a stale holder
 	// is ignored.
-	Release(ctx context.Context, id registry.ServerID, generation Generation) error
+	Release(ctx context.Context, id board.ServerID, generation Generation) error
 
 	// Live is the servers whose lease is live at the moment of asking, on the database's
 	// clock. The allocator's occupancy rule, who's-online's filter and health's one line
 	// all read this and nothing else.
-	Live(ctx context.Context) ([]registry.ServerID, error)
+	Live(ctx context.Context) ([]board.ServerID, error)
 }

@@ -17,14 +17,10 @@ import (
 	"errors"
 
 	"github.com/heliosestate/heliosadvance/internal/audit"
+	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
 // Every method may also return database.ErrUnavailable.
-
-// ServerID is allocated by the database at join, never reused, and held in the bootstrap
-// record. It carries no authority: the server's database login does. Small so it reads in
-// a log line.
-type ServerID uint32
 
 // EngineVersion is a server's engine version as it reports it at admission.
 type EngineVersion struct {
@@ -42,7 +38,7 @@ const (
 
 // Server is one server's standing facts as the registry holds them.
 type Server struct {
-	ID          ServerID
+	ID          board.ServerID
 	DisplayName string        // lives only in the database; the sysop may rename
 	Version     EngineVersion // as last reported at admission
 	State       ServerState
@@ -78,7 +74,7 @@ type Registry interface {
 	// Admit checks, in this order: the ID exists and is not removed; the version is within
 	// one minor of the board's minimum; then records the version and marks the server
 	// admitted. The lease is the lease unit's and begins after this.
-	Admit(ctx context.Context, id ServerID, version EngineVersion) (Admission, error)
+	Admit(ctx context.Context, id board.ServerID, version EngineVersion) (Admission, error)
 
 	// AdmittedServers is the board as one: for the session layer and who's-online.
 	AdmittedServers(ctx context.Context) ([]Server, error)
@@ -87,17 +83,17 @@ type Registry interface {
 	AllServers(ctx context.Context) ([]Server, error)
 
 	// Server is one server by ID; ErrUnknownServer if there is none.
-	Server(ctx context.Context, id ServerID) (Server, error)
+	Server(ctx context.Context, id board.ServerID) (Server, error)
 
 	// Remove marks the server removed and audits; it does nothing else. The server's next
 	// lease renewal is refused, so it ends its own sessions; its lease expires, which frees
 	// its nodes; the allocator retires the range on its next derivation; the database login
 	// is revoked by the tool performing the removal, which holds the administrator
 	// credential. Idempotent: removing a removed server succeeds and audits nothing.
-	Remove(ctx context.Context, id ServerID, actor audit.Actor) error
+	Remove(ctx context.Context, id board.ServerID, actor audit.Actor) error
 
 	// Rename is audited with the name before and after. Idempotent on an unchanged name.
-	Rename(ctx context.Context, id ServerID, newName string, actor audit.Actor) error
+	Rename(ctx context.Context, id board.ServerID, newName string, actor audit.Actor) error
 
 	// MinimumVersion is the board's minimum engine version.
 	MinimumVersion(ctx context.Context) (EngineVersion, error)

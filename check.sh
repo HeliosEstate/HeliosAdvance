@@ -38,8 +38,9 @@ for f in $(git ls-files '*_test.go'); do
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
 done
 
-# 5. Go gates, when there is Go.
-if go list ./... 2>/dev/null | grep -q .; then
+# 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
+pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
+if [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
   need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
   go build ./...

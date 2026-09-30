@@ -17,7 +17,7 @@ package nodes
 import (
 	"context"
 
-	"github.com/heliosestate/heliosadvance/internal/registry"
+	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
 // Node is a board-wide node number, 1 upward; 0 is never a node.
@@ -45,13 +45,13 @@ type Allocator interface {
 	// board, if the server's lease is live and it holds fewer than its limit; two servers
 	// or two callers cannot race past a limit. A web caller takes a node here at login and
 	// never before.
-	Take(ctx context.Context, server registry.ServerID) (Take, error)
+	Take(ctx context.Context, server board.ServerID) (Take, error)
 
 	// Free is called at logout, by the same server. Freeing a node the server does not hold
 	// does nothing and returns false.
-	Free(ctx context.Context, server registry.ServerID, node Node) (bool, error)
+	Free(ctx context.Context, server board.ServerID, node Node) (bool, error)
 
 	// Held is the nodes a server holds, if its lease is live; empty otherwise. Health
 	// reports the count against the limit from settings.
-	Held(ctx context.Context, server registry.ServerID) ([]Node, error)
+	Held(ctx context.Context, server board.ServerID) ([]Node, error)
 }
