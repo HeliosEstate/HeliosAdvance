@@ -6,7 +6,7 @@
 // removal, renaming, and the audit of each. It owns nothing about leases, node ranges,
 // per-server settings, join or the bootstrap record. Every operation goes to the
 // database; nothing is cached, because the board has no degraded mode. A database failure
-// is returned as ErrDatabaseUnavailable and never turned into a default.
+// is returned as database.ErrUnavailable and never turned into a default.
 //
 // This file is the developer's contract (HeliosDesign records/skeleton/ServerRegistry.pas)
 // and is locked: a loop session does not edit it.
@@ -18,6 +18,8 @@ import (
 
 	"github.com/heliosestate/heliosadvance/internal/audit"
 )
+
+// Every method may also return database.ErrUnavailable.
 
 // ServerID is allocated by the database at join, never reused, and held in the bootstrap
 // record. It carries no authority: the server's database login does. Small so it reads in
@@ -67,11 +69,9 @@ type Admission struct {
 	Required EngineVersion
 }
 
-// Errors every method may return. A caller tests them with errors.Is.
-var (
-	ErrDatabaseUnavailable = errors.New("registry: database unavailable")
-	ErrUnknownServer       = errors.New("registry: unknown server")
-)
+// ErrUnknownServer is returned by Server for an ID that was never allocated. A caller
+// tests it with errors.Is.
+var ErrUnknownServer = errors.New("registry: unknown server")
 
 // Registry is the contract. Every method carries a context with a deadline.
 type Registry interface {
