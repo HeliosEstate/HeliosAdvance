@@ -10,6 +10,11 @@
 // locked: a loop session does not edit it.
 package board
 
+// AccountID names a caller's account. The accounts feature owns it and decides its shape
+// in its own session; it is named here so the session unit does not import accounts for
+// a type.
+type AccountID uint32
+
 // ServerID is allocated by the database at join, never reused, and held in the bootstrap
 // record. It carries no authority: the server's database login does. Small so it reads in
 // a log line.
