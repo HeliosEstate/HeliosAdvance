@@ -80,18 +80,29 @@ type Received struct {
 	ModTime time.Time
 }
 
-// Send offers the named files by ZMODEM to the far end on rw, in order, and ends the
-// session cleanly after the last. It returns on the far end's cancel (ErrCancelled), on
-// ctx being done (ErrCancelled, after sending the cancel sequence), on silence past the
-// timeout (ErrTimeout), or on success.
+// unnamed is the name a Receive stores under when the far end names no file (XMODEM
+// carries none) or gives one that resolves outside dir.
+const unnamed = "unnamed"
+
+// Send offers the named files to the far end on rw by the chosen Protocol, in order, and
+// ends the session cleanly after the last. It returns on the far end's cancel
+// (ErrCancelled), on ctx being done (ErrCancelled, after sending the cancel sequence), on
+// silence past the timeout (ErrTimeout), or on success. XMODEM sends only paths[0].
 func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) error {
+	if opt.Protocol != ZMODEM {
+		return newXYSession(ctx, rw, opt).send(paths)
+	}
 	//nolint:contextcheck // ctx is the one stored on the session; streamOneFrame derives its watcher context from that same field
 	return newSession(ctx, rw, opt).send(paths)
 }
 
-// Receive accepts a ZMODEM batch from the far end on rw into dir and returns what it
-// stored, in the order received, each with the name, size and modification time from
-// its header. A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run.
+// Receive accepts a batch from the far end on rw into dir by the chosen Protocol and
+// returns what it stored, in the order received, each with the name, size and
+// modification time its protocol carries (XMODEM carries no name: it stores under
+// Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run.
 func Receive(ctx context.Context, rw io.ReadWriter, dir string, opt Options) ([]Received, error) {
+	if opt.Protocol != ZMODEM {
+		return newXYSession(ctx, rw, opt).receive(dir)
+	}
 	return newSession(ctx, rw, opt).receive(dir)
 }

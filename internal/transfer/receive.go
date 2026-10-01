@@ -62,7 +62,7 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 	name, size, mtime := decodeFileInfo(info)
 	base := filepath.Base(name)
 	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = "unnamed"
+		base = unnamed
 	}
 	dest := filepath.Join(dir, base)
 
