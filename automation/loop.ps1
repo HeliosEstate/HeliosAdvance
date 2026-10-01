@@ -322,7 +322,11 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         $env:GIT_AUTHOR_NAME = $identity; $env:GIT_AUTHOR_EMAIL = $email
         $env:GIT_COMMITTER_NAME = $identity; $env:GIT_COMMITTER_EMAIL = $email
         $log = Join-Path $stateDir "session-$n-$(Get-Date -Format yyyyMMdd-HHmmss).log"
-        $claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions")
+        # Auto mode: a server-side classifier refuses a dangerous action (a destructive git command,
+# an organisation setting, a private key on its way out) and lets build work through. A
+# refusal ends with the session explaining, which the out-of-road path already handles.
+# Bypass was the previous choice; the CLI itself recommends it only for an offline sandbox.
+$claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--output-format", "stream-json", "--verbose", "--permission-mode", "auto")
         $started = Get-Date
         Push-Location $clone
         try {
