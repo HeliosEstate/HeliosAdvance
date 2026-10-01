@@ -69,14 +69,12 @@ type Received struct {
 // ctx being done (ErrCancelled, after sending the cancel sequence), on silence past the
 // timeout (ErrTimeout), or on success.
 func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) error {
-	_, _, _, _ = ctx, rw, paths, opt
-	return ErrNotImplemented
+	return newSession(ctx, rw, opt).send(paths)
 }
 
 // Receive accepts a ZMODEM batch from the far end on rw into dir and returns what it
 // stored, in the order received, each with the name, size and modification time from
 // its header. A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run.
 func Receive(ctx context.Context, rw io.ReadWriter, dir string, opt Options) ([]Received, error) {
-	_, _, _, _ = ctx, rw, dir, opt
-	return nil, ErrNotImplemented
+	return newSession(ctx, rw, opt).receive(dir)
 }
