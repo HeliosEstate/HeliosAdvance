@@ -236,7 +236,6 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
             return @{ outcome = "dry-run" }
         }
         $env:HELIOS_LOOP = "1"
-        $env:PATH = (Join-Path $PSScriptRoot "bin") + [IO.Path]::PathSeparator + $env:PATH
         $env:GIT_AUTHOR_NAME = $identity; $env:GIT_AUTHOR_EMAIL = $email
         $env:GIT_COMMITTER_NAME = $identity; $env:GIT_COMMITTER_EMAIL = $email
         $log = Join-Path $stateDir "session-$n-$(Get-Date -Format yyyyMMdd-HHmmss).log"
@@ -244,11 +243,15 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         $started = Get-Date
         Push-Location $clone
         try {
+            # The gh shim goes first on PATH for the session only; the loop's own gh calls
+            # must keep resolving to gh.exe, or PowerShell tries to run the shim as a document.
+            $shimDir = Join-Path $PSScriptRoot "bin"
             $job = Start-Job -ScriptBlock {
-                param($prompt, $claudeArgs, $clone, $log)
+                param($prompt, $claudeArgs, $clone, $log, $shimDir)
+                $env:PATH = $shimDir + [IO.Path]::PathSeparator + $env:PATH
                 Set-Location $clone
                 $prompt | & claude @claudeArgs 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log
-            } -ArgumentList $prompt, $claudeArgs, $clone, $log
+            } -ArgumentList $prompt, $claudeArgs, $clone, $log, $shimDir
             if (-not (Wait-Job $job -Timeout ($SessionMinutes * 60))) {
                 Stop-Job $job; Remove-Job $job -Force
                 $outcome = "stalled"
