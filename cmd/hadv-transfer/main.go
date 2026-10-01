@@ -29,6 +29,10 @@ func main() {
 	try8k := flag.Bool("8", false, "offer 8K subpackets")
 	resume := flag.Bool("resume", false, "resume an interrupted transfer")
 	timeout := flag.Duration("t", 10*time.Second, "give up after this long without the far end")
+	xmodem := flag.Bool("X", false, "XMODEM, as sx and rx")
+	ymodem := flag.Bool("ymodem", false, "YMODEM, as sb and rb")
+	oneK := flag.Bool("k", false, "1K blocks (sx -k)")
+	withCRC := flag.Bool("c", false, "open an XMODEM receive with CRC (rx -c)")
 	flag.Bool("b", true, "binary (always)")
 	flag.Bool("q", true, "quiet (always)")
 	flag.Parse()
@@ -36,6 +40,19 @@ func main() {
 	opt := transfer.Options{Escape: *escape, CRC16: *crc16, Resume: *resume, Timeout: *timeout}
 	if *try8k {
 		opt.SubpacketSize = 8192
+	}
+	switch {
+	case *xmodem:
+		opt.Protocol = transfer.XMODEM
+		opt.Checksum = !*withCRC
+		if !*oneK {
+			opt.SubpacketSize = 128
+		}
+		if *receive {
+			opt.Name = flag.Arg(0)
+		}
+	case *ymodem:
+		opt.Protocol = transfer.YMODEM
 	}
 	line := stdio{os.Stdin, os.Stdout}
 	ctx := context.Background()
