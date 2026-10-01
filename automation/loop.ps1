@@ -10,8 +10,8 @@ Re-read a past session's log into a usage record, nothing else:  .\loop.ps1 -Rep
 Stop a running loop before its next iteration:  New-Item <base>\state\stop-requested
 Every session appends one JSON line to <base>\state\sessions.jsonl.
 
-What it does not do, on purpose, until a run demands it: model tiers, escalation, retries,
-usage-limit scheduling. A usage limit ends the loop with the message on screen.
+What it does not do, on purpose, until a run demands it: model tiers, escalation. A usage
+limit is read for its reset time; the loop waits for it and runs the same issue again.
 #>
 param(
     [switch]$Once,
@@ -182,6 +182,19 @@ function New-UsageRecord([hashtable]$h, [string]$logPath) {
     $rec
 }
 
+# The limit message carries the reset time: "resets 11:30am (America/New_York)". Read it,
+# as today's local time or tomorrow's if it has passed; two minutes' grace. Nothing found
+# means an hour.
+function Get-ResetTime([string]$text) {
+    $m = [regex]::Match($text, '(?i)resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)')
+    if (-not $m.Success) { return (Get-Date).AddHours(1) }
+    $hour = [int]$m.Groups[1].Value % 12; if ($m.Groups[3].Value -ieq 'pm') { $hour += 12 }
+    $minute = if ($m.Groups[2].Success) { [int]$m.Groups[2].Value } else { 0 }
+    $when = (Get-Date).Date.AddHours($hour).AddMinutes($minute + 2)
+    if ($when -lt (Get-Date)) { $when = $when.AddDays(1) }
+    $when
+}
+
 function Write-SessionLine([hashtable]$h, [string]$logPath) {
     $rec = New-UsageRecord $h $logPath
     ($rec | ConvertTo-Json -Compress -Depth 4) | Add-Content $sessionsLog
@@ -281,7 +294,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         } finally { Pop-Location }
         $env:GH_TOKEN = Get-Token
         $text = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
-        if ($text -match '(?i)usage limit|rate limit') { $outcome = "limit-hit" }
+        if ($text -match '(?i)usage limit|rate limit|session limit') { $outcome = "limit-hit"; $script:limitText = $text }
         if (Test-Path (Join-Path $clone ".helios-stop-red")) { $outcome = "stopped-red" }
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
         Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $config.effort } $log
@@ -290,7 +303,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         $why = switch ($outcome) {
             "stopped-red" { "The session ended on a red check after three attempts. Last output:`n`n``````n$(Get-Content (Join-Path $clone '.helios-stop-red') -Raw)`n``````" }
             "stalled" { "The session was stopped after $SessionMinutes minutes without finishing. Its log is $log on the loop machine." }
-            "limit-hit" { "The session hit a usage limit and was ended. The loop will be started again by hand after the reset." }
+            "limit-hit" { $null }
             default { $null }
         }
         if ($why) {
@@ -343,9 +356,18 @@ while ($i -lt $MaxIterations) {
         if (-not $issue) { Log "no ready, unclaimed issue"; break }
     }
     $env:GH_TOKEN = Get-Token
+    $script:limitText = ""
     $r = Invoke-Session $issue $review
     $i++
     if ($r.outcome -eq "lost-claim") { continue }
-    if ($Once -or $r.outcome -in @("limit-hit", "stalled")) { break }
+    if ($r.outcome -eq "limit-hit") {
+        $until = Get-ResetTime $script:limitText
+        Log "usage limit; waiting until $($until.ToString('HH:mm')) then running issue #$($issue.number) again"
+        while ((Get-Date) -lt $until) { if (Test-Path $stopFile) { break }; Start-Sleep -Seconds 30 }
+        if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
+        $i--
+        continue
+    }
+    if ($Once -or $r.outcome -eq "stalled") { break }
 }
 Log "done after $i session(s)"
