@@ -72,18 +72,31 @@ func newByteSource(input io.Reader) *byteSource {
 }
 
 func (source *byteSource) readByte(ctx context.Context, timeout time.Duration) (byte, error) {
+	value, err := source.readRawByte(ctx, timeout)
+	if err != nil {
+		return 0, err
+	}
+	if value == zdle {
+		source.canRun++
+		if source.canRun >= cancelRun {
+			return 0, errGotCancel
+		}
+	} else {
+		source.canRun = 0
+	}
+	return value, nil
+}
+
+// readRawByte reads one byte with no cancel-run detection, for a caller that knows the
+// byte comes from unescaped protocol data rather than a position where the far end could
+// legitimately send its cancel sequence. XMODEM and YMODEM block bodies are such data: a
+// run of 0x18 inside a block is ordinary file content, not a cancel, and lrzsz's receiver
+// agrees, checking for CAN only between blocks.
+func (source *byteSource) readRawByte(ctx context.Context, timeout time.Duration) (byte, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case value := <-source.queue:
-		if value == zdle {
-			source.canRun++
-			if source.canRun >= cancelRun {
-				return 0, errGotCancel
-			}
-		} else {
-			source.canRun = 0
-		}
 		return value, nil
 	case err := <-source.errc:
 		return 0, err
