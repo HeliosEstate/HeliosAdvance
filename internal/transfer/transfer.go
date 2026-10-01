@@ -6,10 +6,8 @@
 // a telnet transport doubles IAC before the bytes get here, an SSH transport hands over
 // the channel, the module sees a clean stream either way.
 //
-// This file is the QA session's stub for issue #13: the exported names the approved
-// tests use, with bodies that say "not implemented". The build session replaces the
-// bodies and may add files; it does not rename or remove an exported name here, because
-// the locked tests call them.
+// The exported names in this file are the ones the approved tests call; a change to one
+// is a change to a locked test.
 package transfer
 
 import (
@@ -21,11 +19,10 @@ import (
 
 // Errors a transfer reports. A caller tests them with errors.Is.
 var (
-	ErrNotImplemented = errors.New("transfer: not implemented")
-	ErrCancelled      = errors.New("transfer: cancelled")
-	ErrTimeout        = errors.New("transfer: timeout")
-	ErrRemoteCommand  = errors.New("transfer: remote command refused")
-	ErrProtocol       = errors.New("transfer: protocol error")
+	ErrCancelled     = errors.New("transfer: cancelled")
+	ErrTimeout       = errors.New("transfer: timeout")
+	ErrRemoteCommand = errors.New("transfer: remote command refused")
+	ErrProtocol      = errors.New("transfer: protocol error")
 )
 
 // Options shape one transfer. The zero value is ZMODEM with 1K subpackets, 32-bit CRC

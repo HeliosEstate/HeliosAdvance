@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Command hadv-transfer sends or receives files over stdin and stdout with the options
-// lrzsz takes, so it can stand in for sz or rz. QA stub for issue #13: the flags the
-// approved tests pass; the build session fills in whatever the library needs.
+// lrzsz takes, so it can stand in for sz or rz; the approved tests drive it with those flags.
 package main
 
 import (
