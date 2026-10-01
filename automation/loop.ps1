@@ -208,7 +208,13 @@ function Invoke-Session([object]$issue) {
         if ((Invoke-Git ls-remote --heads origin $branch) -match $branch) {
             Invoke-Git checkout --quiet -B $branch "origin/$branch" | Out-Null
         } else {
-            Invoke-Git checkout --quiet -B $branch origin/development | Out-Null
+            # Created on GitHub as a branch linked to the issue, so the issue's Development
+            # panel shows it; then checked out here. A plain push would not link it.
+            $issueId = gh api "repos/$owner/$repo/issues/$n" --jq .node_id
+            $oid = Invoke-Git rev-parse origin/development
+            gh api graphql -f query='mutation($i:ID!,$n:String!,$o:GitObjectID!){ createLinkedBranch(input:{issueId:$i, name:$n, oid:$o}){ linkedBranch { id } } }' -f i="$issueId" -f n="$branch" -F o="$oid" | Out-Null
+            Invoke-Git fetch --quiet origin $branch | Out-Null
+            Invoke-Git checkout --quiet -B $branch "origin/$branch" | Out-Null
         }
         Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $clone ".helios-red"), (Join-Path $clone ".helios-stop-red")
         if (Test-Path (Join-Path $clone "oracle")) {
@@ -227,7 +233,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 2. Run: bash check.sh. Red is the starting state; the failing tests are the work.
 3. Post your plan as the issue's first comment, a task list, then proceed; do not wait.
 4. Implement until bash check.sh is green. Commit as you go, each message saying why, and push after every green commit. Never add a module without its cost-benefit line in the PR body.
-5. Open the PR to development with gh pr create, body in the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes with one-line comments on the issue as they land. Do not merge.
+5. Open the PR to development with gh pr create. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes with one-line comments on the issue as they land. Do not merge.
 6. Out of road (locked tests still red after real attempts, a spec gap, a question): push what you have, comment on the issue with the failing output in full and the question, run gh issue edit $n --add-label human-action-required, and stop.
 "@
         if ($DryRun) {
