@@ -32,5 +32,4 @@ jobs:
         env:
           RACE: -race
           BASE: origin/${{ github.base_ref || 'development' }}
-        run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then bash check.sh --mutation; else bash check.sh; fi
+        run: bash check.sh

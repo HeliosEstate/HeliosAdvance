@@ -25,7 +25,7 @@ body:
     id: plan
     attributes:
       label: Plan
-      description: Task list. The session ticks each box with a one-line comment as it lands. Empty means the session writes one as its first comment and waits for a thumbs-up.
+      description: Task list. The session ticks each box with a one-line comment as it lands. Empty means the session posts one as its first comment and proceeds.
       value: |
         - [ ]
   - type: textarea

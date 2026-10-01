@@ -21,6 +21,8 @@ Free Pascal tools. One developer; the design record is the private `HeliosEstate
   `[bot]` may not touch them. `docs/spec/` names no language, path or library.
 - A loop session (`HELIOS_LOOP=1`) is denied those edits by a hook and is ended by the Stop
   hook after three red runs of `check.sh`, leaving `.helios-stop-red` for the loop.
+- A loop claims an issue with `claimed:<its name>`; two loops racing are settled by label
+  event order, the earlier wins. Each loop is its own App and its own name.
 
 ## The PR body
 
