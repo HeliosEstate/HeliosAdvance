@@ -7,5 +7,7 @@
   "keyPath": "C:/Users/you/somewhere/private-key.pem",
   "base": "D:/GitRepos/Claude",
   "model": "claude-sonnet-5",
-  "effort": "high"
+  "effort": "high",
+  "assignee": "your-github-login",
+  "project": 1
 }
