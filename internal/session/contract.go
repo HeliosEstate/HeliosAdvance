@@ -82,7 +82,7 @@ type Row struct {
 	Reason       DisconnectReason // meaningful once disconnecting or disconnected
 }
 
-// LoginResult is what LoggedIn answers. On BusyResult the session keeps its account and
+// LoginResult is what Confirm answers. On BusyResult the session keeps its account and
 // no node, long enough for the transport to show the busy screen and then Disconnect it
 // with Busy.
 type LoginResult uint8
@@ -103,20 +103,20 @@ type View interface {
 	// becomes hard, reason NotHonoured.
 	Disconnecting() bool
 
-	// LogOff is a soft disconnect, reason LoggedOff.
-	LogOff(ctx context.Context) error
+	// Disconnect is a soft disconnect, reason LoggedOff.
+	Disconnect(ctx context.Context) error
 }
 
 // Sessions is the contract. Every method carries a context with a deadline.
 type Sessions interface {
-	// Arrive is called by a transport. A database failure refuses the caller before
+	// Connect is called by a transport. A database failure refuses the caller before
 	// anything is shown.
-	Arrive(ctx context.Context, server board.ServerID, transport Transport, source string) (View, error)
+	Connect(ctx context.Context, server board.ServerID, transport Transport, source string) (View, error)
 
-	// LoggedIn is called by the accounts feature once it knows who. It records the
+	// Confirm is called by the accounts feature once it knows who. It records the
 	// account and takes the node from the allocator; BusyResult when the server is at
 	// its limit.
-	LoggedIn(ctx context.Context, id ID, account board.AccountID) (LoginResult, error)
+	Confirm(ctx context.Context, id ID, account board.AccountID) (LoginResult, error)
 
 	// Disconnect is soft when the transport is still there: it marks the session
 	// disconnecting and the script finishes at its next screen boundary. It is hard when
@@ -128,11 +128,11 @@ type Sessions interface {
 	// gone: a soft disconnect, ServerEnding, for every session on this server.
 	DisconnectAll(ctx context.Context, server board.ServerID) error
 
-	// Reconcile is called by the engine right after it acquires a lease: every row of this
+	// Repair is called by the engine right after it acquires a lease: every row of this
 	// server still open from before is disconnected, ServerRestarted, because those
 	// callers are gone and only this server can know it. Who's-online was already hiding
 	// them.
-	Reconcile(ctx context.Context, server board.ServerID) error
+	Repair(ctx context.Context, server board.ServerID) error
 
 	// Online is the logged-in sessions on servers whose lease is live: the board as one.
 	Online(ctx context.Context) ([]Row, error)

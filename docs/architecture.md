@@ -47,9 +47,9 @@ PR, with its reason.
 
 ## The engine's loop, as the contracts imply it
 
-Start: read the bootstrap record; `registry.Admit`; `lease.Acquire`; `session.Reconcile`;
+Start: read the bootstrap record; `registry.Approve`; `lease.Acquire`; `session.Repair`;
 declare settings and register permissions; open listeners. Then renew at the interval.
-On `Expired`: `session.DisconnectAll`, refuse new callers, `Admit` and `Acquire` again on
+On `Expired`: `session.DisconnectAll`, refuse new callers, `Approve` and `Acquire` again on
 your own. On `Superseded` or `NotAdmitted`: `DisconnectAll` and stay down. On
 `database.ErrUnavailable` at renewal: count a miss and try again. On a clean stop:
 `DisconnectAll`, then `lease.Release`.

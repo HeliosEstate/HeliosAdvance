@@ -58,7 +58,7 @@ const (
 	ResultVersionTooNew
 )
 
-// Admission is the outcome of Admit. Required accompanies the two version refusals so the
+// Admission is the outcome of Approve. Required accompanies the two version refusals so the
 // operator is told what to install.
 type Admission struct {
 	Result   AdmissionResult
@@ -71,10 +71,10 @@ var ErrUnknownServer = errors.New("registry: unknown server")
 
 // Registry is the contract. Every method carries a context with a deadline.
 type Registry interface {
-	// Admit checks, in this order: the ID exists and is not removed; the version is within
+	// Approve checks, in this order: the ID exists and is not removed; the version is within
 	// one minor of the board's minimum; then records the version and marks the server
 	// admitted. The lease is the lease unit's and begins after this.
-	Admit(ctx context.Context, id board.ServerID, version EngineVersion) (Admission, error)
+	Approve(ctx context.Context, id board.ServerID, version EngineVersion) (Admission, error)
 
 	// AdmittedServers is the board as one: for the session layer and who's-online.
 	AdmittedServers(ctx context.Context) ([]Server, error)
@@ -98,7 +98,7 @@ type Registry interface {
 	// MinimumVersion is the board's minimum engine version.
 	MinimumVersion(ctx context.Context) (EngineVersion, error)
 
-	// RaiseMinimumVersion is called only by the setup tool, under the administrator
+	// SetMinimumVersion is called only by the setup tool, under the administrator
 	// credential, when it applies a data-model change that needs it.
-	RaiseMinimumVersion(ctx context.Context, version EngineVersion, actor audit.Actor) error
+	SetMinimumVersion(ctx context.Context, version EngineVersion, actor audit.Actor) error
 }

@@ -44,6 +44,8 @@ edit a test to make it pass; never guess at a spec gap; never file new work.
 - A comment says why (a constraint, a unit, a gotcha, a magic value's source); never what,
   never a step number, never a line number, never a bare pointer to a spec.
 - Names read without knowing abbreviations: `sessionID`, not `sid`.
+- A method is a verb: PowerShell's approved-verb list is the first place to look for a
+  pair; reads follow Go style, no `Get`; `Acquire`/`Release` are ours.
 - Tests are table-driven, real sockets and temp files, no mocks, no sleeps; each row names the
   spec line it proves.
 - A defect met inside a task is fixed only if the file is already in the task, with its own
