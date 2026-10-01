@@ -45,20 +45,17 @@ $null = New-Item -ItemType Directory -Force $base, $stateDir
 
 function Log([string]$m) { Write-Host "[loop $(Get-Date -Format HH:mm:ss)] $m" }
 
-function Base64Url([byte[]]$b) { [Convert]::ToBase64String($b).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
-
-# A one-hour installation token from the App's key; the session only ever sees the token.
-function New-InstallationToken {
-    $rsa = [System.Security.Cryptography.RSA]::Create()
-    $rsa.ImportFromPem((Get-Content $config.keyPath -Raw))
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $header = Base64Url ([Text.Encoding]::UTF8.GetBytes('{"alg":"RS256","typ":"JWT"}'))
-    $payload = Base64Url ([Text.Encoding]::UTF8.GetBytes("{`"iat`":$($now - 60),`"exp`":$($now + 540),`"iss`":`"$($config.appId)`"}"))
-    $sig = Base64Url ($rsa.SignData([Text.Encoding]::UTF8.GetBytes("$header.$payload"),
-            [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1))
-    (Invoke-RestMethod -Method Post -Uri "https://api.github.com/app/installations/$($config.installationId)/access_tokens" `
-        -Headers @{ Authorization = "Bearer $header.$payload.$sig"; Accept = "application/vnd.github+json" }).token
-}
+# An installation token lives one hour and a session can live longer: the first run died
+# at the hour mark, unable to comment or open its PR. So nothing holds a token. app-token.ps1
+# mints or reuses one on every call; the session's gh is the shim in automation/bin, its git
+# pushes go through the credential helper beside it, and the loop asks before its own calls.
+$env:HELIOS_APP_ID = "$($config.appId)"
+$env:HELIOS_APP_INSTALLATION = "$($config.installationId)"
+$env:HELIOS_APP_KEY = $config.keyPath
+$env:HELIOS_STATE = $stateDir
+$env:HELIOS_AUTOMATION = $PSScriptRoot
+$env:HELIOS_GH = (Get-Command gh.exe).Source
+function Get-Token { pwsh -NoProfile -File (Join-Path $PSScriptRoot "app-token.ps1") }
 
 function Invoke-Git { param([Parameter(ValueFromRemainingArguments)][string[]]$a)
     $out = & git.exe -C $clone @a 2>&1
@@ -76,7 +73,8 @@ function Initialize-Clone {
     }
     Invoke-Git config user.name $identity | Out-Null
     Invoke-Git config user.email $email | Out-Null
-    Invoke-Git config credential.helper '!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f' | Out-Null
+    $helper = (Join-Path $PSScriptRoot "bin\git-credential-app") -replace '\', '/'
+    Invoke-Git config credential.helper "!'$helper'" | Out-Null
     Invoke-Git fetch --quiet --prune origin | Out-Null
 }
 
@@ -157,7 +155,9 @@ function Invoke-Session([object]$issue) {
                 docker build -q -t $tag $_.FullName | Out-Null
             }
         }
-        $prompt = @"
+        $ahead = @(Invoke-Git log --oneline "origin/development..HEAD")
+        $retry = if ($ahead.Count -gt 0) { "This branch already carries $($ahead.Count) commit(s) from an earlier session. Read git log and the issue's comments first and continue from there; do not start over.`n`n" } else { "" }
+        $prompt = $retry + @"
 You are a build session of the Helios Advance loop, unattended, on issue #$n, branch $branch, in this clone. HELIOS_LOOP=1: the hooks refuse what you may not edit, and a red check ends the turn.
 
 1. Run: gh issue view $n. Read it whole. The approved tests are at the QA commit it names; they are locked; you never edit them. Build to the behaviour lines; touch only the Files it lists.
@@ -173,6 +173,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
             return @{ outcome = "dry-run" }
         }
         $env:HELIOS_LOOP = "1"
+        $env:PATH = (Join-Path $PSScriptRoot "bin") + [IO.Path]::PathSeparator + $env:PATH
         $env:GIT_AUTHOR_NAME = $identity; $env:GIT_AUTHOR_EMAIL = $email
         $env:GIT_COMMITTER_NAME = $identity; $env:GIT_COMMITTER_EMAIL = $email
         $log = Join-Path $stateDir "session-$n-$(Get-Date -Format yyyyMMdd-HHmmss).log"
@@ -193,6 +194,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
                 $outcome = "finished"
             }
         } finally { Pop-Location }
+        $env:GH_TOKEN = Get-Token
         $text = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
         $cost = [regex]::Match($text, '"total_cost_usd"\s*:\s*([0-9.]+)').Groups[1].Value
         if ($text -match '(?i)usage limit|rate limit') { $outcome = "limit-hit" }
@@ -201,9 +203,15 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; minutes = [math]::Round(((Get-Date) - $started).TotalMinutes, 1); cost = $cost; pr = $pr; model = $config.model; log = $log }
         Log "issue #${n}: $outcome$(if ($pr) { ", PR #$pr" }) ($cost USD)"
         if ($pr) { Set-BoardStatus $n "Review" }
-        if ($outcome -eq "stopped-red") {
-            $tail = Get-Content (Join-Path $clone ".helios-stop-red") -Raw
-            gh issue comment $n -R "$owner/$repo" --body "The session ended on a red check after three attempts. Last output:`n`n``````n$tail`n``````" | Out-Null
+        # A session that cannot speak for itself gets the loop to say why on the issue.
+        $why = switch ($outcome) {
+            "stopped-red" { "The session ended on a red check after three attempts. Last output:`n`n``````n$(Get-Content (Join-Path $clone '.helios-stop-red') -Raw)`n``````" }
+            "stalled" { "The session was stopped after $SessionMinutes minutes without finishing. Its log is $log on the loop machine." }
+            "limit-hit" { "The session hit a usage limit and was ended. The loop will be started again by hand after the reset." }
+            default { $null }
+        }
+        if ($why) {
+            gh issue comment $n -R "$owner/$repo" --body $why | Out-Null
             gh issue edit $n -R "$owner/$repo" --add-label human-action-required | Out-Null
         }
         return @{ outcome = $outcome }
@@ -213,14 +221,14 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 }
 
 # ---- main ----
-$env:GH_TOKEN = New-InstallationToken
+$env:GH_TOKEN = Get-Token
 Initialize-Clone
 $i = 0
 while ($i -lt $MaxIterations) {
     if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
     $issue = Get-NextIssue
     if (-not $issue) { Log "no ready, unclaimed issue"; break }
-    $env:GH_TOKEN = New-InstallationToken
+    $env:GH_TOKEN = Get-Token
     $r = Invoke-Session $issue
     $i++
     if ($r.outcome -eq "lost-claim") { continue }
