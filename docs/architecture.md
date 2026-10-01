@@ -15,7 +15,7 @@ and a contract disagree, the contract is right and this page is fixed.
 | `audit` | The record of operator actions: who, what, to which server or setting, before and after, on the database's UTC clock. Written inside the change's transaction. Read by tools only. | `board`, `database` |
 | `registry` | The servers of one board: ID, display name, version, admitted or removed. Admission at start with the one-minor version check; removal as a mark; the board's minimum version. | `audit`, `board` |
 | `lease` | Liveness: one row per server on the database's clock, a generation per acquisition, expiry computed by readers. The refusal protocol the engine follows is on `RenewalResult`. | `board` |
-| `nodes` | One board-wide pool of node numbers. Take is one statement: lowest free, lease live, under the server's limit. A node on a dead lease is free. | `board` |
+| `nodes` | One board-wide pool of node numbers. Acquire is one statement: lowest free, lease live, under the server's limit. A node on a dead lease is free. | `board` |
 | `settings` | Every sysop setting, board, server or role scoped, declared in code by its feature, read on use with no cache, Set and audit in one transaction. | `audit`, `board` |
 | `session` | One caller on one server from arrival to disconnect, transport-agnostic: identity, lifecycle, account, node, the row who's-online is built from, and the view a script is handed. | `audit`, `board`, `nodes` |
 | `rbac` | Roles, permissions, holders, and the one check every gate asks. Five seeded roles by fixed ID, none deletable; account #1 is Sysop always. | `audit`, `board` |
