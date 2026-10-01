@@ -30,6 +30,12 @@ $identity = "$slug[bot]"
 # Each loop claims under its own name, so a second loop (another App, another name) can run
 # beside this one; the claim is decided by label event order, below.
 $claimLabel = "claimed:$slug"
+# The developer who owns this loop. Claimed issues are assigned to them, so a second
+# developer's loop never takes an issue that is someone else's, and the board's column
+# follows the claim; both are done as the developer, since the board and the assignment
+# are theirs, not the bot's.
+$assignee = $config.assignee
+$project = $config.project
 $email = "$($config.appId)+$slug[bot]@users.noreply.github.com"
 $clone = Join-Path $base $repo
 $stateDir = Join-Path $base "state"
@@ -77,14 +83,38 @@ function Initialize-Clone {
 # The next issue: labelled ready, not claimed, lowest number. Picked by a query, never by
 # reading prose.
 function Get-NextIssue {
-    $issues = gh issue list -R "$owner/$repo" --label ready --state open --json number,title,labels,body --limit 50 | ConvertFrom-Json
-    $issues | Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } | Sort-Object number | Select-Object -First 1
+    $issues = gh issue list -R "$owner/$repo" --label ready --state open --json number,title,labels,body,assignees --limit 50 | ConvertFrom-Json
+    $issues | Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } |
+        Where-Object { -not ($_.assignees | Where-Object { $_.login -ne $assignee }) } |
+        Sort-Object number | Select-Object -First 1
 }
 
 function Get-IssueBranch([int]$n, [string]$body) {
     $m = [regex]::Match($body, '`feature/issue-' + $n + '-[a-z0-9-]+`')
     if ($m.Success) { return $m.Value.Trim('`') }
     "feature/issue-$n"
+}
+
+# As the developer, not the App: the App's token is set aside for the one call.
+function Invoke-AsDeveloper([scriptblock]$block) {
+    $saved = $env:GH_TOKEN; $env:GH_TOKEN = $null
+    try { & $block } finally { $env:GH_TOKEN = $saved }
+}
+
+# The board column, by name. Looked up by issue number each time; the board is small.
+function Set-BoardStatus([int]$n, [string]$status) {
+    if (-not $project) { return }
+    Invoke-AsDeveloper {
+        try {
+            $projectId = gh project view $project --owner $owner --format json --jq .id
+            $fields = gh project field-list $project --owner $owner --format json | ConvertFrom-Json
+            $field = $fields.fields | Where-Object name -eq 'Status'
+            $option = ($field.options | Where-Object name -eq $status).id
+            $item = (gh project item-list $project --owner $owner --format json --limit 200 | ConvertFrom-Json).items |
+                Where-Object { $_.content.number -eq $n } | Select-Object -First 1
+            if ($item -and $option) { gh project item-edit --project-id $projectId --id $item.id --field-id $field.id --single-select-option-id $option | Out-Null }
+        } catch { Log "board: $_" }
+    }
 }
 
 function Write-SessionLine([hashtable]$h) {
@@ -111,6 +141,8 @@ function Invoke-Session([object]$issue) {
             return @{ outcome = "lost-claim" }
         }
     }
+    if ($assignee) { gh issue edit $n -R "$owner/$repo" --add-assignee $assignee | Out-Null }
+    Set-BoardStatus $n "In progress"
     try {
         if ((Invoke-Git ls-remote --heads origin $branch) -match $branch) {
             Invoke-Git checkout --quiet -B $branch "origin/$branch" | Out-Null
@@ -168,6 +200,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
         Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; minutes = [math]::Round(((Get-Date) - $started).TotalMinutes, 1); cost = $cost; pr = $pr; model = $config.model; log = $log }
         Log "issue #${n}: $outcome$(if ($pr) { ", PR #$pr" }) ($cost USD)"
+        if ($pr) { Set-BoardStatus $n "Review" }
         if ($outcome -eq "stopped-red") {
             $tail = Get-Content (Join-Path $clone ".helios-stop-red") -Raw
             gh issue comment $n -R "$owner/$repo" --body "The session ended on a red check after three attempts. Last output:`n`n``````n$tail`n``````" | Out-Null
