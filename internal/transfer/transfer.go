@@ -40,7 +40,7 @@ const (
 type Options struct {
 	Protocol Protocol
 	// Streaming asks for G: the receiver opens with G and takes blocks without
-	// acknowledging; the sender streams when the far end asks. XMODEM and YMODEM only.
+	// acknowledging. XMODEM and YMODEM only. Receive only; send: proved in the sexyz issue.
 	Streaming bool
 	// Checksum makes the receiver open with NAK, asking for 8-bit checksum blocks rather
 	// than CRC. XMODEM only.

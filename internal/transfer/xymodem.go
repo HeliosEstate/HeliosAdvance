@@ -21,7 +21,7 @@ const (
 	xeot   = 0x04 // no more blocks
 	xack   = 0x06
 	xnak   = 0x15
-	xcan   = 0x18 // the same byte as ZMODEM's ZDLE; byteSource's cancel-run detection applies here too
+	xcan   = 0x18 // the same byte as ZMODEM's ZDLE; cancel-run detection applies only between blocks, never inside one — see xyreadBlock
 	xcrc   = 'C'  // the receiver's opening byte, asking for 16-bit CRC
 	xgmode = 'G'  // the receiver's opening byte, asking for streaming (YMODEM-G)
 	xpad   = 0x1A // pads the last block to the block size
@@ -114,6 +114,8 @@ func (conversation *xysession) openByte() (byte, error) {
 // been read: the block number, its complement, 128 or 1024 bytes of data per the lead,
 // and a trailing 1-byte checksum or 2-byte CRC per useCRC. ok reports whether the
 // complement and trailer validate; it is false, not an error, for ordinary corruption.
+// It reads with readRawByte, not readByte: block data is unescaped, so a run of 0x18
+// inside it is ordinary content, not the far end's cancel sequence.
 func xyreadBlock(ctx context.Context, src *byteSource, timeout time.Duration, lead byte, useCRC bool) (blk byte, data []byte, ok bool, err error) {
 	size := 128
 	if lead == xstx {
@@ -125,7 +127,7 @@ func xyreadBlock(ctx context.Context, src *byteSource, timeout time.Duration, le
 	}
 	raw := make([]byte, 0, 2+size+trailer)
 	for len(raw) < 2+size+trailer {
-		value, rerr := src.readByte(ctx, timeout)
+		value, rerr := src.readRawByte(ctx, timeout)
 		if rerr != nil {
 			return 0, nil, false, rerr
 		}
@@ -441,9 +443,11 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 			if ackErr := conversation.putByte(xack); ackErr != nil {
 				return nil, ackErr
 			}
-			// lrzsz's sb leaves the header block's last byte as whatever was in its
-			// buffer before, never zeroed; only the name field (NUL-terminated from byte
-			// 0) says whether this is a real file or the batch's closing empty header.
+			// lrzsz's sb writes the file's 128-byte block count into the header's last two
+			// bytes on purpose, for the old IMP and KMD programs; its closing header
+			// carries the previous file's count there instead of zeroing it. Only the
+			// name field (NUL-terminated from byte 0) says whether this is a real file or
+			// the batch's closing empty header.
 			if name, _, _ := decodeFileInfo(data); name == "" {
 				return nil, nil
 			}
