@@ -4,7 +4,13 @@
 <#
 The unattended loop: one ready issue per session, fresh context, in the loop's own clone,
 committing as the organisation's App. Reads loop.local.json beside this script (gitignored;
-loop.local.json.example is the shape). Run attended first:  .\loop.ps1 -Once
+loop.local.json.example is the shape).
+
+Two clones under the base, neither the developer's: <base>\loop is this script's own
+checkout of development, which it fast-forwards before every start and runs from, so the
+driver never changes under a session and the developer's checkout is never touched;
+<base>\<repo> is the session's clone, on whatever issue branch is being built.
+Run attended first:  pwsh <base>\looputomation\loop.ps1 -Once
 Dry run, everything but the session:  .\loop.ps1 -Once -DryRun
 Re-read a past session's log into a usage record, nothing else:  .\loop.ps1 -Replay <log>
 Stop a running loop before its next iteration:  New-Item <base>\state\stop-requested
