@@ -18,9 +18,10 @@ if [ -d docs/spec ]; then
   [ -z "$hits" ] || { echo "$hits"; fail "docs/spec names the implementation"; }
 fi
 
-# 3. Developer-owned paths are not touched by a bot-authored commit.
+# 3. Developer-owned paths are not touched by a bot-authored commit. automation/ is the
+# loop's own driver: a session may not change the process that runs it.
 if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features '*/contract.go' | grep '\[bot\]@' || true)
+  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features automation '*/contract.go' | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
