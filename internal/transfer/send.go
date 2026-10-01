@@ -80,8 +80,8 @@ func (conversation *session) sendFile(path string, rest []string) error {
 
 	var bytesLeft int64
 	for _, pending := range rest {
-		if fi2, err := os.Stat(pending); err == nil {
-			bytesLeft += fi2.Size()
+		if pendingStat, err := os.Stat(pending); err == nil {
+			bytesLeft += pendingStat.Size()
 		}
 	}
 	info := encodeFileInfo(name, size, stat.ModTime(), len(rest), bytesLeft)
