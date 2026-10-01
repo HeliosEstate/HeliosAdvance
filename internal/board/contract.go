@@ -15,6 +15,10 @@ package board
 // a type.
 type AccountID uint32
 
+// RoleID names a role. The role-based access control unit owns it; it is named here so
+// the settings store can scope a setting to a role without importing that unit.
+type RoleID uint32
+
 // ServerID is allocated by the database at join, never reused, and held in the bootstrap
 // record. It carries no authority: the server's database login does. Small so it reads in
 // a log line.

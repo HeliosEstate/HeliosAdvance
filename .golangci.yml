@@ -74,6 +74,10 @@ linters:
         - name: unused-parameter
   exclusions:
     rules:
+      # A contract.go is a unit's whole surface, declared at the owner and locked; the
+      # small-interface rule applies to consumers, which declare the slice they call.
+      - path: contract\.go
+        linters: [interfacebloat]
       - path: internal/secrets/
         linters: [forbidigo]
         text: os\.(Getenv|LookupEnv)
