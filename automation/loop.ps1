@@ -27,6 +27,9 @@ $owner = $config.owner
 $repo = $config.repo
 $slug = $config.appSlug
 $identity = "$slug[bot]"
+# Each loop claims under its own name, so a second loop (another App, another name) can run
+# beside this one; the claim is decided by label event order, below.
+$claimLabel = "claimed:$slug"
 $email = "$($config.appId)+$slug[bot]@users.noreply.github.com"
 $clone = Join-Path $base $repo
 $stateDir = Join-Path $base "state"
@@ -75,7 +78,7 @@ function Initialize-Clone {
 # reading prose.
 function Get-NextIssue {
     $issues = gh issue list -R "$owner/$repo" --label ready --state open --json number,title,labels,body --limit 50 | ConvertFrom-Json
-    $issues | Where-Object { -not ($_.labels | Where-Object name -eq 'claimed') } | Sort-Object number | Select-Object -First 1
+    $issues | Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } | Sort-Object number | Select-Object -First 1
 }
 
 function Get-IssueBranch([int]$n, [string]$body) {
@@ -93,7 +96,21 @@ function Invoke-Session([object]$issue) {
     $n = $issue.number
     $branch = Get-IssueBranch $n $issue.body
     Log "issue #${n} on $branch"
-    gh issue edit $n -R "$owner/$repo" --add-label claimed | Out-Null
+    gh issue edit $n -R "$owner/$repo" --add-label $claimLabel | Out-Null
+    # Two loops can add their labels in the same second. The timeline is the referee: of
+    # the claim labels now on the issue, the one whose latest "labeled" event is earliest
+    # wins; the other removes its label and takes the next issue.
+    $present = (gh issue view $n -R "$owner/$repo" --json labels --jq '[.labels[].name | select(startswith("claimed:"))]' | ConvertFrom-Json)
+    if ($present.Count -gt 1) {
+        $events = gh api "repos/$owner/$repo/issues/$n/timeline" --paginate `
+            --jq '[.[] | select(.event=="labeled" and (.label.name|startswith("claimed:"))) | {n:.label.name, t:.created_at}] | group_by(.n) | map(max_by(.t))' | ConvertFrom-Json
+        $winner = ($events | Where-Object { $_.n -in $present } | Sort-Object t | Select-Object -First 1).n
+        if ($winner -and $winner -ne $claimLabel) {
+            gh issue edit $n -R "$owner/$repo" --remove-label $claimLabel | Out-Null
+            Log "issue #${n}: claimed first by $winner; moving on"
+            return @{ outcome = "lost-claim" }
+        }
+    }
     try {
         if ((Invoke-Git ls-remote --heads origin $branch) -match $branch) {
             Invoke-Git checkout --quiet -B $branch "origin/$branch" | Out-Null
@@ -158,8 +175,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         }
         return @{ outcome = $outcome }
     } finally {
-        if (-not $DryRun) { gh issue edit $n -R "$owner/$repo" --remove-label claimed | Out-Null }
-        else { gh issue edit $n -R "$owner/$repo" --remove-label claimed | Out-Null }
+        gh issue edit $n -R "$owner/$repo" --remove-label $claimLabel | Out-Null
     }
 }
 
@@ -174,6 +190,7 @@ while ($i -lt $MaxIterations) {
     $env:GH_TOKEN = New-InstallationToken
     $r = Invoke-Session $issue
     $i++
+    if ($r.outcome -eq "lost-claim") { continue }
     if ($Once -or $r.outcome -in @("limit-hit", "stalled")) { break }
 }
 Log "done after $i session(s)"
