@@ -89,17 +89,40 @@ function Initialize-Clone {
 # The next issue: labelled ready, not claimed, lowest number. Picked by a query, never by
 # reading prose.
 function Get-NextIssue {
-    $issues = gh issue list -R "$owner/$repo" --label ready --state open --json number,title,labels,body,assignees --limit 50 | ConvertFrom-Json
-    $issues | Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } |
+    $issues = @(gh issue list -R "$owner/$repo" --label ready --state open --json number,title,labels,body,assignees,milestone --limit 50 | ConvertFrom-Json)
+    # The order: earliest open milestone first (none last), then the board's Priority
+    # (Urgent, High, Medium, Low, none), then the lowest number. The priority is read from
+    # the board as the developer, the same way the column is written.
+    $priority = @{}
+    if ($project) {
+        Invoke-AsDeveloper {
+            try {
+                $items = (gh project item-list $project --owner $owner --format json --limit 200 | ConvertFrom-Json).items
+                foreach ($item in $items) { $num = Get-Field (Get-Field $item content) number; if ($num) { $priority[[int]$num] = [string](Get-Field $item priority) } }
+            } catch { Log "board: $_" }
+        }
+    }
+    # An issue with an open PR of this loop's is in review or in a review round, not new work.
+    $inReview = @(gh pr list -R "$owner/$repo" --author "app/$slug" --state open --json body --limit 50 | ConvertFrom-Json |
+        ForEach-Object { $m = [regex]::Match([string]$_.body, '(?i)closes #(\d+)'); if ($m.Success) { [int]$m.Groups[1].Value } })
+    $rank = @{ Urgent = 0; High = 1; Medium = 2; Low = 3 }
+    $issues | Where-Object { [int]$_.number -notin $inReview } |
+        Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } |
         Where-Object { -not ($_.assignees | Where-Object { $_.login -ne $assignee }) } |
-        Sort-Object number | Select-Object -First 1
+        Sort-Object @{ Expression = { if ($_.milestone) { [int]$_.milestone.number } else { [int]::MaxValue } } },
+                    @{ Expression = { $name = $priority[[int]$_.number]; if ($name -and $rank.ContainsKey($name)) { $rank[$name] } else { 4 } } },
+                    number | Select-Object -First 1
 }
 
 # A review takes precedence over new work: an open PR of this loop's own with changes
 # requested goes back to a session on its branch before any new issue is claimed.
 function Get-NextReview {
-    $prs = gh pr list -R "$owner/$repo" --author "app/$slug" --state open --json number,headRefName,reviewDecision,body --limit 50 | ConvertFrom-Json
-    $prs | Where-Object { $_.reviewDecision -eq 'CHANGES_REQUESTED' } | Sort-Object number | Select-Object -First 1
+    $prs = @(gh pr list -R "$owner/$repo" --author "app/$slug" --state open --json number,headRefName,reviewDecision,reviewRequests,body --limit 50 | ConvertFrom-Json)
+    # Changes requested, and the developer not already asked to look again: once a round
+    # re-requests review, the ball is theirs, and the decision stays CHANGES_REQUESTED
+    # until they say otherwise.
+    $prs | Where-Object { $_.reviewDecision -eq 'CHANGES_REQUESTED' -and -not ($_.reviewRequests | Where-Object { $_.login -eq $assignee }) } |
+        Sort-Object number | Select-Object -First 1
 }
 
 function Get-IssueBranch([int]$n, [string]$body) {
@@ -265,7 +288,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 2. Run: bash check.sh. Red is the starting state; the failing tests are the work.
 3. Post your plan as the issue's first comment, a task list, then proceed; do not wait.
 4. Implement until bash check.sh is green. Commit as you go, each message saying why, and push after every green commit. Never add a module without its cost-benefit line in the PR body.
-5. Open the PR to development with gh pr create. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes in the issue body itself (gh issue edit $n --body, keeping everything else) as each lands, with a one-line note of what proves it. Do not merge.
+5. Open the PR to development with gh pr create --reviewer $assignee. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes in the issue body itself (gh issue edit $n --body, keeping everything else) as each lands, with a one-line note of what proves it. The plan may grow and split, never shrink: add an item you find you need, marked "(added by the session: why)", and split one that proves to be two; never remove or reword one, and one you will not do stays unticked with a comment saying why. Do not merge.
 6. Out of road (locked tests still red after real attempts, a spec gap, a question): push what you have, comment on the issue with the failing output in full and the question, run gh issue edit $n --add-label human-action-required, and stop.
 "@
         if ($DryRun) {
@@ -299,8 +322,16 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
             }
         } finally { Pop-Location }
         $env:GH_TOKEN = Get-Token
-        $text = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
-        if ($text -match '(?i)usage limit|rate limit|session limit') { $outcome = "limit-hit"; $script:limitText = $text }
+        # A limit is read from the session's result event, or from the log's last lines when
+        # the session was cut before one. Never from the whole log: a session that reads a
+        # commit message about limits is not at one; that mistake waited an hour once.
+        $parsed = Read-SessionLog $log
+        $limitPattern = '(?i)usage limit|rate limit|session limit'
+        $tailText = if (Test-Path $log) { (Get-Content $log -Tail 5) -join "`n" } else { "" }
+        $resultText = [string](Get-Field $parsed.Result result)
+        if (($parsed.Result -and ((Get-Field $parsed.Result is_error) -eq $true -or $resultText -match $limitPattern)) -or (-not $parsed.Result -and $tailText -match $limitPattern)) {
+            $outcome = "limit-hit"; $script:limitText = if ($parsed.Result) { $resultText } else { $tailText }
+        }
         if (Test-Path (Join-Path $clone ".helios-stop-red")) { $outcome = "stopped-red" }
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
         Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $config.effort } $log
