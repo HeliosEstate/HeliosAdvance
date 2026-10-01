@@ -50,12 +50,16 @@ func (s *session) send(paths []string) error {
 	if err != nil {
 		return mapErr(err)
 	}
-	if h.typ == zfin {
-		if err := s.zw.raw([]byte("OO")); err != nil {
-			return err
+	for h.typ != zfin {
+		if h.typ == zcan {
+			return ErrCancelled
+		}
+		h, _, err = s.awaitHeaderOnly(maxRetries)
+		if err != nil {
+			return mapErr(err)
 		}
 	}
-	return nil
+	return s.zw.raw([]byte("OO"))
 }
 
 // sendFile offers one file: its info subpacket, then its data from wherever the far end
@@ -90,6 +94,20 @@ func (s *session) sendFile(path string, rest []string) error {
 	}, maxRetries)
 	if err != nil {
 		return mapErr(err)
+	}
+	// Only a ZRPOS or ZSKIP actually answers the ZFILE. In between, a far end can emit
+	// noise this exchange didn't ask for: a ZACK for the info subpacket's own zcrcw (a
+	// separate frame from the answer), or a stale ZRINIT it was still retrying when our
+	// ZFILE arrived. Skipping anything else keeps that noise from being mistaken for the
+	// answer and left to surprise the data-streaming loop later as a bogus interrupt.
+	for h.typ != zrpos && h.typ != zskip {
+		if h.typ == zcan {
+			return ErrCancelled
+		}
+		h, _, err = s.awaitHeaderOnly(maxRetries)
+		if err != nil {
+			return mapErr(err)
+		}
 	}
 
 	var offset int64
