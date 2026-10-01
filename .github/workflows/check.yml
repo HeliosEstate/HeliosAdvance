@@ -43,8 +43,33 @@ jobs:
       - name: check.sh
         env:
           RACE: -race
+          COVER: -coverprofile=coverage.out
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
+      # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
+      # the gate on test strength.
+      - name: Coverage report
+        if: always()
+        run: |
+          [ -f coverage.out ] || { echo "no coverage profile: the tests did not run" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          go tool cover -html=coverage.out -o coverage.html
+          {
+            echo "## Coverage on ${{ matrix.os }}: $(go tool cover -func=coverage.out | awk '$1=="total:"{print $NF}')"
+            echo
+            echo '| Package | Statements covered |'
+            echo '|---|---|'
+            go tool cover -func=coverage.out | awk '$1!="total:"{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); p=$NF; sub(/%/,"",p); n[d]++; s[d]+=p} END{for(k in n) printf "| %s | %.1f%% |
+", k, s[k]/n[k]}' | sort
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.os }}
+          path: |
+            coverage.out
+            coverage.html
+          if-no-files-found: ignore
+          retention-days: 14
   check:
     needs: run
     if: always()
