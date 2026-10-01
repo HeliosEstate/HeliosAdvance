@@ -53,19 +53,19 @@ type Entry struct {
 
 // Filter selects entries. Any field left empty or zero matches everything.
 type Filter struct {
-	From, To     time.Time
-	Server       board.ServerID
-	ActorKind    ActorKind
-	HasActorKind bool
-	ActionPrefix string
-	Target       string
+	FromUTC, ToUTC time.Time
+	Server         board.ServerID
+	ActorKind      ActorKind
+	HasActorKind   bool
+	ActionPrefix   string
+	Target         string
 }
 
 // Audit is the contract.
 type Audit interface {
 	// Write is called inside the caller's transaction, which carries the deadline of the
 	// change. Recorded is filled by the database.
-	Write(tx database.Tx, entry Entry) error
+	Write(transaction database.Transaction, entry Entry) error
 
 	// Read is newest first. Page is 1 upward; pageSize is bounded by the implementation.
 	Read(ctx context.Context, filter Filter, page, pageSize uint32) ([]Entry, error)
