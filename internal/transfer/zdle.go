@@ -41,7 +41,7 @@ const (
 // the underlying stream errors; until then it is read-only and leaks harmlessly if the
 // caller stops waiting first, same as any blocking read on a stream nobody closes.
 type byteSource struct {
-	ch     chan byte
+	queue  chan byte
 	errc   chan error
 	canRun int // consecutive raw ZDLE bytes just read, to tell a real cancel from noise
 }
@@ -53,39 +53,39 @@ type byteSource struct {
 // sends eight) and a short run is cheap to produce by accident out of 200,000 random bytes.
 const cancelRun = 5
 
-func newByteSource(r io.Reader) *byteSource {
-	s := &byteSource{ch: make(chan byte, 4096), errc: make(chan error, 1)}
+func newByteSource(input io.Reader) *byteSource {
+	source := &byteSource{queue: make(chan byte, 4096), errc: make(chan error, 1)}
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := r.Read(buf)
+			n, err := input.Read(buf)
 			for i := range n {
-				s.ch <- buf[i]
+				source.queue <- buf[i]
 			}
 			if err != nil {
-				s.errc <- err
+				source.errc <- err
 				return
 			}
 		}
 	}()
-	return s
+	return source
 }
 
-func (s *byteSource) readByte(ctx context.Context, timeout time.Duration) (byte, error) {
+func (source *byteSource) readByte(ctx context.Context, timeout time.Duration) (byte, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case b := <-s.ch:
-		if b == zdle {
-			s.canRun++
-			if s.canRun >= cancelRun {
+	case value := <-source.queue:
+		if value == zdle {
+			source.canRun++
+			if source.canRun >= cancelRun {
 				return 0, errGotCancel
 			}
 		} else {
-			s.canRun = 0
+			source.canRun = 0
 		}
-		return b, nil
-	case err := <-s.errc:
+		return value, nil
+	case err := <-source.errc:
 		return 0, err
 	case <-timer.C:
 		return 0, ErrTimeout
@@ -115,39 +115,39 @@ func newZReader(ctx context.Context, src *byteSource, timeout time.Duration) *zr
 	return &zreader{src: src, ctx: ctx, timeout: timeout}
 }
 
-func (z *zreader) next() (b byte, isTerm bool, term byte, err error) {
-	b, err = z.src.readByte(z.ctx, z.timeout)
+func (reader *zreader) next() (literal byte, isTerm bool, term byte, err error) {
+	literal, err = reader.src.readByte(reader.ctx, reader.timeout)
 	if err != nil {
 		return 0, false, 0, err
 	}
-	if b != zdle {
-		return b, false, 0, nil
+	if literal != zdle {
+		return literal, false, 0, nil
 	}
-	v, err := z.src.readByte(z.ctx, z.timeout)
+	escaped, err := reader.src.readByte(reader.ctx, reader.timeout)
 	if err != nil {
 		return 0, false, 0, err
 	}
-	switch v {
+	switch escaped {
 	case zcrce, zcrcg, zcrcq, zcrcw:
-		return 0, true, v, nil
+		return 0, true, escaped, nil
 	default:
-		return v ^ 0x40, false, 0, nil
+		return escaped ^ 0x40, false, 0, nil
 	}
 }
 
 // readN reads exactly n decoded bytes, erroring on a terminator (which a fixed-length
 // read never expects) or a cancel.
-func (z *zreader) readN(n int) ([]byte, error) {
+func (reader *zreader) readN(n int) ([]byte, error) {
 	out := make([]byte, 0, n)
 	for range n {
-		b, isTerm, _, err := z.next()
+		value, isTerm, _, err := reader.next()
 		if err != nil {
 			return nil, err
 		}
 		if isTerm {
 			return nil, ErrProtocol
 		}
-		out = append(out, b)
+		out = append(out, value)
 	}
 	return out, nil
 }
@@ -157,42 +157,42 @@ func (z *zreader) readN(n int) ([]byte, error) {
 // and DLE (which a modem or terminal could act on), and a CR that follows an '@' (which
 // some transports turn into CR LF).
 type zwriter struct {
-	w    io.Writer
-	full bool
-	last byte
+	target io.Writer
+	full   bool
+	last   byte
 }
 
-func newZWriter(w io.Writer, full bool) *zwriter {
-	return &zwriter{w: w, full: full}
+func newZWriter(target io.Writer, full bool) *zwriter {
+	return &zwriter{target: target, full: full}
 }
 
-func (z *zwriter) raw(p []byte) error {
-	_, err := z.w.Write(p)
+func (writer *zwriter) raw(data []byte) error {
+	_, err := writer.target.Write(data)
 	return err
 }
 
-func (z *zwriter) put(c byte) error {
+func (writer *zwriter) put(value byte) error {
 	var out [2]byte
 	n := 1
 	switch {
-	case c == zdle:
+	case value == zdle:
 		out[0], out[1], n = zdle, zdlee, 2
-	case (c == 0x0d || c == 0x8d) && (z.last == 0x40 || z.last == 0xc0):
-		out[0], out[1], n = zdle, c^0x40, 2
-	case c == 0x10 || c == 0x90 || c == 0x11 || c == 0x91 || c == 0x13 || c == 0x93:
-		out[0], out[1], n = zdle, c^0x40, 2
-	case z.full && c&0x60 == 0:
-		out[0], out[1], n = zdle, c^0x40, 2
+	case (value == 0x0d || value == 0x8d) && (writer.last == 0x40 || writer.last == 0xc0):
+		out[0], out[1], n = zdle, value^0x40, 2
+	case value == 0x10 || value == 0x90 || value == 0x11 || value == 0x91 || value == 0x13 || value == 0x93:
+		out[0], out[1], n = zdle, value^0x40, 2
+	case writer.full && value&0x60 == 0:
+		out[0], out[1], n = zdle, value^0x40, 2
 	default:
-		out[0] = c
+		out[0] = value
 	}
-	z.last = c
-	return z.raw(out[:n])
+	writer.last = value
+	return writer.raw(out[:n])
 }
 
-func (z *zwriter) putAll(p []byte) error {
-	for _, c := range p {
-		if err := z.put(c); err != nil {
+func (writer *zwriter) putAll(data []byte) error {
+	for _, value := range data {
+		if err := writer.put(value); err != nil {
 			return err
 		}
 	}

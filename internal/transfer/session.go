@@ -25,7 +25,7 @@ const maxSubpacket = 8200
 type session struct {
 	ctx      context.Context
 	src      *byteSource
-	zw       *zwriter
+	writer   *zwriter
 	raw      io.Writer
 	timeout  time.Duration
 	useCRC32 bool
@@ -40,7 +40,7 @@ func newSession(ctx context.Context, rw io.ReadWriter, opt Options) *session {
 	return &session{
 		ctx:      ctx,
 		src:      newByteSource(rw),
-		zw:       newZWriter(rw, opt.Escape),
+		writer:   newZWriter(rw, opt.Escape),
 		raw:      rw,
 		timeout:  timeout,
 		useCRC32: !opt.CRC16,
@@ -48,24 +48,24 @@ func newSession(ctx context.Context, rw io.ReadWriter, opt Options) *session {
 	}
 }
 
-func (s *session) writeHeader(h header, hex bool) error {
+func (conversation *session) writeHeader(head header, hex bool) error {
 	if hex {
-		return writeHex(s.zw, h)
+		return writeHex(conversation.writer, head)
 	}
-	return writeBinary(s.zw, h, s.useCRC32)
+	return writeBinary(conversation.writer, head, conversation.useCRC32)
 }
 
 // cancelPeer sends the ZMODEM cancel sequence: enough raw CAN bytes that no escaped
 // stream could produce them by accident.
-func (s *session) cancelPeer() {
-	_, _ = s.raw.Write(bytes.Repeat([]byte{zdle}, 8)) //nolint:errcheck // best-effort; we're already ending the session
+func (conversation *session) cancelPeer() {
+	_, _ = conversation.raw.Write(bytes.Repeat([]byte{zdle}, 8)) //nolint:errcheck // best-effort; we're already ending the session
 }
 
 // awaitHeaderOnly waits for the next valid header, retrying a bad CRC immediately and a
 // read timeout up to retries times.
-func (s *session) awaitHeaderOnly(retries int) (header, bool, error) {
+func (conversation *session) awaitHeaderOnly(retries int) (header, bool, error) {
 	for range retries {
-		h, crc32mode, ok, err := readFrame(s.ctx, s.src, s.timeout)
+		head, crc32mode, ok, err := readFrame(conversation.ctx, conversation.src, conversation.timeout)
 		switch {
 		case err != nil && (errors.Is(err, errGotCancel) || errors.Is(err, ErrCancelled)):
 			return header{}, false, ErrCancelled
@@ -76,7 +76,7 @@ func (s *session) awaitHeaderOnly(retries int) (header, bool, error) {
 		case !ok:
 			continue
 		default:
-			return h, crc32mode, nil
+			return head, crc32mode, nil
 		}
 	}
 	return header{}, false, ErrTimeout
@@ -84,15 +84,15 @@ func (s *session) awaitHeaderOnly(retries int) (header, bool, error) {
 
 // await sends (or resends) via send, then waits for the next valid header, retrying the
 // whole send-and-wait cycle up to retries times.
-func (s *session) await(send func() error, retries int) (header, bool, error) {
+func (conversation *session) await(send func() error, retries int) (header, bool, error) {
 	for range retries {
 		if err := send(); err != nil {
 			return header{}, false, err
 		}
-		h, crc32mode, err := s.awaitHeaderOnly(1)
+		head, crc32mode, err := conversation.awaitHeaderOnly(1)
 		switch {
 		case err == nil:
-			return h, crc32mode, nil
+			return head, crc32mode, nil
 		case errors.Is(err, ErrCancelled):
 			return header{}, false, err
 		case !errors.Is(err, ErrTimeout):

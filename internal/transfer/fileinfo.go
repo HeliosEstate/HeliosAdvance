@@ -21,22 +21,22 @@ func encodeFileInfo(name string, size int64, mtime time.Time, filesLeft int, byt
 }
 
 // decodeFileInfo reads back what encodeFileInfo wrote. A field lrzsz omits is zero.
-func decodeFileInfo(b []byte) (name string, size int64, mtime time.Time) {
-	nameB, infoB, found := bytes.Cut(b, []byte{0})
+func decodeFileInfo(data []byte) (name string, size int64, mtime time.Time) {
+	nameB, infoB, found := bytes.Cut(data, []byte{0})
 	if !found {
-		return string(b), 0, time.Time{}
+		return string(data), 0, time.Time{}
 	}
 	name = string(nameB)
 	rest := strings.TrimRight(string(infoB), "\x00")
 	fields := strings.Fields(rest)
 	if len(fields) > 0 {
-		if v, err := strconv.ParseInt(fields[0], 10, 64); err == nil {
-			size = v
+		if parsed, err := strconv.ParseInt(fields[0], 10, 64); err == nil {
+			size = parsed
 		}
 	}
 	if len(fields) > 1 {
-		if v, err := strconv.ParseInt(fields[1], 8, 64); err == nil {
-			mtime = time.Unix(v, 0).UTC()
+		if parsed, err := strconv.ParseInt(fields[1], 8, 64); err == nil {
+			mtime = time.Unix(parsed, 0).UTC()
 		}
 	}
 	return name, size, mtime

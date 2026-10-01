@@ -13,21 +13,21 @@ import (
 
 // send drives the sender side of a ZMODEM batch: wait for the far end's readiness, then
 // offer each file in order, then finish the session.
-func (s *session) send(paths []string) error {
+func (conversation *session) send(paths []string) error {
 	for {
 		select {
-		case <-s.ctx.Done():
-			s.cancelPeer()
+		case <-conversation.ctx.Done():
+			conversation.cancelPeer()
 			return ErrCancelled
 		default:
 		}
-		h, _, err := s.await(func() error { return writeHex(s.zw, header{typ: zrqinit}) }, maxRetries)
+		head, _, err := conversation.await(func() error { return writeHex(conversation.writer, header{typ: zrqinit}) }, maxRetries)
 		if err != nil {
 			return mapErr(err)
 		}
-		switch h.typ {
+		switch head.typ {
 		case zsinit:
-			if err := s.writeHeader(header{typ: zack}, false); err != nil {
+			if err := conversation.writeHeader(header{typ: zack}, false); err != nil {
 				return err
 			}
 			continue
@@ -40,63 +40,63 @@ func (s *session) send(paths []string) error {
 		break
 	}
 
-	for i, p := range paths {
-		if err := s.sendFile(p, paths[i+1:]); err != nil {
+	for i, path := range paths {
+		if err := conversation.sendFile(path, paths[i+1:]); err != nil {
 			return err
 		}
 	}
 
-	h, _, err := s.await(func() error { return writeHex(s.zw, header{typ: zfin}) }, maxRetries)
+	head, _, err := conversation.await(func() error { return writeHex(conversation.writer, header{typ: zfin}) }, maxRetries)
 	if err != nil {
 		return mapErr(err)
 	}
-	for h.typ != zfin {
-		if h.typ == zcan {
+	for head.typ != zfin {
+		if head.typ == zcan {
 			return ErrCancelled
 		}
-		h, _, err = s.awaitHeaderOnly(maxRetries)
+		head, _, err = conversation.awaitHeaderOnly(maxRetries)
 		if err != nil {
 			return mapErr(err)
 		}
 	}
-	return s.zw.raw([]byte("OO"))
+	return conversation.writer.raw([]byte("OO"))
 }
 
 // sendFile offers one file: its info subpacket, then its data from wherever the far end
 // asks (0, or its resume offset), retrying a request for an earlier offset until the far
 // end accepts the end of the file.
-func (s *session) sendFile(path string, rest []string) error {
-	f, err := os.Open(path) //nolint:gosec // the caller names its own files to send
+func (conversation *session) sendFile(path string, rest []string) error {
+	file, err := os.Open(path) //nolint:gosec // the caller names its own files to send
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }() //nolint:errcheck // read-only; nothing left to flush on close
-	fi, err := f.Stat()
+	defer func() { _ = file.Close() }() //nolint:errcheck // read-only; nothing left to flush on close
+	stat, err := file.Stat()
 	if err != nil {
 		return err
 	}
-	size := fi.Size()
+	size := stat.Size()
 	name := filepath.Base(path)
 
 	var bytesLeft int64
-	for _, p := range rest {
-		if fi2, err := os.Stat(p); err == nil {
+	for _, pending := range rest {
+		if fi2, err := os.Stat(pending); err == nil {
 			bytesLeft += fi2.Size()
 		}
 	}
-	info := encodeFileInfo(name, size, fi.ModTime(), len(rest), bytesLeft)
+	info := encodeFileInfo(name, size, stat.ModTime(), len(rest), bytesLeft)
 
 	// ZF0: binary, or ZCRESUM (3) to ask the far end to report the exact byte count it
 	// already holds rather than rounding down to a block boundary out of caution.
 	conversion := byte(1)
-	if s.opt.Resume {
+	if conversation.opt.Resume {
 		conversion = 3
 	}
-	h, _, err := s.await(func() error {
-		if err := s.writeHeader(header{typ: zfile, data: [4]byte{conversion, 0, 0, 0}}, false); err != nil {
+	head, _, err := conversation.await(func() error {
+		if err := conversation.writeHeader(header{typ: zfile, data: [4]byte{conversion, 0, 0, 0}}, false); err != nil {
 			return err
 		}
-		return writeSubpacket(s.zw, info, zcrcw, s.useCRC32)
+		return writeSubpacket(conversation.writer, info, zcrcw, conversation.useCRC32)
 	}, maxRetries)
 	if err != nil {
 		return mapErr(err)
@@ -106,43 +106,43 @@ func (s *session) sendFile(path string, rest []string) error {
 	// separate frame from the answer), or a stale ZRINIT it was still retrying when our
 	// ZFILE arrived. Skipping anything else keeps that noise from being mistaken for the
 	// answer and left to surprise the data-streaming loop later as a bogus interrupt.
-	for h.typ != zrpos && h.typ != zskip {
-		if h.typ == zcan {
+	for head.typ != zrpos && head.typ != zskip {
+		if head.typ == zcan {
 			return ErrCancelled
 		}
-		h, _, err = s.awaitHeaderOnly(maxRetries)
+		head, _, err = conversation.awaitHeaderOnly(maxRetries)
 		if err != nil {
 			return mapErr(err)
 		}
 	}
 
 	var offset int64
-	switch h.typ {
+	switch head.typ {
 	case zrpos:
-		if p := h.position(); p >= 0 && p <= size {
-			offset = p
+		if position := head.position(); position >= 0 && position <= size {
+			offset = position
 		}
 	case zskip:
 		return nil
 	}
 	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
 			return err
 		}
 	}
 
 	for {
-		if err := s.streamFrom(f, &offset, size, name); err != nil {
+		if err := conversation.streamFrom(file, &offset, size, name); err != nil {
 			return err
 		}
-		h, _, err := s.await(func() error { return s.writeHeader(posHeader(zeof, offset), false) }, maxRetries)
+		head, _, err := conversation.await(func() error { return conversation.writeHeader(posHeader(zeof, offset), false) }, maxRetries)
 		if err != nil {
 			return mapErr(err)
 		}
-		if h.typ == zrpos {
-			if p := h.position(); p >= 0 && p <= size && p != offset {
-				offset = p
-				if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		if head.typ == zrpos {
+			if position := head.position(); position >= 0 && position <= size && position != offset {
+				offset = position
+				if _, err := file.Seek(offset, io.SeekStart); err != nil {
 					return err
 				}
 				continue
@@ -150,8 +150,8 @@ func (s *session) sendFile(path string, rest []string) error {
 		}
 		break
 	}
-	if s.opt.Progress != nil {
-		s.opt.Progress(Progress{Name: name, Done: size, Total: size})
+	if conversation.opt.Progress != nil {
+		conversation.opt.Progress(Progress{Name: name, Done: size, Total: size})
 	}
 	return nil
 }
@@ -159,17 +159,17 @@ func (s *session) sendFile(path string, rest []string) error {
 // streamFrom sends the file's data in one or more ZDATA frames starting at *offset,
 // restarting a fresh frame whenever the far end interrupts with a ZRPOS (a corrupted
 // subpacket on its end) asking for a different position.
-func (s *session) streamFrom(f *os.File, offset *int64, size int64, name string) error {
-	chunkSize := s.opt.SubpacketSize
+func (conversation *session) streamFrom(file *os.File, offset *int64, size int64, name string) error {
+	chunkSize := conversation.opt.SubpacketSize
 	if chunkSize <= 0 {
 		chunkSize = 1024
 	}
 	buf := make([]byte, chunkSize)
 	for *offset < size {
-		if err := s.writeHeader(posHeader(zdata, *offset), false); err != nil {
+		if err := conversation.writeHeader(posHeader(zdata, *offset), false); err != nil {
 			return err
 		}
-		restart, err := s.streamOneFrame(f, offset, size, name, buf)
+		restart, err := conversation.streamOneFrame(file, offset, size, name, buf)
 		if err != nil {
 			return err
 		}
@@ -183,13 +183,13 @@ func (s *session) streamFrom(f *os.File, offset *int64, size int64, name string)
 // frameResult is one header the background watcher picked up while the main loop was
 // busy writing data, so a mid-stream ZRPOS (or cancel) is noticed without blocking sends.
 type frameResult struct {
-	h   header
-	err error
+	head header
+	err  error
 }
 
-func (s *session) watch(ctx context.Context, out chan<- frameResult) {
+func (conversation *session) watch(ctx context.Context, out chan<- frameResult) {
 	for {
-		h, _, ok, err := readFrame(ctx, s.src, s.timeout)
+		head, _, ok, err := readFrame(ctx, conversation.src, conversation.timeout)
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrTimeout):
@@ -199,7 +199,7 @@ func (s *session) watch(ctx context.Context, out chan<- frameResult) {
 				continue
 			case errors.Is(err, ErrCancelled):
 				// readByte returns this only when ctx itself was cancelled: our own
-				// teardown via stopWatch, or the caller's s.ctx, which streamOneFrame's
+				// teardown via stopWatch, or the caller's conversation.ctx, which streamOneFrame's
 				// main loop already watches directly. Either way it is never something
 				// the far end sent, so there is nothing to deliver.
 				return
@@ -214,35 +214,35 @@ func (s *session) watch(ctx context.Context, out chan<- frameResult) {
 		if !ok {
 			continue
 		}
-		deliver(ctx, out, frameResult{h: h})
+		deliver(ctx, out, frameResult{head: head})
 	}
 }
 
-// deliver sends fr to out, trying a non-blocking send first so an already-decoded frame
+// deliver sends result to out, trying a non-blocking send first so an already-decoded frame
 // is never lost to a simultaneous ctx cancellation: select picks uniformly among ready
 // cases, so without this, a frame arriving the instant the main loop stops reading could
 // be silently dropped half the time instead of landing in the channel's open buffer.
-func deliver(ctx context.Context, out chan<- frameResult, fr frameResult) {
+func deliver(ctx context.Context, out chan<- frameResult, result frameResult) {
 	select {
-	case out <- fr:
+	case out <- result:
 		return
 	default:
 	}
 	select {
-	case out <- fr:
+	case out <- result:
 	case <-ctx.Done():
 	}
 }
 
-func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name string, buf []byte) (restart bool, err error) {
-	watchCtx, cancelWatch := context.WithCancel(s.ctx)
+func (conversation *session) streamOneFrame(file *os.File, offset *int64, size int64, name string, buf []byte) (restart bool, err error) {
+	watchCtx, cancelWatch := context.WithCancel(conversation.ctx)
 	done := make(chan struct{})
 	frames := make(chan frameResult, 4)
 	go func() {
 		defer close(done)
-		s.watch(watchCtx, frames)
+		conversation.watch(watchCtx, frames)
 	}()
-	// The watcher and the rest of the session both read s.src; cancelling isn't enough
+	// The watcher and the rest of the session both read conversation.src; cancelling isn't enough
 	// on its own; stopWatch must also wait for the goroutine to actually stop reading,
 	// or it can still take the next byte the caller needs right after this returns.
 	stopWatch := func() {
@@ -253,17 +253,17 @@ func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name str
 
 	for *offset < size {
 		select {
-		case <-s.ctx.Done():
-			s.cancelPeer()
+		case <-conversation.ctx.Done():
+			conversation.cancelPeer()
 			return false, ErrCancelled
-		case fr := <-frames:
-			if restart, ferr, handled := s.handleFrame(fr, f, offset, size); handled {
+		case result := <-frames:
+			if restart, ferr, handled := conversation.handleFrame(result, file, offset, size); handled {
 				return restart, ferr
 			}
 			continue
 		default:
 		}
-		n, rerr := f.Read(buf)
+		n, rerr := file.Read(buf)
 		if n == 0 {
 			if rerr != nil && !errors.Is(rerr, io.EOF) {
 				return false, rerr
@@ -274,12 +274,12 @@ func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name str
 		if *offset+int64(n) >= size {
 			term = zcrce
 		}
-		if werr := writeSubpacket(s.zw, buf[:n], term, s.useCRC32); werr != nil {
+		if werr := writeSubpacket(conversation.writer, buf[:n], term, conversation.useCRC32); werr != nil {
 			return false, werr
 		}
 		*offset += int64(n)
-		if s.opt.Progress != nil {
-			s.opt.Progress(Progress{Name: name, Done: *offset, Total: size})
+		if conversation.opt.Progress != nil {
+			conversation.opt.Progress(Progress{Name: name, Done: *offset, Total: size})
 		}
 	}
 
@@ -290,8 +290,8 @@ func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name str
 	stopWatch()
 	for {
 		select {
-		case fr := <-frames:
-			if restart, ferr, handled := s.handleFrame(fr, f, offset, size); handled {
+		case result := <-frames:
+			if restart, ferr, handled := conversation.handleFrame(result, file, offset, size); handled {
 				return restart, ferr
 			}
 		default:
@@ -303,14 +303,14 @@ func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name str
 // handleFrame applies one frame the watcher picked up: a cancel ends the transfer, a
 // ZRPOS naming a different position means the far end found this frame corrupt and the
 // stream must restart there; anything else is noise the caller ignores.
-func (s *session) handleFrame(fr frameResult, f *os.File, offset *int64, size int64) (restart bool, err error, handled bool) {
+func (conversation *session) handleFrame(result frameResult, file *os.File, offset *int64, size int64) (restart bool, err error, handled bool) {
 	switch {
-	case fr.err != nil && (errors.Is(fr.err, errGotCancel) || errors.Is(fr.err, ErrCancelled)):
+	case result.err != nil && (errors.Is(result.err, errGotCancel) || errors.Is(result.err, ErrCancelled)):
 		return false, ErrCancelled, true
-	case fr.err == nil && fr.h.typ == zrpos:
-		if p := fr.h.position(); p >= 0 && p <= size {
-			*offset = p
-			if _, err := f.Seek(*offset, io.SeekStart); err != nil {
+	case result.err == nil && result.head.typ == zrpos:
+		if position := result.head.position(); position >= 0 && position <= size {
+			*offset = position
+			if _, err := file.Seek(*offset, io.SeekStart); err != nil {
 				return false, err, true
 			}
 			return true, nil, true

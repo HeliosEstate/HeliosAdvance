@@ -12,34 +12,34 @@ import (
 
 // receive drives the receiver side of a ZMODEM batch: advertise readiness, accept each
 // file the far end offers, and stop cleanly at ZFIN.
-func (s *session) receive(dir string) ([]Received, error) {
+func (conversation *session) receive(dir string) ([]Received, error) {
 	var out []Received
 	flags := byte(canfdx | canovio | canfc32)
-	if s.opt.Escape {
+	if conversation.opt.Escape {
 		flags |= escctl
 	}
 	for {
-		h, crc32mode, err := s.await(func() error {
-			return writeHex(s.zw, header{typ: zrinit, data: [4]byte{0, 0, 0, flags}})
+		head, crc32mode, err := conversation.await(func() error {
+			return writeHex(conversation.writer, header{typ: zrinit, data: [4]byte{0, 0, 0, flags}})
 		}, maxRetries)
 		if err != nil {
 			return out, mapErr(err)
 		}
-		switch h.typ {
+		switch head.typ {
 		case zfile:
-			rec, err := s.receiveFile(dir, crc32mode)
+			rec, err := conversation.receiveFile(dir, crc32mode)
 			if err != nil {
 				return out, err
 			}
 			out = append(out, rec)
 		case zcommand:
 			//nolint:errcheck // refused regardless of the command text or whether it even arrives whole
-			_, _, _, _ = readSubpacket(s.ctx, s.src, s.timeout, maxSubpacket, crc32mode)
-			s.cancelPeer()
+			_, _, _, _ = readSubpacket(conversation.ctx, conversation.src, conversation.timeout, maxSubpacket, crc32mode)
+			conversation.cancelPeer()
 			return out, ErrRemoteCommand
 		case zfin:
 			//nolint:errcheck // the far end already declared the batch done; our reply is a courtesy
-			_ = writeHex(s.zw, header{typ: zfin})
+			_ = writeHex(conversation.writer, header{typ: zfin})
 			return out, nil
 		case zcan:
 			return out, ErrCancelled
@@ -51,8 +51,8 @@ func (s *session) receive(dir string) ([]Received, error) {
 
 // receiveFile reads one file's info subpacket, tells the far end where to start (0, or
 // the size already on disk when resuming), and writes the data it sends until ZEOF.
-func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
-	info, _, ok, err := readSubpacket(s.ctx, s.src, s.timeout, maxSubpacket, crc32mode)
+func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, error) {
+	info, _, ok, err := readSubpacket(conversation.ctx, conversation.src, conversation.timeout, maxSubpacket, crc32mode)
 	if err != nil {
 		return Received{}, mapErr(err)
 	}
@@ -68,32 +68,32 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 
 	var offset int64
 	flags := os.O_CREATE | os.O_WRONLY
-	if s.opt.Resume {
-		if fi, err := os.Stat(dest); err == nil && fi.Size() <= size {
-			offset = fi.Size()
+	if conversation.opt.Resume {
+		if stat, err := os.Stat(dest); err == nil && stat.Size() <= size {
+			offset = stat.Size()
 		}
 	}
 	if offset == 0 {
 		flags |= os.O_TRUNC
 	}
 	//nolint:gosec // G304: dest is dir joined with filepath.Base(name), so it cannot escape dir
-	f, err := os.OpenFile(dest, flags, 0o600)
+	file, err := os.OpenFile(dest, flags, 0o600)
 	if err != nil {
 		return Received{}, err
 	}
 	//nolint:errcheck // best-effort on an error exit; the success path closes and checks explicitly
-	defer func() { _ = f.Close() }()
+	defer func() { _ = file.Close() }()
 	if offset > 0 {
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
 			return Received{}, err
 		}
 	}
-	if s.opt.Progress != nil {
-		s.opt.Progress(Progress{Name: base, Done: offset, Total: size})
+	if conversation.opt.Progress != nil {
+		conversation.opt.Progress(Progress{Name: base, Done: offset, Total: size})
 	}
 
-	sendRPos := func() error { return s.writeHeader(posHeader(zrpos, offset), false) }
-	h, hcrc32, err := s.await(sendRPos, maxRetries)
+	sendRPos := func() error { return conversation.writeHeader(posHeader(zrpos, offset), false) }
+	head, hcrc32, err := conversation.await(sendRPos, maxRetries)
 	if err != nil {
 		return Received{}, mapErr(err)
 	}
@@ -104,16 +104,16 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 	stuckAt := int64(-1)
 	stuckCount := 0
 	for {
-		switch h.typ {
+		switch head.typ {
 		case zeof:
-			if h.position() != offset {
-				h, hcrc32, err = s.await(sendRPos, maxRetries)
+			if head.position() != offset {
+				head, hcrc32, err = conversation.await(sendRPos, maxRetries)
 				if err != nil {
 					return Received{}, mapErr(err)
 				}
 				continue
 			}
-			if err := f.Close(); err != nil {
+			if err := file.Close(); err != nil {
 				return Received{}, err
 			}
 			if err := os.Chtimes(dest, mtime, mtime); err != nil {
@@ -123,10 +123,10 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 		case zdata:
 			// sz can retransmit a frame it already sent (its retry raced our ZRPOS);
 			// skip back over whatever this frame repeats instead of rewriting it.
-			skip := max(offset-h.position(), 0)
+			skip := max(offset-head.position(), 0)
 			before := offset
 			var broken bool
-			broken, err = s.consumeDataFrame(f, &offset, size, base, hcrc32, skip)
+			broken, err = conversation.consumeDataFrame(file, &offset, size, base, hcrc32, skip)
 			if err != nil {
 				return Received{}, err
 			}
@@ -139,12 +139,12 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 				} else {
 					stuckAt, stuckCount = offset, 0
 				}
-				h, hcrc32, err = s.await(sendRPos, maxRetries)
+				head, hcrc32, err = conversation.await(sendRPos, maxRetries)
 			} else {
-				h, hcrc32, err = s.awaitHeaderOnly(maxRetries)
+				head, hcrc32, err = conversation.awaitHeaderOnly(maxRetries)
 			}
 		default:
-			h, hcrc32, err = s.await(sendRPos, maxRetries)
+			head, hcrc32, err = conversation.await(sendRPos, maxRetries)
 		}
 		if err != nil {
 			return Received{}, mapErr(err)
@@ -155,15 +155,15 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 // consumeDataFrame reads subpackets from one ZDATA frame, writing each to f and
 // reporting progress, until a terminator ends the frame or a bad CRC breaks it (the
 // caller then re-requests from the last good offset).
-func (s *session) consumeDataFrame(f *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64) (broken bool, err error) {
+func (conversation *session) consumeDataFrame(file *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64) (broken bool, err error) {
 	for {
 		select {
-		case <-s.ctx.Done():
-			s.cancelPeer()
+		case <-conversation.ctx.Done():
+			conversation.cancelPeer()
 			return false, ErrCancelled
 		default:
 		}
-		data, term, ok, err := readSubpacket(s.ctx, s.src, s.timeout, maxSubpacket, crc32mode)
+		data, term, ok, err := readSubpacket(conversation.ctx, conversation.src, conversation.timeout, maxSubpacket, crc32mode)
 		if err != nil {
 			switch {
 			case errors.Is(err, errGotCancel), errors.Is(err, ErrCancelled):
@@ -190,12 +190,12 @@ func (s *session) consumeDataFrame(f *os.File, offset *int64, total int64, name 
 			}
 		}
 		if len(data) > 0 {
-			if _, err := f.Write(data); err != nil {
+			if _, err := file.Write(data); err != nil {
 				return false, err
 			}
 			*offset += int64(len(data))
-			if s.opt.Progress != nil {
-				s.opt.Progress(Progress{Name: name, Done: *offset, Total: total})
+			if conversation.opt.Progress != nil {
+				conversation.opt.Progress(Progress{Name: name, Done: *offset, Total: total})
 			}
 		}
 		switch term {
@@ -203,7 +203,7 @@ func (s *session) consumeDataFrame(f *os.File, offset *int64, total int64, name 
 			// Both ask for an ack; neither ends the frame (sz can keep streaming more
 			// subpackets after a zcrcw ack without a fresh header, e.g. once it starts
 			// windowing after noticing a lossy line). Only ZCRCE really ends it.
-			if err := s.writeHeader(posHeader(zack, *offset), false); err != nil {
+			if err := conversation.writeHeader(posHeader(zack, *offset), false); err != nil {
 				return false, err
 			}
 		case zcrce:

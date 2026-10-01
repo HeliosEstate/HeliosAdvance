@@ -10,8 +10,8 @@ import "hash/crc32"
 // type and data bytes, or a subpacket's payload and terminator byte.
 func crc16(data []byte) uint16 {
 	var crc uint16
-	for _, b := range data {
-		crc ^= uint16(b) << 8
+	for _, value := range data {
+		crc ^= uint16(value) << 8
 		for range 8 {
 			if crc&0x8000 != 0 {
 				crc = crc<<1 ^ 0x1021
