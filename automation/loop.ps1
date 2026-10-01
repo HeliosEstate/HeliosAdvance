@@ -89,6 +89,13 @@ function Get-NextIssue {
         Sort-Object number | Select-Object -First 1
 }
 
+# A review takes precedence over new work: an open PR of this loop's own with changes
+# requested goes back to a session on its branch before any new issue is claimed.
+function Get-NextReview {
+    $prs = gh pr list -R "$owner/$repo" --author "app/$slug" --state open --json number,headRefName,reviewDecision,body --limit 50 | ConvertFrom-Json
+    $prs | Where-Object { $_.reviewDecision -eq 'CHANGES_REQUESTED' } | Sort-Object number | Select-Object -First 1
+}
+
 function Get-IssueBranch([int]$n, [string]$body) {
     $m = [regex]::Match($body, '`feature/issue-' + $n + '-[a-z0-9-]+`')
     if ($m.Success) { return $m.Value.Trim('`') }
@@ -182,10 +189,10 @@ function Write-SessionLine([hashtable]$h, [string]$logPath) {
         ($rec.in + $rec.cache_write), $rec.cache_read, $rec.out, [int]($rec.peak_context / 1000), $rec.cost, [int]($rec.five_hour * 100), [int]($rec.seven_day * 100))
 }
 
-function Invoke-Session([object]$issue) {
+function Invoke-Session([object]$issue, [object]$review = $null) {
     $n = $issue.number
-    $branch = Get-IssueBranch $n $issue.body
-    Log "issue #${n} on $branch"
+    $branch = if ($review) { $review.headRefName } else { Get-IssueBranch $n $issue.body }
+    Log "issue #${n} on $branch$(if ($review) { " (review of PR #$($review.number))" })"
     gh issue edit $n -R "$owner/$repo" --add-label $claimLabel | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "could not claim #${n}: does the label $claimLabel exist?" }
     # Two loops can add their labels in the same second. The timeline is the referee: of
@@ -226,6 +233,12 @@ function Invoke-Session([object]$issue) {
         }
         $ahead = @(Invoke-Git log --oneline "origin/development..HEAD")
         $retry = if ($ahead.Count -gt 0) { "This branch already carries $($ahead.Count) commit(s) from an earlier session. Read git log and the issue's comments first and continue from there; do not start over.`n`n" } else { "" }
+        if ($review) {
+            $retry = @"
+This is a review round. The developer requested changes on PR #$($review.number), the PR for this issue, on this branch. Run: gh pr view $($review.number) --comments, and gh api repos/$owner/$repo/pulls/$($review.number)/comments for the line comments. Answer every comment: a commit that does what was asked, or a reply saying why not, never silence. When every comment is answered and bash check.sh is green, push, reply on the PR with what changed, and run: gh pr edit $($review.number) --add-reviewer $assignee. Everything below still applies.
+
+"@
+        }
         $prompt = $retry + @"
 You are a build session of the Helios Advance loop, unattended, on issue #$n, branch $branch, in this clone. HELIOS_LOOP=1: the hooks refuse what you may not edit, and a red check ends the turn.
 
@@ -300,10 +313,18 @@ Initialize-Clone
 $i = 0
 while ($i -lt $MaxIterations) {
     if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
-    $issue = Get-NextIssue
-    if (-not $issue) { Log "no ready, unclaimed issue"; break }
+    $review = Get-NextReview
+    if ($review) {
+        $m = [regex]::Match($review.body, '(?i)closes #(\d+)')
+        $issue = if ($m.Success) { gh issue view $m.Groups[1].Value -R "$owner/$repo" --json number,title,labels,body,assignees | ConvertFrom-Json } else { $null }
+        if (-not $issue) { Log "PR #$($review.number) has changes requested but no 'Closes #n'; skipping"; $review = $null }
+    }
+    if (-not $review) {
+        $issue = Get-NextIssue
+        if (-not $issue) { Log "no ready, unclaimed issue"; break }
+    }
     $env:GH_TOKEN = Get-Token
-    $r = Invoke-Session $issue
+    $r = Invoke-Session $issue $review
     $i++
     if ($r.outcome -eq "lost-claim") { continue }
     if ($Once -or $r.outcome -in @("limit-hit", "stalled")) { break }
