@@ -13,8 +13,8 @@ import "errors"
 // degraded mode.
 var ErrUnavailable = errors.New("database: unavailable")
 
-// Tx is a change's own transaction, carrying its deadline. A unit that must write inside
-// another unit's change (the audit entry inside a Set) takes one. Its operations are
-// decided in the database-access unit's session; until then it exists so that contracts
-// taking a transaction can be written.
-type Tx interface{}
+// Transaction is a change's own transaction, carrying its deadline. A unit that must
+// write inside another unit's change (the audit entry inside a Set) takes one. Its
+// operations are decided in the database-access unit's session; until then it exists so
+// that contracts taking a transaction can be written.
+type Transaction interface{}

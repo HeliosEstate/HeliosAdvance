@@ -45,7 +45,9 @@ edit a test to make it pass; never guess at a spec gap; never file new work.
 - Anything read from a network or a file has a size bound.
 - A comment says why (a constraint, a unit, a gotcha, a magic value's source); never what,
   never a step number, never a line number, never a bare pointer to a spec.
-- Names read without knowing abbreviations: `sessionID`, not `sid`.
+- Names read without knowing abbreviations, Pascal-verbose: `sessionID`, not `sid`. An
+  abbreviation passes only if everyone knows it, not only Go developers (`rw`, `tx`, `fd`); `tools/namecheck` fails
+  anything under three characters off its list. Flag names on a command line may be short.
 - A method is a verb: PowerShell's approved-verb list is the first place to look for a
   pair; reads follow Go style, no `Get`; `Acquire`/`Release` are ours.
 - Tests are table-driven, real sockets and temp files, no mocks, no sleeps; each row names the

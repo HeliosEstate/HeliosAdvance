@@ -4,14 +4,20 @@
 <#
 The unattended loop: one ready issue per session, fresh context, in the loop's own clone,
 committing as the organisation's App. Reads loop.local.json beside this script (gitignored;
-loop.local.json.example is the shape). Run attended first:  .\loop.ps1 -Once
+loop.local.json.example is the shape).
+
+Two clones under the base, neither the developer's: <base>\loop is this script's own
+checkout of development, which it fast-forwards before every start and runs from, so the
+driver never changes under a session and the developer's checkout is never touched;
+<base>\<repo> is the session's clone, on whatever issue branch is being built.
+Run attended first:  pwsh <base>\looputomation\loop.ps1 -Once
 Dry run, everything but the session:  .\loop.ps1 -Once -DryRun
 Re-read a past session's log into a usage record, nothing else:  .\loop.ps1 -Replay <log>
 Stop a running loop before its next iteration:  New-Item <base>\state\stop-requested
 Every session appends one JSON line to <base>\state\sessions.jsonl.
 
-What it does not do, on purpose, until a run demands it: model tiers, escalation, retries,
-usage-limit scheduling. A usage limit ends the loop with the message on screen.
+What it does not do, on purpose, until a run demands it: model tiers, escalation. A usage
+limit is read for its reset time; the loop waits for it and runs the same issue again.
 #>
 param(
     [switch]$Once,
@@ -87,6 +93,13 @@ function Get-NextIssue {
     $issues | Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } |
         Where-Object { -not ($_.assignees | Where-Object { $_.login -ne $assignee }) } |
         Sort-Object number | Select-Object -First 1
+}
+
+# A review takes precedence over new work: an open PR of this loop's own with changes
+# requested goes back to a session on its branch before any new issue is claimed.
+function Get-NextReview {
+    $prs = gh pr list -R "$owner/$repo" --author "app/$slug" --state open --json number,headRefName,reviewDecision,body --limit 50 | ConvertFrom-Json
+    $prs | Where-Object { $_.reviewDecision -eq 'CHANGES_REQUESTED' } | Sort-Object number | Select-Object -First 1
 }
 
 function Get-IssueBranch([int]$n, [string]$body) {
@@ -175,6 +188,19 @@ function New-UsageRecord([hashtable]$h, [string]$logPath) {
     $rec
 }
 
+# The limit message carries the reset time: "resets 11:30am (America/New_York)". Read it,
+# as today's local time or tomorrow's if it has passed; two minutes' grace. Nothing found
+# means an hour.
+function Get-ResetTime([string]$text) {
+    $m = [regex]::Match($text, '(?i)resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)')
+    if (-not $m.Success) { return (Get-Date).AddHours(1) }
+    $hour = [int]$m.Groups[1].Value % 12; if ($m.Groups[3].Value -ieq 'pm') { $hour += 12 }
+    $minute = if ($m.Groups[2].Success) { [int]$m.Groups[2].Value } else { 0 }
+    $when = (Get-Date).Date.AddHours($hour).AddMinutes($minute + 2)
+    if ($when -lt (Get-Date)) { $when = $when.AddDays(1) }
+    $when
+}
+
 function Write-SessionLine([hashtable]$h, [string]$logPath) {
     $rec = New-UsageRecord $h $logPath
     ($rec | ConvertTo-Json -Compress -Depth 4) | Add-Content $sessionsLog
@@ -182,10 +208,10 @@ function Write-SessionLine([hashtable]$h, [string]$logPath) {
         ($rec.in + $rec.cache_write), $rec.cache_read, $rec.out, [int]($rec.peak_context / 1000), $rec.cost, [int]($rec.five_hour * 100), [int]($rec.seven_day * 100))
 }
 
-function Invoke-Session([object]$issue) {
+function Invoke-Session([object]$issue, [object]$review = $null) {
     $n = $issue.number
-    $branch = Get-IssueBranch $n $issue.body
-    Log "issue #${n} on $branch"
+    $branch = if ($review) { $review.headRefName } else { Get-IssueBranch $n $issue.body }
+    Log "issue #${n} on $branch$(if ($review) { " (review of PR #$($review.number))" })"
     gh issue edit $n -R "$owner/$repo" --add-label $claimLabel | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "could not claim #${n}: does the label $claimLabel exist?" }
     # Two loops can add their labels in the same second. The timeline is the referee: of
@@ -208,7 +234,13 @@ function Invoke-Session([object]$issue) {
         if ((Invoke-Git ls-remote --heads origin $branch) -match $branch) {
             Invoke-Git checkout --quiet -B $branch "origin/$branch" | Out-Null
         } else {
-            Invoke-Git checkout --quiet -B $branch origin/development | Out-Null
+            # Created on GitHub as a branch linked to the issue, so the issue's Development
+            # panel shows it; then checked out here. A plain push would not link it.
+            $issueId = gh api "repos/$owner/$repo/issues/$n" --jq .node_id
+            $oid = Invoke-Git rev-parse origin/development
+            gh api graphql -f query='mutation($i:ID!,$n:String!,$o:GitObjectID!){ createLinkedBranch(input:{issueId:$i, name:$n, oid:$o}){ linkedBranch { id } } }' -f i="$issueId" -f n="$branch" -F o="$oid" | Out-Null
+            Invoke-Git fetch --quiet origin $branch | Out-Null
+            Invoke-Git checkout --quiet -B $branch "origin/$branch" | Out-Null
         }
         Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $clone ".helios-red"), (Join-Path $clone ".helios-stop-red")
         if (Test-Path (Join-Path $clone "oracle")) {
@@ -220,6 +252,12 @@ function Invoke-Session([object]$issue) {
         }
         $ahead = @(Invoke-Git log --oneline "origin/development..HEAD")
         $retry = if ($ahead.Count -gt 0) { "This branch already carries $($ahead.Count) commit(s) from an earlier session. Read git log and the issue's comments first and continue from there; do not start over.`n`n" } else { "" }
+        if ($review) {
+            $retry = @"
+This is a review round. The developer requested changes on PR #$($review.number), the PR for this issue, on this branch. Run: gh pr view $($review.number) --comments, and gh api repos/$owner/$repo/pulls/$($review.number)/comments for the line comments. Answer every comment: a commit that does what was asked, or a reply saying why not, never silence. Then re-verify the plan: for every item in the issue's Plan section, check against the code as it now stands that it is done, and tick its box in the issue body itself (gh issue edit $n --body, keeping everything else) with a one-line note of what proves it; an item that is not done stays unticked and gets a comment saying why. When every comment is answered, the plan is verified and bash check.sh is green, push, reply on the PR with what changed, and run: gh pr edit $($review.number) --add-reviewer $assignee. Everything below still applies.
+
+"@
+        }
         $prompt = $retry + @"
 You are a build session of the Helios Advance loop, unattended, on issue #$n, branch $branch, in this clone. HELIOS_LOOP=1: the hooks refuse what you may not edit, and a red check ends the turn.
 
@@ -227,7 +265,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 2. Run: bash check.sh. Red is the starting state; the failing tests are the work.
 3. Post your plan as the issue's first comment, a task list, then proceed; do not wait.
 4. Implement until bash check.sh is green. Commit as you go, each message saying why, and push after every green commit. Never add a module without its cost-benefit line in the PR body.
-5. Open the PR to development with gh pr create, body in the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes with one-line comments on the issue as they land. Do not merge.
+5. Open the PR to development with gh pr create. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes in the issue body itself (gh issue edit $n --body, keeping everything else) as each lands, with a one-line note of what proves it. Do not merge.
 6. Out of road (locked tests still red after real attempts, a spec gap, a question): push what you have, comment on the issue with the failing output in full and the question, run gh issue edit $n --add-label human-action-required, and stop.
 "@
         if ($DryRun) {
@@ -262,7 +300,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         } finally { Pop-Location }
         $env:GH_TOKEN = Get-Token
         $text = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
-        if ($text -match '(?i)usage limit|rate limit') { $outcome = "limit-hit" }
+        if ($text -match '(?i)usage limit|rate limit|session limit') { $outcome = "limit-hit"; $script:limitText = $text }
         if (Test-Path (Join-Path $clone ".helios-stop-red")) { $outcome = "stopped-red" }
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
         Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $config.effort } $log
@@ -271,7 +309,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         $why = switch ($outcome) {
             "stopped-red" { "The session ended on a red check after three attempts. Last output:`n`n``````n$(Get-Content (Join-Path $clone '.helios-stop-red') -Raw)`n``````" }
             "stalled" { "The session was stopped after $SessionMinutes minutes without finishing. Its log is $log on the loop machine." }
-            "limit-hit" { "The session hit a usage limit and was ended. The loop will be started again by hand after the reset." }
+            "limit-hit" { $null }
             default { $null }
         }
         if ($why) {
@@ -285,6 +323,25 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 }
 
 # ---- main ----
+# The script runs from the developer's checkout, which can be behind development by a
+# merge that landed a minute ago; one run started on a stale script and a new cache
+# format and failed in its first second. On development, fast-forward first, and if this
+# file changed, start again on the new one.
+$here = Split-Path $PSScriptRoot -Parent
+if ((git -C $here branch --show-current) -eq "development") {
+    $before = git -C $here rev-parse HEAD
+    git -C $here pull --quiet --ff-only origin development 2>&1 | Out-Null
+    if ((git -C $here rev-parse HEAD) -ne $before -and (git -C $here diff --name-only $before HEAD -- automation) ) {
+        Log "automation changed on development; starting again on the new script"
+        # A native command takes strings, not a splatted hashtable: rebuild the arguments.
+        [string[]]$again = @(foreach ($name in $PSBoundParameters.Keys) {
+            "-$name"
+            if ($PSBoundParameters[$name] -isnot [switch]) { "$($PSBoundParameters[$name])" }
+        })
+        & pwsh -NoProfile -File $PSCommandPath @again
+        exit $LASTEXITCODE
+    }
+}
 if ($Replay) {
     (New-UsageRecord @{ issue = 0; outcome = "replay"; model = $config.model; effort = $config.effort } $Replay | ConvertTo-Json -Depth 4)
     exit 0
@@ -294,12 +351,29 @@ Initialize-Clone
 $i = 0
 while ($i -lt $MaxIterations) {
     if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
-    $issue = Get-NextIssue
-    if (-not $issue) { Log "no ready, unclaimed issue"; break }
+    $review = Get-NextReview
+    if ($review) {
+        $m = [regex]::Match($review.body, '(?i)closes #(\d+)')
+        $issue = if ($m.Success) { gh issue view $m.Groups[1].Value -R "$owner/$repo" --json number,title,labels,body,assignees | ConvertFrom-Json } else { $null }
+        if (-not $issue) { Log "PR #$($review.number) has changes requested but no 'Closes #n'; skipping"; $review = $null }
+    }
+    if (-not $review) {
+        $issue = Get-NextIssue
+        if (-not $issue) { Log "no ready, unclaimed issue"; break }
+    }
     $env:GH_TOKEN = Get-Token
-    $r = Invoke-Session $issue
+    $script:limitText = ""
+    $r = Invoke-Session $issue $review
     $i++
     if ($r.outcome -eq "lost-claim") { continue }
-    if ($Once -or $r.outcome -in @("limit-hit", "stalled")) { break }
+    if ($r.outcome -eq "limit-hit") {
+        $until = Get-ResetTime $script:limitText
+        Log "usage limit; waiting until $($until.ToString('HH:mm')) then running issue #$($issue.number) again"
+        while ((Get-Date) -lt $until) { if (Test-Path $stopFile) { break }; Start-Sleep -Seconds 30 }
+        if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
+        $i--
+        continue
+    }
+    if ($Once -or $r.outcome -eq "stalled") { break }
 }
 Log "done after $i session(s)"

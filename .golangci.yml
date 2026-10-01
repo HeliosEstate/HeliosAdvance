@@ -147,6 +147,11 @@ linters:
       - path: internal/secrets/
         linters: [forbidigo]
         text: os\.(Getenv|LookupEnv)
+      # A tool under tools/ is a command whose output is its findings and which runs go
+      # itself; the print and subprocess rules are for the engine.
+      - path: tools/
+        linters: [forbidigo, gosec]
+        text: fmt\.Print|G204|G703
       # The sleep ban is for tests; production code may sleep on a context.
       - path-except: _test\.go
         linters: [forbidigo]
