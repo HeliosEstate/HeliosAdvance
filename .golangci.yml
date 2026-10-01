@@ -49,6 +49,66 @@ linters:
               desc: use crypto/rand
             - pkg: log
               desc: use log/slog, structured
+        # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
+        # A new arrow is a new line here, in the same PR, with its reason.
+        board:
+          files: ["**/internal/board/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+        database:
+          files: ["**/internal/database/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+        audit:
+          files: ["**/internal/audit/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/board
+            - github.com/heliosestate/heliosadvance/internal/database
+        registry:
+          files: ["**/internal/registry/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/audit
+            - github.com/heliosestate/heliosadvance/internal/board
+        lease:
+          files: ["**/internal/lease/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/board
+        nodes:
+          files: ["**/internal/nodes/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/board
+        settings:
+          files: ["**/internal/settings/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/audit
+            - github.com/heliosestate/heliosadvance/internal/board
+        session:
+          files: ["**/internal/session/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/audit
+            - github.com/heliosestate/heliosadvance/internal/board
+            - github.com/heliosestate/heliosadvance/internal/nodes
+        rbac:
+          files: ["**/internal/rbac/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/audit
+            - github.com/heliosestate/heliosadvance/internal/board
     forbidigo:
       analyze-types: true
       forbid:

@@ -20,7 +20,7 @@ fi
 
 # 3. Developer-owned paths are not touched by a bot-authored commit.
 if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec features '*/contract.go' | grep '\[bot\]@' || true)
+  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features '*/contract.go' | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
