@@ -33,10 +33,12 @@ func (s *session) receive(dir string) ([]Received, error) {
 			}
 			out = append(out, rec)
 		case zcommand:
+			//nolint:errcheck // refused regardless of the command text or whether it even arrives whole
 			_, _, _, _ = readSubpacket(s.ctx, s.src, s.timeout, maxSubpacket, crc32mode)
 			s.cancelPeer()
 			return out, ErrRemoteCommand
 		case zfin:
+			//nolint:errcheck // the far end already declared the batch done; our reply is a courtesy
 			_ = writeHex(s.zw, header{typ: zfin})
 			return out, nil
 		case zcan:
@@ -74,10 +76,12 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 	if offset == 0 {
 		flags |= os.O_TRUNC
 	}
+	//nolint:gosec // G304: dest is dir joined with filepath.Base(name), so it cannot escape dir
 	f, err := os.OpenFile(dest, flags, 0o600)
 	if err != nil {
 		return Received{}, err
 	}
+	//nolint:errcheck // best-effort on an error exit; the success path closes and checks explicitly
 	defer func() { _ = f.Close() }()
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
@@ -94,6 +98,11 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 		return Received{}, mapErr(err)
 	}
 
+	// A resync that lands at the same offset as the last one means a dead line, not a
+	// transient error (the far end genuinely retried and we're still stuck); give up
+	// after maxRetries of those in a row rather than retrying a corrupted frame forever.
+	stuckAt := int64(-1)
+	stuckCount := 0
 	for {
 		switch h.typ {
 		case zeof:
@@ -104,15 +113,32 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 				}
 				continue
 			}
-			_ = f.Close()
-			_ = os.Chtimes(dest, mtime, mtime)
+			if err := f.Close(); err != nil {
+				return Received{}, err
+			}
+			if err := os.Chtimes(dest, mtime, mtime); err != nil {
+				return Received{}, err
+			}
 			return Received{Name: base, Path: dest, Size: offset, ModTime: mtime}, nil
 		case zdata:
-			broken, err := s.consumeDataFrame(f, &offset, size, base, hcrc32)
+			// sz can retransmit a frame it already sent (its retry raced our ZRPOS);
+			// skip back over whatever this frame repeats instead of rewriting it.
+			skip := max(offset-h.position(), 0)
+			before := offset
+			var broken bool
+			broken, err = s.consumeDataFrame(f, &offset, size, base, hcrc32, skip)
 			if err != nil {
 				return Received{}, err
 			}
 			if broken {
+				if offset == before && offset == stuckAt {
+					stuckCount++
+					if stuckCount >= maxRetries {
+						return Received{}, ErrTimeout
+					}
+				} else {
+					stuckAt, stuckCount = offset, 0
+				}
 				h, hcrc32, err = s.await(sendRPos, maxRetries)
 			} else {
 				h, hcrc32, err = s.awaitHeaderOnly(maxRetries)
@@ -129,7 +155,7 @@ func (s *session) receiveFile(dir string, crc32mode bool) (Received, error) {
 // consumeDataFrame reads subpackets from one ZDATA frame, writing each to f and
 // reporting progress, until a terminator ends the frame or a bad CRC breaks it (the
 // caller then re-requests from the last good offset).
-func (s *session) consumeDataFrame(f *os.File, offset *int64, total int64, name string, crc32mode bool) (broken bool, err error) {
+func (s *session) consumeDataFrame(f *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64) (broken bool, err error) {
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -139,28 +165,46 @@ func (s *session) consumeDataFrame(f *os.File, offset *int64, total int64, name 
 		}
 		data, term, ok, err := readSubpacket(s.ctx, s.src, s.timeout, maxSubpacket, crc32mode)
 		if err != nil {
-			if errors.Is(err, errGotCancel) {
+			switch {
+			case errors.Is(err, errGotCancel), errors.Is(err, ErrCancelled):
 				return false, ErrCancelled
+			case errors.Is(err, ErrTimeout), errors.Is(err, ErrProtocol):
+				// A corrupted ZDLE can eat the terminator and CRC bytes along with it,
+				// so the far end's next write (often just silence, waiting for our ack)
+				// looks like a stall rather than a bad CRC. Either way, resync.
+				return true, nil
+			default:
+				return false, mapErr(err)
 			}
-			return false, mapErr(err)
 		}
 		if !ok {
 			return true, nil
 		}
-		if _, err := f.Write(data); err != nil {
-			return false, err
+		if skip > 0 {
+			if skip >= int64(len(data)) {
+				skip -= int64(len(data))
+				data = nil
+			} else {
+				data = data[skip:]
+				skip = 0
+			}
 		}
-		*offset += int64(len(data))
-		if s.opt.Progress != nil {
-			s.opt.Progress(Progress{Name: name, Done: *offset, Total: total})
+		if len(data) > 0 {
+			if _, err := f.Write(data); err != nil {
+				return false, err
+			}
+			*offset += int64(len(data))
+			if s.opt.Progress != nil {
+				s.opt.Progress(Progress{Name: name, Done: *offset, Total: total})
+			}
 		}
 		switch term {
 		case zcrcw, zcrcq:
+			// Both ask for an ack; neither ends the frame (sz can keep streaming more
+			// subpackets after a zcrcw ack without a fresh header, e.g. once it starts
+			// windowing after noticing a lossy line). Only ZCRCE really ends it.
 			if err := s.writeHeader(posHeader(zack, *offset), false); err != nil {
 				return false, err
-			}
-			if term == zcrcw {
-				return false, nil
 			}
 		case zcrce:
 			return false, nil

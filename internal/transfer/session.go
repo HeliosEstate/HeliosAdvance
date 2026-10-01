@@ -58,7 +58,7 @@ func (s *session) writeHeader(h header, hex bool) error {
 // cancelPeer sends the ZMODEM cancel sequence: enough raw CAN bytes that no escaped
 // stream could produce them by accident.
 func (s *session) cancelPeer() {
-	_, _ = s.raw.Write(bytes.Repeat([]byte{zdle}, 8))
+	_, _ = s.raw.Write(bytes.Repeat([]byte{zdle}, 8)) //nolint:errcheck // best-effort; we're already ending the session
 }
 
 // awaitHeaderOnly waits for the next valid header, retrying a bad CRC immediately and a
@@ -113,7 +113,10 @@ func mapErr(err error) error {
 	case errors.Is(err, ErrCancelled), errors.Is(err, ErrTimeout), errors.Is(err, ErrProtocol), errors.Is(err, ErrRemoteCommand):
 		return err
 	case errors.Is(err, io.EOF):
-		return ErrTimeout
+		// The far end closed the stream rather than going quiet on an open one: that is
+		// a hangup, not a timeout, whether or not it bothered to send a cancel sequence
+		// first.
+		return ErrCancelled
 	default:
 		return err
 	}

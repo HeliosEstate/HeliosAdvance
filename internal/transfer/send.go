@@ -70,7 +70,7 @@ func (s *session) sendFile(path string, rest []string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // read-only; nothing left to flush on close
 	fi, err := f.Stat()
 	if err != nil {
 		return err
@@ -86,8 +86,14 @@ func (s *session) sendFile(path string, rest []string) error {
 	}
 	info := encodeFileInfo(name, size, fi.ModTime(), len(rest), bytesLeft)
 
+	// ZF0: binary, or ZCRESUM (3) to ask the far end to report the exact byte count it
+	// already holds rather than rounding down to a block boundary out of caution.
+	conversion := byte(1)
+	if s.opt.Resume {
+		conversion = 3
+	}
 	h, _, err := s.await(func() error {
-		if err := s.writeHeader(header{typ: zfile, data: [4]byte{1, 0, 0, 0}}, false); err != nil {
+		if err := s.writeHeader(header{typ: zfile, data: [4]byte{conversion, 0, 0, 0}}, false); err != nil {
 			return err
 		}
 		return writeSubpacket(s.zw, info, zcrcw, s.useCRC32)
@@ -123,9 +129,6 @@ func (s *session) sendFile(path string, rest []string) error {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
 			return err
 		}
-	}
-	if s.opt.Progress != nil {
-		s.opt.Progress(Progress{Name: name, Done: offset, Total: size})
 	}
 
 	for {

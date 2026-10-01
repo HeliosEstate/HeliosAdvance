@@ -41,9 +41,17 @@ const (
 // the underlying stream errors; until then it is read-only and leaks harmlessly if the
 // caller stops waiting first, same as any blocking read on a stream nobody closes.
 type byteSource struct {
-	ch   chan byte
-	errc chan error
+	ch     chan byte
+	errc   chan error
+	canRun int // consecutive raw ZDLE bytes just read, to tell a real cancel from noise
 }
+
+// cancelRun is how many consecutive raw ZDLE (CAN) bytes mean a real cancel rather than
+// corruption that happened to flip a data byte to 0x18: a validly escaped stream never
+// emits two in a row (every escape pair's second byte differs from ZDLE itself), so even
+// two is already unusual, but the far end's real cancel string is much longer (lrzsz
+// sends eight) and a short run is cheap to produce by accident out of 200,000 random bytes.
+const cancelRun = 5
 
 func newByteSource(r io.Reader) *byteSource {
 	s := &byteSource{ch: make(chan byte, 4096), errc: make(chan error, 1)}
@@ -68,6 +76,14 @@ func (s *byteSource) readByte(ctx context.Context, timeout time.Duration) (byte,
 	defer timer.Stop()
 	select {
 	case b := <-s.ch:
+		if b == zdle {
+			s.canRun++
+			if s.canRun >= cancelRun {
+				return 0, errGotCancel
+			}
+		} else {
+			s.canRun = 0
+		}
 		return b, nil
 	case err := <-s.errc:
 		return 0, err
@@ -78,10 +94,7 @@ func (s *byteSource) readByte(ctx context.Context, timeout time.Duration) (byte,
 	}
 }
 
-// errGotCancel signals that the far end sent the cancel sequence: ZDLE immediately
-// followed by another raw ZDLE, which a validly escaped stream never produces (every
-// encoded escape pair's second byte is some control character XORed with 0100, and
-// 0030^0100 names a byte no escape rule ever escapes to).
+// errGotCancel signals that the far end sent the cancel sequence.
 var errGotCancel = errCancelSentinel{}
 
 type errCancelSentinel struct{}
@@ -115,8 +128,6 @@ func (z *zreader) next() (b byte, isTerm bool, term byte, err error) {
 		return 0, false, 0, err
 	}
 	switch v {
-	case zdle:
-		return 0, false, 0, errGotCancel
 	case zcrce, zcrcg, zcrcq, zcrcw:
 		return 0, true, v, nil
 	default:

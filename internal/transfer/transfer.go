@@ -69,6 +69,7 @@ type Received struct {
 // ctx being done (ErrCancelled, after sending the cancel sequence), on silence past the
 // timeout (ErrTimeout), or on success.
 func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) error {
+	//nolint:contextcheck // ctx is the one stored on the session; streamOneFrame derives its watcher context from that same field
 	return newSession(ctx, rw, opt).send(paths)
 }
 

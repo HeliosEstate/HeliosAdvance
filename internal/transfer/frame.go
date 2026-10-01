@@ -44,8 +44,8 @@ type header struct {
 func posHeader(typ byte, pos int64) header {
 	var h header
 	h.typ = typ
-	p := uint32(pos)
-	h.data[0], h.data[1], h.data[2], h.data[3] = byte(p), byte(p>>8), byte(p>>16), byte(p>>24)
+	p := uint32(pos)                                                                           //nolint:gosec // G115: a ZMODEM position is a protocol-defined 32-bit field
+	h.data[0], h.data[1], h.data[2], h.data[3] = byte(p), byte(p>>8), byte(p>>16), byte(p>>24) //nolint:gosec // G115: serializing the 32-bit field byte by byte
 	return h
 }
 
@@ -63,7 +63,7 @@ func writeHex(zw *zwriter, h header) error {
 	}
 	buf := append([]byte{h.typ}, h.data[:]...)
 	crc := crc16(buf)
-	buf = append(buf, byte(crc>>8), byte(crc))
+	buf = append(buf, byte(crc>>8), byte(crc)) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
 	hex := make([]byte, 0, len(buf)*2)
 	for _, b := range buf {
 		hex = append(hex, hexDigits[b>>4], hexDigits[b&0xf])
@@ -90,10 +90,10 @@ func writeBinary(zw *zwriter, h header, useCRC32 bool) error {
 	buf := append([]byte{h.typ}, h.data[:]...)
 	if useCRC32 {
 		crc := crc32sum(buf)
-		buf = append(buf, byte(crc), byte(crc>>8), byte(crc>>16), byte(crc>>24))
+		buf = append(buf, byte(crc), byte(crc>>8), byte(crc>>16), byte(crc>>24)) //nolint:gosec // G115: serializing a 32-bit CRC byte by byte
 	} else {
 		crc := crc16(buf)
-		buf = append(buf, byte(crc>>8), byte(crc))
+		buf = append(buf, byte(crc>>8), byte(crc)) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
 	}
 	return zw.putAll(buf)
 }
@@ -128,8 +128,6 @@ func readFrame(ctx context.Context, src *byteSource, timeout time.Duration) (h h
 			return header{}, false, false, err
 		}
 		switch b {
-		case zdle:
-			return header{}, false, false, errGotCancel
 		case zbin, zbin32:
 			return readBinaryHeader(ctx, src, timeout, b == zbin32)
 		case zhex:
@@ -204,10 +202,10 @@ func writeSubpacket(zw *zwriter, data []byte, term byte, useCRC32 bool) error {
 	buf := append(append([]byte{}, data...), term)
 	if useCRC32 {
 		crc := crc32sum(buf)
-		return zw.putAll([]byte{byte(crc), byte(crc >> 8), byte(crc >> 16), byte(crc >> 24)})
+		return zw.putAll([]byte{byte(crc), byte(crc >> 8), byte(crc >> 16), byte(crc >> 24)}) //nolint:gosec // G115: serializing a 32-bit CRC byte by byte
 	}
 	crc := crc16(buf)
-	return zw.putAll([]byte{byte(crc >> 8), byte(crc)})
+	return zw.putAll([]byte{byte(crc >> 8), byte(crc)}) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
 }
 
 // readSubpacket reads one data subpacket up to max bytes, returning the data, the
