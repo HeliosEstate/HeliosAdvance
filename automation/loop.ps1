@@ -288,7 +288,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 2. Run: bash check.sh. Red is the starting state; the failing tests are the work.
 3. Post your plan as the issue's first comment, a task list, then proceed; do not wait.
 4. Implement until bash check.sh is green. Commit as you go, each message saying why, and push after every green commit. Never add a module without its cost-benefit line in the PR body.
-5. Open the PR to development with gh pr create --reviewer $assignee. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes in the issue body itself (gh issue edit $n --body, keeping everything else) as each lands, with a one-line note of what proves it. Do not merge.
+5. Open the PR to development with gh pr create --reviewer $assignee. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes in the issue body itself (gh issue edit $n --body, keeping everything else) as each lands, with a one-line note of what proves it. The plan may grow and split, never shrink: add an item you find you need, marked "(added by the session: why)", and split one that proves to be two; never remove or reword one, and one you will not do stays unticked with a comment saying why. Do not merge.
 6. Out of road (locked tests still red after real attempts, a spec gap, a question): push what you have, comment on the issue with the failing output in full and the question, run gh issue edit $n --add-label human-action-required, and stop.
 "@
         if ($DryRun) {
