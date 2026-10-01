@@ -112,24 +112,24 @@ type RBAC interface {
 	// Permissions is everything registered, for the sysop's editor.
 	Permissions() []Registration
 
-	// Allowed is the check. Yes only if the permission is registered, and the primary
+	// Test is the check. Yes only if the permission is registered, and the primary
 	// role or a grant role holds it, and no restriction on the target denies it for that
 	// role. Account #1: yes. Any error: no. This is the hottest path in the engine: an
 	// implementation may cache a role's permissions for a short, stated lifetime, the one
 	// bounded exception to nothing cached. Not audited.
-	Allowed(ctx context.Context, account board.AccountID, permission Permission, target Target) bool
+	Test(ctx context.Context, account board.AccountID, permission Permission, target Target) bool
 
 	// Roles is every role.
 	Roles(ctx context.Context) ([]Role, error)
 
-	// CreateRole makes a sysop role of the given kind and returns its ID.
-	CreateRole(ctx context.Context, displayName string, kind RoleKind, actor audit.Actor) (board.RoleID, WriteResult, error)
+	// NewRole makes a sysop role of the given kind and returns its ID.
+	NewRole(ctx context.Context, displayName string, kind RoleKind, actor audit.Actor) (board.RoleID, WriteResult, error)
 
 	// RenameRole changes a display name; the only edit Sysop allows.
 	RenameRole(ctx context.Context, id board.RoleID, displayName string, actor audit.Actor) (WriteResult, error)
 
-	// DeleteRole refuses a seeded role, and a role in use, naming what uses it.
-	DeleteRole(ctx context.Context, id board.RoleID, actor audit.Actor) (WriteResult, RoleUse, error)
+	// RemoveRole refuses a seeded role, and a role in use, naming what uses it.
+	RemoveRole(ctx context.Context, id board.RoleID, actor audit.Actor) (WriteResult, RoleUse, error)
 
 	// Grant gives a role a permission, on a target or board-wide. Refused for a
 	// permission fixed to Sysop, and when the actor's own role may not confer it: a

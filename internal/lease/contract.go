@@ -20,14 +20,14 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
-// Generation increases on every Acquire for a server. A holder presents it on Renew and
+// Generation increases on every Acquire for a server. A holder presents it on Update and
 // Release.
 type Generation uint64
 
 // RenewalResult is why a renewal was refused, and what the engine does about it.
 //
 //   - Superseded: another process acquired this ID; end sessions and stay down.
-//   - Expired: the lease lapsed on the database's clock; end sessions, then Admit and
+//   - Expired: the lease lapsed on the database's clock; end sessions, then Approve and
 //     Acquire again on its own, refusing new callers until Acquire succeeds.
 //   - NotAdmitted: the server was removed; end sessions and stay down.
 //
@@ -52,9 +52,9 @@ type Lease interface {
 	// server and never blocks a restart.
 	Acquire(ctx context.Context, id board.ServerID) (Generation, error)
 
-	// Renew is one write: it succeeds only if the row's generation matches and the server
+	// Update is one write: it succeeds only if the row's generation matches and the server
 	// is admitted.
-	Renew(ctx context.Context, id board.ServerID, generation Generation) (RenewalResult, error)
+	Update(ctx context.Context, id board.ServerID, generation Generation) (RenewalResult, error)
 
 	// Release is clean shutdown: the lease is expired now rather than in three intervals,
 	// so a planned stop frees the nodes immediately. Same generation check; a stale holder

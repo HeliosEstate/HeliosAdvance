@@ -93,9 +93,9 @@ const (
 // Settings is the contract. Every method that reaches the database carries a context
 // with a deadline.
 type Settings interface {
-	// Declare is called at start, once per feature. A second declaration of the same name
+	// Register is called at start, once per feature. A second declaration of the same name
 	// with a different shape is a programming error and fails start.
-	Declare(declarations []Declaration) error
+	Register(declarations []Declaration) error
 
 	// Declarations is what is declared, for the setup and configuration tools to show.
 	Declarations() []Declaration
