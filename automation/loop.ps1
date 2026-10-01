@@ -304,6 +304,25 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 }
 
 # ---- main ----
+# The script runs from the developer's checkout, which can be behind development by a
+# merge that landed a minute ago; one run started on a stale script and a new cache
+# format and failed in its first second. On development, fast-forward first, and if this
+# file changed, start again on the new one.
+$here = Split-Path $PSScriptRoot -Parent
+if ((git -C $here branch --show-current) -eq "development") {
+    $before = git -C $here rev-parse HEAD
+    git -C $here pull --quiet --ff-only origin development 2>&1 | Out-Null
+    if ((git -C $here rev-parse HEAD) -ne $before -and (git -C $here diff --name-only $before HEAD -- automation) ) {
+        Log "automation changed on development; starting again on the new script"
+        # A native command takes strings, not a splatted hashtable: rebuild the arguments.
+        $again = foreach ($name in $PSBoundParameters.Keys) {
+            "-$name"
+            if ($PSBoundParameters[$name] -isnot [switch]) { "$($PSBoundParameters[$name])" }
+        }
+        & pwsh -NoProfile -File $PSCommandPath @again
+        exit $LASTEXITCODE
+    }
+}
 if ($Replay) {
     (New-UsageRecord @{ issue = 0; outcome = "replay"; model = $config.model; effort = $config.effort } $Replay | ConvertTo-Json -Depth 4)
     exit 0
