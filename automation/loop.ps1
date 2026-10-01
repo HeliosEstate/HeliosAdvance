@@ -235,7 +235,7 @@ function Invoke-Session([object]$issue, [object]$review = $null) {
         $retry = if ($ahead.Count -gt 0) { "This branch already carries $($ahead.Count) commit(s) from an earlier session. Read git log and the issue's comments first and continue from there; do not start over.`n`n" } else { "" }
         if ($review) {
             $retry = @"
-This is a review round. The developer requested changes on PR #$($review.number), the PR for this issue, on this branch. Run: gh pr view $($review.number) --comments, and gh api repos/$owner/$repo/pulls/$($review.number)/comments for the line comments. Answer every comment: a commit that does what was asked, or a reply saying why not, never silence. When every comment is answered and bash check.sh is green, push, reply on the PR with what changed, and run: gh pr edit $($review.number) --add-reviewer $assignee. Everything below still applies.
+This is a review round. The developer requested changes on PR #$($review.number), the PR for this issue, on this branch. Run: gh pr view $($review.number) --comments, and gh api repos/$owner/$repo/pulls/$($review.number)/comments for the line comments. Answer every comment: a commit that does what was asked, or a reply saying why not, never silence. Then re-verify the plan: for every item in the issue's Plan section, check against the code as it now stands that it is done, and tick its box in the issue body itself (gh issue edit $n --body, keeping everything else) with a one-line note of what proves it; an item that is not done stays unticked and gets a comment saying why. When every comment is answered, the plan is verified and bash check.sh is green, push, reply on the PR with what changed, and run: gh pr edit $($review.number) --add-reviewer $assignee. Everything below still applies.
 
 "@
         }
@@ -246,7 +246,7 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 2. Run: bash check.sh. Red is the starting state; the failing tests are the work.
 3. Post your plan as the issue's first comment, a task list, then proceed; do not wait.
 4. Implement until bash check.sh is green. Commit as you go, each message saying why, and push after every green commit. Never add a module without its cost-benefit line in the PR body.
-5. Open the PR to development with gh pr create. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes with one-line comments on the issue as they land. Do not merge.
+5. Open the PR to development with gh pr create. The body's first line is "Closes #$n" so GitHub links it to the issue; then the shape CLAUDE.md gives: decisions, what changed, checks with their output, noticed-not-touched. Tick the plan's boxes in the issue body itself (gh issue edit $n --body, keeping everything else) as each lands, with a one-line note of what proves it. Do not merge.
 6. Out of road (locked tests still red after real attempts, a spec gap, a question): push what you have, comment on the issue with the failing output in full and the question, run gh issue edit $n --add-label human-action-required, and stop.
 "@
         if ($DryRun) {
