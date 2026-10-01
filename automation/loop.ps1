@@ -6,6 +6,7 @@ The unattended loop: one ready issue per session, fresh context, in the loop's o
 committing as the organisation's App. Reads loop.local.json beside this script (gitignored;
 loop.local.json.example is the shape). Run attended first:  .\loop.ps1 -Once
 Dry run, everything but the session:  .\loop.ps1 -Once -DryRun
+Re-read a past session's log into a usage record, nothing else:  .\loop.ps1 -Replay <log>
 Stop a running loop before its next iteration:  New-Item <base>\state\stop-requested
 Every session appends one JSON line to <base>\state\sessions.jsonl.
 
@@ -15,6 +16,7 @@ usage-limit scheduling. A usage limit ends the loop with the message on screen.
 param(
     [switch]$Once,
     [switch]$DryRun,
+    [string]$Replay,
     [int]$MaxIterations = 20,
     [int]$SessionMinutes = 120
 )
@@ -115,9 +117,69 @@ function Set-BoardStatus([int]$n, [string]$status) {
     }
 }
 
-function Write-SessionLine([hashtable]$h) {
-    $h.at = (Get-Date).ToUniversalTime().ToString("o")
-    ($h | ConvertTo-Json -Compress) | Add-Content $sessionsLog
+# The session's stream-json log is the record of what it cost: the result line carries
+# token counts, cost, turns and per-model usage; each assistant message carries the prompt it
+# paid for, whose maximum is the peak context, which is what tells a bloated context from a
+# long task; the rate-limit events carry the five-hour and seven-day utilisation, which on
+# a subscription is the budget. Ported from the second attempt's loop, where these fields
+# were what the cost-per-item analysis ran on.
+function Get-Field($o, [string]$name) { if ($null -ne $o -and $o.PSObject.Properties[$name]) { $o.$name } else { $null } }
+
+function Read-SessionLog([string]$path) {
+    $r = @{ Result = $null; PeakContext = [int64]0; RateLimit = $null }
+    if (-not (Test-Path $path)) { return $r }
+    foreach ($line in Get-Content $path) {
+        if (-not $line.StartsWith("{")) { continue }
+        try { $m = $line | ConvertFrom-Json } catch { continue }
+        switch (Get-Field $m type) {
+            "assistant" {
+                $u = Get-Field (Get-Field $m message) usage
+                $c = [int64](Get-Field $u input_tokens) + [int64](Get-Field $u cache_read_input_tokens) + [int64](Get-Field $u cache_creation_input_tokens)
+                if ($c -gt $r.PeakContext) { $r.PeakContext = $c }
+            }
+            "rate_limit_event" { $r.RateLimit = Get-Field $m rate_limit_info }
+            "result" { $r.Result = $m }
+        }
+    }
+    $r
+}
+
+# One JSON line per session, a complete figure each: summing lines never double-counts.
+function New-UsageRecord([hashtable]$h, [string]$logPath) {
+    $s = Read-SessionLog $logPath
+    $res = $s.Result; $u = Get-Field $res usage
+    $models = [ordered]@{}
+    $mu = Get-Field $res modelUsage
+    if ($mu) {
+        foreach ($p in $mu.PSObject.Properties | Sort-Object Name) {
+            $models[$p.Name] = [ordered]@{ in = [int64](Get-Field $p.Value inputTokens); out = [int64](Get-Field $p.Value outputTokens)
+                                           cache_read = [int64](Get-Field $p.Value cacheReadInputTokens); cost = [math]::Round([double](Get-Field $p.Value costUSD), 4) }
+        }
+    }
+    $w = Get-Field $s.RateLimit unifiedWindows
+    $rec = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString("o") }
+    foreach ($k in $h.Keys) { $rec[$k] = $h[$k] }
+    $rec.session_id = [string](Get-Field $res session_id)
+    $rec.turns = [int](Get-Field $res num_turns)
+    $rec.seconds = [int]([int64](Get-Field $res duration_ms) / 1000)
+    $rec.in = [int64](Get-Field $u input_tokens); $rec.cache_write = [int64](Get-Field $u cache_creation_input_tokens)
+    $rec.cache_read = [int64](Get-Field $u cache_read_input_tokens); $rec.out = [int64](Get-Field $u output_tokens)
+    $rec.thinking = [int64](Get-Field (Get-Field $u output_tokens_details) thinking_tokens)
+    $rec.peak_context = $s.PeakContext
+    $rec.cost = [math]::Round([double](Get-Field $res total_cost_usd), 4)
+    $rec.models = $models
+    $rec.subagents = [int](Get-Field (Get-Field $res subagent_stats) spawned)
+    $rec.five_hour = [double](Get-Field (Get-Field $w five_hour) utilization)
+    $rec.seven_day = [double](Get-Field (Get-Field $w seven_day) utilization)
+    $rec.log = $logPath
+    $rec
+}
+
+function Write-SessionLine([hashtable]$h, [string]$logPath) {
+    $rec = New-UsageRecord $h $logPath
+    ($rec | ConvertTo-Json -Compress -Depth 4) | Add-Content $sessionsLog
+    Log ("#{0}: {1}: {2} turns, {3}s, in={4} cache_read={5} out={6} peak={7}k cost=`${8} 5h={9}% 7d={10}%" -f $rec.issue, $rec.outcome, $rec.turns, $rec.seconds,
+        ($rec.in + $rec.cache_write), $rec.cache_read, $rec.out, [int]($rec.peak_context / 1000), $rec.cost, [int]($rec.five_hour * 100), [int]($rec.seven_day * 100))
 }
 
 function Invoke-Session([object]$issue) {
@@ -200,12 +262,10 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         } finally { Pop-Location }
         $env:GH_TOKEN = Get-Token
         $text = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
-        $cost = [regex]::Match($text, '"total_cost_usd"\s*:\s*([0-9.]+)').Groups[1].Value
         if ($text -match '(?i)usage limit|rate limit') { $outcome = "limit-hit" }
         if (Test-Path (Join-Path $clone ".helios-stop-red")) { $outcome = "stopped-red" }
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
-        Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; minutes = [math]::Round(((Get-Date) - $started).TotalMinutes, 1); cost = $cost; pr = $pr; model = $config.model; log = $log }
-        Log "issue #${n}: $outcome$(if ($pr) { ", PR #$pr" }) ($cost USD)"
+        Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $config.effort } $log
         if ($pr) { Set-BoardStatus $n "Review" }
         # A session that cannot speak for itself gets the loop to say why on the issue.
         $why = switch ($outcome) {
@@ -225,6 +285,10 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 }
 
 # ---- main ----
+if ($Replay) {
+    (New-UsageRecord @{ issue = 0; outcome = "replay"; model = $config.model; effort = $config.effort } $Replay | ConvertTo-Json -Depth 4)
+    exit 0
+}
 $env:GH_TOKEN = Get-Token
 Initialize-Clone
 $i = 0
