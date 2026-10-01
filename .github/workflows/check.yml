@@ -74,4 +74,12 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # main holds releases and what GitHub reads from the default branch, nothing else: a
+      # pull request into it comes from development, a release or hotfix branch, or a
+      # github/* branch carrying .github/ into step. A stranger's PR defaults to main and
+      # is refused here, not merged by accident.
+      - if: github.base_ref == 'main' && !(github.head_ref == 'development' || startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/') || startsWith(github.head_ref, 'github/'))
+        run: |
+          echo "::error::a pull request into main comes from development, release/*, hotfix/* or github/*, not ${{ github.head_ref }}"
+          exit 1
       - run: test "${{ needs.run.result }}" = success

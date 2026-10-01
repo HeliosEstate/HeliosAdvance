@@ -53,6 +53,13 @@ done
 pointers=$(git ls-files '*.go' | grep -v '_test\.go$' | xargs -r grep -niE '//.*[^[:alpha:]](line|step) [0-9]+' || true)
 [ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
 
+# 4d. GitHub reads .github/ from the default branch, main, so a merge into main must bring
+# development's copy with it. Keyed on the base: a PR to development is never blocked by main
+# being stale; a PR to main is blocked until .github/ is in step.
+if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
+  git diff --quiet origin/development HEAD -- .github || { git diff --stat origin/development HEAD -- .github; fail ".github/ differs from development; main must carry development's copy"; }
+fi
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ]; then
