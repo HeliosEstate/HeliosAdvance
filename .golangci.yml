@@ -47,8 +47,6 @@ linters:
           deny:
             - pkg: math/rand
               desc: use crypto/rand
-            - pkg: log
-              desc: use log/slog, structured
         # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
         # A new arrow is a new line here, in the same PR, with its reason.
         board:
@@ -109,11 +107,19 @@ linters:
             - $gostd
             - github.com/heliosestate/heliosadvance/internal/audit
             - github.com/heliosestate/heliosadvance/internal/board
+        transfer:
+          files: ["**/internal/transfer/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/transfer
     forbidigo:
       analyze-types: true
       forbid:
         - pattern: ^fmt\.Print(f|ln)?$
           msg: use log/slog
+        - pattern: ^log\.(Print|Printf|Println|Fatal|Fatalf|Fatalln|Panic|Panicf|Panicln)$
+          msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
           msg: bound the read (io.LimitReader) before draining it
         - pattern: ^os\.(Getenv|LookupEnv)$
@@ -153,6 +159,16 @@ linters:
       - path: _test\.go
         linters: [forbidigo]
         text: io\.ReadAll
+      # A test may drop an error on purpose, written as a blank assignment so the drop is
+      # visible; the check-blank rule is for production code.
+      - path: _test\.go
+        linters: [errcheck]
+        source: '(^\s*|[{;] )(_|_, _) = '
+      # A test launches the oracle and reads the files it made; gosec's subprocess and
+      # path warnings are the test doing its job.
+      - path: _test\.go
+        linters: [gosec]
+        text: G(204|304|703)
 
 formatters:
   enable:
