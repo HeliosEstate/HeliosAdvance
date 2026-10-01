@@ -11,7 +11,7 @@ and a contract disagree, the contract is right and this page is fixed.
 | Unit | Owns | Uses |
 |---|---|---|
 | `board` | The identifiers every unit shares: `ServerID`, `AccountID`, `RoleID`. Nothing else, so no unit imports another for a type. | nothing |
-| `database` | What every unit that goes to the database shares: `ErrUnavailable`, `Tx`. The rest is the database-access unit's, not yet designed. | nothing |
+| `database` | What every unit that goes to the database shares: `ErrUnavailable`, `Transaction`. The rest is the database-access unit's, not yet designed. | nothing |
 | `audit` | The record of operator actions: who, what, to which server or setting, before and after, on the database's UTC clock. Written inside the change's transaction. Read by tools only. | `board`, `database` |
 | `registry` | The servers of one board: ID, display name, version, admitted or removed. Admission at start with the one-minor version check; removal as a mark; the board's minimum version. | `audit`, `board` |
 | `lease` | Liveness: one row per server on the database's clock, a generation per acquisition, expiry computed by readers. The refusal protocol the engine follows is on `RenewalResult`. | `board` |
