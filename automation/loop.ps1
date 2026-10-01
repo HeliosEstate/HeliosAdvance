@@ -73,7 +73,7 @@ function Initialize-Clone {
     }
     Invoke-Git config user.name $identity | Out-Null
     Invoke-Git config user.email $email | Out-Null
-    $helper = (Join-Path $PSScriptRoot "bin\git-credential-app") -replace '\', '/'
+    $helper = (Join-Path $PSScriptRoot 'bin' 'git-credential-app').Replace([char]92, '/')
     Invoke-Git config credential.helper "!'$helper'" | Out-Null
     Invoke-Git fetch --quiet --prune origin | Out-Null
 }
@@ -125,10 +125,11 @@ function Invoke-Session([object]$issue) {
     $branch = Get-IssueBranch $n $issue.body
     Log "issue #${n} on $branch"
     gh issue edit $n -R "$owner/$repo" --add-label $claimLabel | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "could not claim #${n}: does the label $claimLabel exist?" }
     # Two loops can add their labels in the same second. The timeline is the referee: of
     # the claim labels now on the issue, the one whose latest "labeled" event is earliest
     # wins; the other removes its label and takes the next issue.
-    $present = (gh issue view $n -R "$owner/$repo" --json labels --jq '[.labels[].name | select(startswith("claimed:"))]' | ConvertFrom-Json)
+    $present = @(gh issue view $n -R "$owner/$repo" --json labels --jq '[.labels[].name | select(startswith("claimed:"))]' | ConvertFrom-Json)
     if ($present.Count -gt 1) {
         $events = gh api "repos/$owner/$repo/issues/$n/timeline" --paginate `
             --jq '[.[] | select(.event=="labeled" and (.label.name|startswith("claimed:"))) | {n:.label.name, t:.created_at}] | group_by(.n) | map(max_by(.t))' | ConvertFrom-Json
