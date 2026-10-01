@@ -37,7 +37,13 @@ func oracle(t *testing.T, dir string, args ...string) (*line, func() (string, er
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatal("docker is required: the oracle is lrzsz in a container, and a skipped oracle is a vacuous pass")
 	}
-	full := append([]string{"run", "--rm", "-i", "-v", dir + ":/data", "-w", "/data", image}, args...)
+	full := []string{"run", "--rm", "-i", "-v", dir + ":/data", "-w", "/data"}
+	if uid := os.Getuid(); uid >= 0 {
+		// On Unix the container would otherwise write as root into our temp dir, and we
+		// could not read what rz stored. Windows mounts are open and Getuid is -1 there.
+		full = append(full, "--user", fmt.Sprintf("%d:%d", uid, os.Getgid()))
+	}
+	full = append(append(full, image), args...)
 	cmd := exec.CommandContext(t.Context(), "docker", full...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
