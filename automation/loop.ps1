@@ -125,6 +125,23 @@ function Get-NextReview {
         Sort-Object number | Select-Object -First 1
 }
 
+# "Closes #n" closes an issue only when the PR merges into the default branch, and the
+# loop's PRs merge into development. So the loop closes its own: every merged PR of its
+# that names an issue still open gets the issue closed, with the PR named, and the board
+# column moved to Done. Runs at every start, dry runs included.
+function Close-MergedIssues {
+    $merged = @(gh pr list -R "$owner/$repo" --author "app/$slug" --state merged --json number,body --limit 30 | ConvertFrom-Json)
+    foreach ($pr in $merged) {
+        $m = [regex]::Match([string]$pr.body, '(?i)closes #(\d+)')
+        if (-not $m.Success) { continue }
+        $n = [int]$m.Groups[1].Value
+        if ((gh issue view $n -R "$owner/$repo" --json state --jq .state) -ne 'OPEN') { continue }
+        gh issue close $n -R "$owner/$repo" --comment "Merged in #$($pr.number) into development; closed by the loop, since a merge into a non-default branch does not close an issue by itself." | Out-Null
+        Set-BoardStatus $n "Done"
+        Log "issue #${n}: closed, merged in PR #$($pr.number)"
+    }
+}
+
 function Get-IssueBranch([int]$n, [string]$body) {
     $m = [regex]::Match($body, '`feature/issue-' + $n + '-[a-z0-9-]+`')
     if ($m.Success) { return $m.Value.Trim('`') }
@@ -379,6 +396,7 @@ if ($Replay) {
 }
 $env:GH_TOKEN = Get-Token
 Initialize-Clone
+Close-MergedIssues
 $i = 0
 while ($i -lt $MaxIterations) {
     if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
