@@ -190,30 +190,47 @@ type frameResult struct {
 func (s *session) watch(ctx context.Context, out chan<- frameResult) {
 	for {
 		h, _, ok, err := readFrame(ctx, s.src, s.timeout)
-		if ctx.Err() != nil {
-			return
-		}
 		if err != nil {
-			if errors.Is(err, ErrTimeout) {
+			switch {
+			case errors.Is(err, ErrTimeout):
+				if ctx.Err() != nil {
+					return
+				}
+				continue
+			case errors.Is(err, ErrCancelled):
+				// readByte returns this only when ctx itself was cancelled: our own
+				// teardown via stopWatch, or the caller's s.ctx, which streamOneFrame's
+				// main loop already watches directly. Either way it is never something
+				// the far end sent, so there is nothing to deliver.
+				return
+			default:
+				deliver(ctx, out, frameResult{err: err})
+				if errors.Is(err, errGotCancel) || errors.Is(err, io.EOF) {
+					return
+				}
 				continue
 			}
-			select {
-			case out <- frameResult{err: err}:
-			case <-ctx.Done():
-			}
-			if errors.Is(err, errGotCancel) || errors.Is(err, io.EOF) {
-				return
-			}
-			continue
 		}
 		if !ok {
 			continue
 		}
-		select {
-		case out <- frameResult{h: h}:
-		case <-ctx.Done():
-			return
-		}
+		deliver(ctx, out, frameResult{h: h})
+	}
+}
+
+// deliver sends fr to out, trying a non-blocking send first so an already-decoded frame
+// is never lost to a simultaneous ctx cancellation: select picks uniformly among ready
+// cases, so without this, a frame arriving the instant the main loop stops reading could
+// be silently dropped half the time instead of landing in the channel's open buffer.
+func deliver(ctx context.Context, out chan<- frameResult, fr frameResult) {
+	select {
+	case out <- fr:
+		return
+	default:
+	}
+	select {
+	case out <- fr:
+	case <-ctx.Done():
 	}
 }
 
@@ -240,17 +257,8 @@ func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name str
 			s.cancelPeer()
 			return false, ErrCancelled
 		case fr := <-frames:
-			switch {
-			case fr.err != nil && (errors.Is(fr.err, errGotCancel) || errors.Is(fr.err, ErrCancelled)):
-				return false, ErrCancelled
-			case fr.err == nil && fr.h.typ == zrpos:
-				if p := fr.h.position(); p >= 0 && p <= size {
-					*offset = p
-					if _, err := f.Seek(*offset, io.SeekStart); err != nil {
-						return false, err
-					}
-					return true, nil
-				}
+			if restart, ferr, handled := s.handleFrame(fr, f, offset, size); handled {
+				return restart, ferr
 			}
 			continue
 		default:
@@ -274,5 +282,39 @@ func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name str
 			s.opt.Progress(Progress{Name: name, Done: *offset, Total: size})
 		}
 	}
-	return false, nil
+
+	// The far end's ZRPOS for this frame's last subpacket, if it found one corrupt, can
+	// still be in flight the instant *offset reaches size; stop the watcher and drain
+	// what it already decoded before declaring the frame finished, or that answer is
+	// lost and the caller's ZEOF goes to a far end that is still expecting a resend.
+	stopWatch()
+	for {
+		select {
+		case fr := <-frames:
+			if restart, ferr, handled := s.handleFrame(fr, f, offset, size); handled {
+				return restart, ferr
+			}
+		default:
+			return false, nil
+		}
+	}
+}
+
+// handleFrame applies one frame the watcher picked up: a cancel ends the transfer, a
+// ZRPOS naming a different position means the far end found this frame corrupt and the
+// stream must restart there; anything else is noise the caller ignores.
+func (s *session) handleFrame(fr frameResult, f *os.File, offset *int64, size int64) (restart bool, err error, handled bool) {
+	switch {
+	case fr.err != nil && (errors.Is(fr.err, errGotCancel) || errors.Is(fr.err, ErrCancelled)):
+		return false, ErrCancelled, true
+	case fr.err == nil && fr.h.typ == zrpos:
+		if p := fr.h.position(); p >= 0 && p <= size {
+			*offset = p
+			if _, err := f.Seek(*offset, io.SeekStart); err != nil {
+				return false, err, true
+			}
+			return true, nil, true
+		}
+	}
+	return false, nil, false
 }
