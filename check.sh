@@ -18,9 +18,10 @@ if [ -d docs/spec ]; then
   [ -z "$hits" ] || { echo "$hits"; fail "docs/spec names the implementation"; }
 fi
 
-# 3. Developer-owned paths are not touched by a bot-authored commit.
+# 3. Developer-owned paths are not touched by a bot-authored commit. automation/ is the
+# loop's own driver: a session may not change the process that runs it.
 if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features '*/contract.go' | grep '\[bot\]@' || true)
+  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features automation '*/contract.go' | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
@@ -52,6 +53,13 @@ done
 # are exempt: a row names the behaviour line it proves.
 pointers=$(git ls-files '*.go' | grep -v '_test\.go$' | xargs -r grep -niE '//.*[^[:alpha:]](line|step) [0-9]+' || true)
 [ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
+
+# 4d. GitHub reads .github/ from the default branch, main, so a merge into main must bring
+# development's copy with it. Keyed on the base: a PR to development is never blocked by main
+# being stale; a PR to main is blocked until .github/ is in step.
+if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
+  git diff --quiet origin/development HEAD -- .github || { git diff --stat origin/development HEAD -- .github; fail ".github/ differs from development; main must carry development's copy"; }
+fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
