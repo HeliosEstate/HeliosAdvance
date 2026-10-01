@@ -334,10 +334,10 @@ if ((git -C $here branch --show-current) -eq "development") {
     if ((git -C $here rev-parse HEAD) -ne $before -and (git -C $here diff --name-only $before HEAD -- automation) ) {
         Log "automation changed on development; starting again on the new script"
         # A native command takes strings, not a splatted hashtable: rebuild the arguments.
-        $again = foreach ($name in $PSBoundParameters.Keys) {
+        [string[]]$again = @(foreach ($name in $PSBoundParameters.Keys) {
             "-$name"
             if ($PSBoundParameters[$name] -isnot [switch]) { "$($PSBoundParameters[$name])" }
-        }
+        })
         & pwsh -NoProfile -File $PSCommandPath @again
         exit $LASTEXITCODE
     }
