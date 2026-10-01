@@ -25,13 +25,16 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
-// Scope is whether a setting is one value for the board or one per server.
+// Scope is whether a setting is one value for the board, one per server, or one per
+// role. A role-scoped setting may be set on any role, grant roles included; a feature
+// reads it for an account's primary role only, never for its grants.
 type Scope uint8
 
 // Scopes.
 const (
 	Board Scope = iota + 1
 	Server
+	Role
 )
 
 // Kind is the type of a setting's value. There are four and no more: a list or a
@@ -65,11 +68,13 @@ type Declaration struct {
 	NeedsRestart bool
 }
 
-// Target names a value: a setting, and for a per-server one, the server. ServerID is 0
-// for a board-wide setting and refused (WrongScope) if given for one.
+// Target names a value: a setting, and for a per-server or per-role one, the server or
+// the role. Both are 0 for a board-wide setting; the wrong one given is refused
+// (WrongScope).
 type Target struct {
 	Name   string
 	Server board.ServerID
+	Role   board.RoleID
 }
 
 // SetResult is the outcome of Set or Clear.
