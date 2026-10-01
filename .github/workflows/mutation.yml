@@ -1,0 +1,42 @@
+# Mutation testing, nightly, on what changed in the last day. It proves the approved tests
+# detect broken code, which is the check on the oracle itself. It is not on the PR path
+# because the oracle tests cost twenty-five seconds a run and a package's worth of mutants
+# is hours; a red run here is read the next morning, not waited for.
+name: mutation
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: development
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install gates
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Build the oracles
+        run: for d in oracle/*/; do docker build -q -t "heliosestate/$(basename "$d")-oracle:0.1" "$d"; done
+      - name: Mutate the last day's changes
+        env:
+          RACE: -race
+        run: |
+          base=$(git rev-list -1 --before="24 hours ago" origin/development)
+          if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then echo "nothing changed in the last day"; exit 0; fi
+          echo "mutating $base..HEAD"
+          BASE="$base" bash check.sh --mutation
