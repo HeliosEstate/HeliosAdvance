@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -596,6 +597,9 @@ func TestRemoteCommandRefused(t *testing.T) {
 func TestCommand(t *testing.T) {
 	t.Parallel()
 	bin := filepath.Join(t.TempDir(), "hadv-transfer")
+	if runtime.GOOS == "windows" {
+		bin += ".exe" // exec refuses a path with no extension on Windows
+	}
 	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-transfer")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building hadv-transfer: %v\n%s", err, out)
