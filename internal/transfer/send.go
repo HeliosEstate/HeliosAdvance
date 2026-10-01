@@ -218,10 +218,21 @@ func (s *session) watch(ctx context.Context, out chan<- frameResult) {
 }
 
 func (s *session) streamOneFrame(f *os.File, offset *int64, size int64, name string, buf []byte) (restart bool, err error) {
-	watchCtx, stopWatch := context.WithCancel(s.ctx)
-	defer stopWatch()
+	watchCtx, cancelWatch := context.WithCancel(s.ctx)
+	done := make(chan struct{})
 	frames := make(chan frameResult, 4)
-	go s.watch(watchCtx, frames)
+	go func() {
+		defer close(done)
+		s.watch(watchCtx, frames)
+	}()
+	// The watcher and the rest of the session both read s.src; cancelling isn't enough
+	// on its own; stopWatch must also wait for the goroutine to actually stop reading,
+	// or it can still take the next byte the caller needs right after this returns.
+	stopWatch := func() {
+		cancelWatch()
+		<-done
+	}
+	defer stopWatch()
 
 	for *offset < size {
 		select {
