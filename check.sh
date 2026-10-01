@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The only definition of green. Every gate tolerates an empty repository and says so.
-# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, EFFICACY
+# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER, EFFICACY
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -47,16 +47,23 @@ for f in $(git ls-files '*_test.go'); do
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
 done
 
+# 4c. A comment never carries a line number or a step number: both drift silently. Attempt
+# one measured 66 drifted line numbers and 154 dead citations in its docs. Approved tests
+# are exempt: a row names the behaviour line it proves.
+pointers=$(git ls-files '*.go' | grep -v '_test\.go$' | xargs -r grep -niE '//.*[^[:alpha:]](line|step) [0-9]+' || true)
+[ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
   need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
+  go mod verify
   go build ./...
   go vet ./...
   golangci-lint run ./...
   go run ./tools/namecheck .
-  go test ${RACE:-} -count=1 ./...
+  go test ${RACE:-} ${COVER:-} -count=1 ./...
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
