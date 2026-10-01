@@ -30,6 +30,15 @@ if [ -n "$qa" ]; then
   changed=$(git diff --name-only --diff-filter=MD "$qa" HEAD -- '*_test.go' || true)
   [ -z "$changed" ] || { echo "$changed"; fail "test files approved at ${qa:0:8} were changed or deleted"; }
 fi
+# 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
+# file already on the base is locked for every branch: only a QA commit may change or delete it.
+if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
+  for f in $(git diff --name-only --diff-filter=MD "$BASE...HEAD" -- '*_test.go'); do
+    nonqa=$(for c in $(git log --format=%H "$BASE..HEAD" -- "$f"); do
+      git log -1 --format=%B "$c" | grep -q '^Helios-Role: qa$' || echo "$c"; done)
+    [ -z "$nonqa" ] || { echo "$f: $nonqa"; fail "a test file on $BASE was changed or deleted by a non-QA commit"; }
+  done
+fi
 # 4b. A test file not from a QA commit may not run before the approved ones.
 for f in $(git ls-files '*_test.go'); do
   last=$(git log -1 --format=%H -- "$f")
