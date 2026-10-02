@@ -9,5 +9,7 @@
   "model": "claude-sonnet-5",
   "effort": "high",
   "assignee": "your-github-login",
-  "project": 1
+  "project": 1,
+  "maxFiveHour": 0.9,
+  "maxSevenDay": 0.8
 }
