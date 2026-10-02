@@ -1,7 +1,8 @@
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Edit|Write", "hooks": [ { "type": "command", "command": "bash .claude/hooks/lock.sh" } ] }
+      { "matcher": "Edit|Write", "hooks": [ { "type": "command", "command": "bash .claude/hooks/lock.sh" } ] },
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash .claude/hooks/git-gate.sh" } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
