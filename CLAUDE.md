@@ -45,6 +45,8 @@ edit a test to make it pass; never guess at a spec gap; never file new work.
 - Anything read from a network or a file has a size bound.
 - A comment says why (a constraint, a unit, a gotcha, a magic value's source); never what,
   never a step number, never a line number, never a bare pointer to a spec.
+- Public text, code to comments, describes another program only by its documentation and its
+  observed behaviour, never its code, file names or internal names.
 - Names read without knowing abbreviations, Pascal-verbose: `sessionID`, not `sid`. An
   abbreviation passes only if everyone knows it, not only Go developers (`rw`, `tx`, `fd`); `tools/namecheck` fails
   anything under three characters off its list. Flag names on a command line may be short.
