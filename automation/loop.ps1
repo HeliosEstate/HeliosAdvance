@@ -56,6 +56,8 @@ $claimLabel = "claimed:$slug"
 # are theirs, not the bot's.
 $assignee = $config.assignee
 $project = $config.project
+# The effort, when the config names one; absent or empty means the model's own default.
+$effort = if ($config.PSObject.Properties['effort']) { [string]$config.effort } else { "" }
 $email = "$($config.appId)+$slug[bot]@users.noreply.github.com"
 $clone = Join-Path $base $repo
 $stateDir = Join-Path $base "state"
@@ -406,14 +408,17 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
         $env:GIT_COMMITTER_NAME = $identity; $env:GIT_COMMITTER_EMAIL = $email
         $log = Join-Path $stateDir "session-$n-$(Get-Date -Format yyyyMMdd-HHmmss).log"
         # Auto mode: a server-side classifier refuses a dangerous action (a destructive git command,
-# an organisation setting, a private key on its way out) and lets build work through. A
-# refusal ends with the session explaining, which the out-of-road path already handles.
-# Bypass was the previous choice; the CLI itself recommends it only for an offline sandbox.
-$claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
-    # A one-shot session has no later to wake into: a waiting tool ends it mid-work (#51's
-    # first session called ScheduleWakeup and stopped with its fix uncommitted). It waits on a
-    # foreground command instead.
-    "--disallowedTools", "ScheduleWakeup Monitor CronCreate CronDelete CronList")
+        # an organisation setting, a private key on its way out) and lets build work through. A
+        # refusal ends with the session explaining, which the out-of-road path already handles.
+        # Bypass was the previous choice; the CLI itself recommends it only for an offline sandbox.
+        $claudeArgs = @("-p", "--model", $config.model, "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
+            # A one-shot session has no later to wake into: a waiting tool ends it mid-work (#51's
+            # first session called ScheduleWakeup and stopped with its fix uncommitted). It waits
+            # on a foreground command instead.
+            "--disallowedTools", "ScheduleWakeup Monitor CronCreate CronDelete CronList")
+        # No effort configured means the model's own default, the one Anthropic recommends,
+        # which stays right when a new model ships with a different one (developer, 2026-10-02).
+        if ($effort) { $claudeArgs += @("--effort", $effort) }
         $started = Get-Date
         Push-Location $clone
         try {
@@ -454,7 +459,7 @@ $claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--o
             $flagged = gh issue view $n -R "$owner/$repo" --json labels --jq '[.labels[].name] | index("human-action-required") != null'
             if ($flagged -ne "true") { $outcome = "ended-short" }
         }
-        Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $config.effort } $log
+        Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $(if ($effort) { $effort } else { "default" }) } $log
         if ($pr) { Set-BoardStatus $n "Review" }
         # A session that cannot speak for itself gets the loop to say why on the issue.
         $why = switch ($outcome) {
@@ -497,7 +502,7 @@ if ((git -C $here branch --show-current) -eq "development") {
     }
 }
 if ($Replay) {
-    (New-UsageRecord @{ issue = 0; outcome = "replay"; model = $config.model; effort = $config.effort } $Replay | ConvertTo-Json -Depth 4)
+    (New-UsageRecord @{ issue = 0; outcome = "replay"; model = $config.model; effort = $(if ($effort) { $effort } else { "default" }) } $Replay | ConvertTo-Json -Depth 4)
     exit 0
 }
 if ($Scheduled) { Start-Transcript -Path (Join-Path $stateDir "loop.log") -Append | Out-Null }
