@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command hadv-transfer sends or receives files over stdin and stdout with the options
+// Command hadv-xyz sends or receives files over stdin and stdout with the options
 // lrzsz takes, so it can stand in for sz or rz; the approved tests drive it with those flags.
 package main
 
