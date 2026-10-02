@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# The session's gh: a fresh App token on every call, so a session that outlives the token's
-# hour keeps its hands. loop.ps1 puts this directory first on PATH and names the real gh.
-export GH_TOKEN="$(pwsh -NoProfile -File "$HELIOS_AUTOMATION/app-token.ps1")"
-exec "$HELIOS_GH" "$@"
