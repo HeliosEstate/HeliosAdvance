@@ -599,16 +599,16 @@ func TestRemoteCommandRefused(t *testing.T) {
 	}
 }
 
-// Line 13: hadv-transfer stands in for sz or rz over stdin and stdout.
+// Line 13: hadv-xyz stands in for sz or rz over stdin and stdout.
 func TestCommand(t *testing.T) {
 	t.Parallel()
-	bin := filepath.Join(t.TempDir(), "hadv-transfer")
+	bin := filepath.Join(t.TempDir(), "hadv-xyz")
 	if runtime.GOOS == "windows" {
 		bin += ".exe" // exec refuses a path with no extension on Windows
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-transfer")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-xyz")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building hadv-transfer: %v\n%s", err, out)
+		t.Fatalf("building hadv-xyz: %v\n%s", err, out)
 	}
 	t.Run("as sz", func(t *testing.T) {
 		t.Parallel()
@@ -661,6 +661,6 @@ func bridge(t *testing.T, cmd *exec.Cmd, far *line) {
 	go func() { _, _ = io.Copy(far, stdout); _ = far.Close() }()
 	go func() { _, _ = io.Copy(stdin, far); _ = stdin.Close() }()
 	if err := cmd.Wait(); err != nil {
-		t.Fatalf("hadv-transfer exited %v: %s", err, stderr.String())
+		t.Fatalf("hadv-xyz exited %v: %s", err, stderr.String())
 	}
 }
