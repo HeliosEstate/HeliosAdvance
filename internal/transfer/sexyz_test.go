@@ -247,13 +247,17 @@ func TestSexyzZMODEMOptions(t *testing.T) {
 }
 
 // #13 line 7, the half sexyz can drive: a frame corrupted on the way to us is
-// retransmitted from the last good position when we ask. sexyz has no --errors.
+// retransmitted from the last good position when we ask. sexyz has no --errors. One flip
+// every 30,000 bytes, six errors, where the lrzsz row has one every 9,000: sexyz takes
+// about two seconds to recover from each error by its own design (lrzsz's own rz needs
+// 142 seconds for the 9,000 shape against it, measured 2026-10-01), so twenty-two errors
+// never fit the bound and six do, with room. A receiver that stalls sexyz still fails here.
 func TestSexyzCorruption(t *testing.T) {
 	t.Parallel()
 	far, recv := t.TempDir(), t.TempDir()
 	src := mustWriteRandom(t, far, "noisy.bin", 200_000, mtime)
 	farEnd, wait := sexyz(t, far, "sz", "noisy.bin")
-	bad := &corrupting{Reader: farEnd, WriteCloser: farEnd, every: 9000, skip: 200}
+	bad := &corrupting{Reader: farEnd, WriteCloser: farEnd, every: 30_000, skip: 200}
 	got, err := transfer.Receive(within(t), bad, recv, transfer.Options{})
 	if err != nil {
 		t.Fatalf("Receive over corruption: %v", err)
