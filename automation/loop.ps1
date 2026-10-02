@@ -10,21 +10,33 @@ Two clones under the base, neither the developer's: <base>\loop is this script's
 checkout of development, which it fast-forwards before every start and runs from, so the
 driver never changes under a session and the developer's checkout is never touched;
 <base>\<repo> is the session's clone, on whatever issue branch is being built.
-Run attended first:  pwsh <base>\looputomation\loop.ps1 -Once
+Run attended first:  pwsh <base>\loop\automation\loop.ps1 -Once
 Dry run, everything but the session:  .\loop.ps1 -Once -DryRun
 Re-read a past session's log into a usage record, nothing else:  .\loop.ps1 -Replay <log>
 Stop a running loop before its next iteration:  New-Item <base>\state\stop-requested
 Every session appends one JSON line to <base>\state\sessions.jsonl.
 
-What it does not do, on purpose, until a run demands it: model tiers, escalation. A usage
-limit is read for its reset time; the loop waits for it and runs the same issue again.
+Scheduled:  .\loop.ps1 -Scheduled   once by hand; from then on it keeps itself going. Every
+scheduled run ends by setting one fixed-name task for its next run: at a usage limit's reset,
+in 15 minutes when there is no work, in a minute when the iteration cap is reached. No
+recurring timer, so a run never starts beside another; a lock file covers a hand start. Before
+claiming anything it reads the last recorded five-hour and weekly use and holds until the
+reset when either is past its threshold (loop.local.json: maxFiveHour, maxSevenDay; 0.9 and
+0.8 when absent). Use is a fraction of the current plan, so Pro and Max need nothing changed.
+The stop file ends the chain: the run that finds it removes the pending task.
+Ported from attempts one and two (Invoke-Claude.ps1, the old automation/loop.ps1).
+
+What it does not do, on purpose, until a run demands it: model tiers, escalation.
 #>
 param(
     [switch]$Once,
     [switch]$DryRun,
     [string]$Replay,
     [int]$MaxIterations = 20,
-    [int]$SessionMinutes = 120
+    [int]$SessionMinutes = 120,
+    # Started by its own scheduled task: logs to <base>\state\loop.log and ends by scheduling
+    # its next run. Without it the loop runs once by hand and schedules nothing.
+    [switch]$Scheduled
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -49,6 +61,13 @@ $clone = Join-Path $base $repo
 $stateDir = Join-Path $base "state"
 $stopFile = Join-Path $stateDir "stop-requested"
 $sessionsLog = Join-Path $stateDir "sessions.jsonl"
+$lockFile = Join-Path $stateDir "loop.lock"
+# The task that starts the next scheduled run: one name per loop, overwritten in place.
+$taskName = "helios-loop-$slug"
+# Use past these fractions of the plan holds the loop until the window resets, keeping the
+# rest for the developer's own sessions (developer, 2026-10-02).
+$maxFiveHour = if ($config.PSObject.Properties['maxFiveHour']) { [double]$config.maxFiveHour } else { 0.9 }
+$maxSevenDay = if ($config.PSObject.Properties['maxSevenDay']) { [double]$config.maxSevenDay } else { 0.8 }
 $null = New-Item -ItemType Directory -Force $base, $stateDir
 
 function Log([string]$m) { Write-Host "[loop $(Get-Date -Format HH:mm:ss)] $m" }
@@ -110,6 +129,7 @@ function Get-NextIssue {
     $rank = @{ Urgent = 0; High = 1; Medium = 2; Low = 3 }
     $issues | Where-Object { [int]$_.number -notin $inReview } |
         Where-Object { $_.author.login -eq $assignee } |
+        Where-Object { -not ($_.labels | Where-Object { $_.name -eq 'human-action-required' }) } |
         Where-Object { -not ($_.labels | Where-Object { $_.name -like 'claimed:*' }) } |
         Where-Object { -not ($_.assignees | Where-Object { $_.login -ne $assignee }) } |
         Sort-Object @{ Expression = { if ($_.milestone) { [int]$_.milestone.number } else { [int]::MaxValue } } },
@@ -229,22 +249,85 @@ function New-UsageRecord([hashtable]$h, [string]$logPath) {
     $rec.subagents = [int](Get-Field (Get-Field $res subagent_stats) spawned)
     $rec.five_hour = [double](Get-Field (Get-Field $w five_hour) utilization)
     $rec.seven_day = [double](Get-Field (Get-Field $w seven_day) utilization)
+    # Every window the event names, with its reset, for the next run's threshold check: the
+    # two known ones and any per-model window a session on another model reports.
+    $windows = [ordered]@{}
+    if ($w) {
+        foreach ($p in $w.PSObject.Properties) {
+            $windows[$p.Name] = [ordered]@{ utilization = [double](Get-Field $p.Value utilization); resets_at = [int64](Get-Field $p.Value resetsAt) }
+        }
+    }
+    $rec.windows = $windows
     $rec.log = $logPath
     $rec
 }
 
-# The limit message carries the reset time: "resets 11:30am (America/New_York)". Read it,
-# as today's local time or tomorrow's if it has passed; two minutes' grace. Nothing found
-# means an hour.
-function Get-ResetTime([string]$text) {
-    $m = [regex]::Match($text, '(?i)resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)')
-    if (-not $m.Success) { return (Get-Date).AddHours(1) }
-    $hour = [int]$m.Groups[1].Value % 12; if ($m.Groups[3].Value -ieq 'pm') { $hour += 12 }
-    $minute = if ($m.Groups[2].Success) { [int]$m.Groups[2].Value } else { 0 }
-    $when = (Get-Date).Date.AddHours($hour).AddMinutes($minute + 2)
-    if ($when -lt (Get-Date)) { $when = $when.AddDays(1) }
-    $when
+# When to run again after a usage limit. The session's own rate-limit event carries the
+# reset as Unix seconds, for the five-hour and the weekly window alike; that is the answer.
+# The message text is the fallback: "resets 3pm" today or tomorrow, "resets Oct 7, 3pm" with
+# its date (bare Parse misreads a year-less "Oct 7, 11pm"); then a week for a weekly limit,
+# five hours otherwise. Two minutes' grace throughout. Attempt two's Get-RetryTime.
+function Get-RetryTime([string]$text, [int64]$resetsAt) {
+    $now = Get-Date
+    if ($resetsAt -gt 0) {
+        $at = [DateTimeOffset]::FromUnixTimeSeconds($resetsAt).LocalDateTime
+        if ($at -gt $now) { return $at.AddMinutes(2) }
+    }
+    $m = [regex]::Match($text, '(?im)resets?(?:\s+at)?\s+(?<reset>[^()\r\n]+?)(?:\s*\([^)]+\))?[.\s]*$')
+    if ($m.Success) {
+        $resetText = $m.Groups['reset'].Value.Trim()
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        $parsed = $null
+        foreach ($fmt in @('htt', 'h:mmtt', 'HH:mm')) {
+            try { $parsed = $now.Date + [datetime]::ParseExact($resetText, $fmt, $culture).TimeOfDay; break } catch { $parsed = $null }
+        }
+        if (-not $parsed) {
+            foreach ($fmt in @('MMM d, htt', 'MMM d, h:mmtt', 'MMMM d, htt', 'MMMM d, h:mmtt')) {
+                try { $parsed = [datetime]::ParseExact("$resetText $($now.Year)", "$fmt yyyy", $culture); break } catch { $parsed = $null }
+            }
+        }
+        if ($parsed -and $parsed -le $now -and $parsed -gt $now.AddDays(-1)) { $parsed = $parsed.AddDays(1) }
+        if ($parsed -and $parsed -gt $now -and $parsed -le $now.AddDays(10)) { return $parsed.AddMinutes(2) }
+    }
+    if ($text -match '(?i)week') { return $now.AddDays(7) }
+    $now.AddHours(5).AddMinutes(2)
 }
+
+# The hold before claiming work: the last recorded use of any window past its threshold
+# holds the loop until that window resets. A record from before resets were kept, or a
+# window already reset, holds nothing.
+function Get-UsageHold {
+    if (-not (Test-Path $sessionsLog)) { return $null }
+    $last = Get-Content $sessionsLog -Tail 1 | ConvertFrom-Json
+    $windows = Get-Field $last windows
+    if (-not $windows) { return $null }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $hold = $null
+    foreach ($p in $windows.PSObject.Properties) {
+        $limit = if ($p.Name -eq 'five_hour') { $maxFiveHour } else { $maxSevenDay }
+        $resets = [int64](Get-Field $p.Value resets_at)
+        if ([double](Get-Field $p.Value utilization) -ge $limit -and $resets -gt $now) {
+            $at = [DateTimeOffset]::FromUnixTimeSeconds($resets).LocalDateTime.AddMinutes(2)
+            if (-not $hold -or $at -gt $hold) { $hold = $at; $script:holdReason = "$($p.Name) at $([int]([double](Get-Field $p.Value utilization) * 100))%" }
+        }
+    }
+    $hold
+}
+
+# The next scheduled run: one fixed-name task, created with schtasks.exe and overwritten in
+# place. schtasks, not the ScheduledTasks module: it works unelevated and survives a reboot
+# (attempt one). /IT runs it in the developer's logged-on session, where Docker and gh can
+# read the Credential Manager; pwsh by the path this run was started with, since the Store
+# edition's alias cannot be started by Task Scheduler. /SD takes the date in this machine's
+# short-date order; both loop machines are en-US.
+function Set-NextRun([datetime]$at) {
+    $pwsh = (Get-Process -Id $PID).Path
+    $action = "`"$pwsh`" -NoProfile -WindowStyle Hidden -File `"$PSCommandPath`" -Scheduled"
+    $out = & schtasks.exe /Create /TN $taskName /TR $action /SC ONCE /SD $at.ToString('MM/dd/yyyy') /ST $at.ToString('HH:mm') /IT /RU $env:USERNAME /F 2>&1
+    if ($LASTEXITCODE -eq 0) { Log "next run $($at.ToString('yyyy-MM-dd HH:mm'))" } else { Log "schtasks failed: $out" }
+}
+
+function Remove-NextRun { & schtasks.exe /Delete /TN $taskName /F 2>&1 | Out-Null }
 
 function Write-SessionLine([hashtable]$h, [string]$logPath) {
     $rec = New-UsageRecord $h $logPath
@@ -361,6 +444,7 @@ $claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--o
         $resultText = [string](Get-Field $parsed.Result result)
         if (($parsed.Result -and ((Get-Field $parsed.Result is_error) -eq $true -or $resultText -match $limitPattern)) -or (-not $parsed.Result -and $tailText -match $limitPattern)) {
             $outcome = "limit-hit"; $script:limitText = if ($parsed.Result) { $resultText } else { $tailText }
+            $script:limitResetsAt = [int64](Get-Field $parsed.RateLimit resetsAt)
         }
         if (Test-Path (Join-Path $clone ".helios-stop-red")) { $outcome = "stopped-red" }
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
@@ -414,35 +498,56 @@ if ($Replay) {
     (New-UsageRecord @{ issue = 0; outcome = "replay"; model = $config.model; effort = $config.effort } $Replay | ConvertTo-Json -Depth 4)
     exit 0
 }
-$env:GH_TOKEN = Get-Token
-Initialize-Clone
-Close-MergedIssues
-$i = 0
-while ($i -lt $MaxIterations) {
-    if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
-    $review = Get-NextReview
-    if ($review) {
-        $m = [regex]::Match($review.body, '(?i)closes #(\d+)')
-        $issue = if ($m.Success) { gh issue view $m.Groups[1].Value -R "$owner/$repo" --json number,title,labels,body,assignees | ConvertFrom-Json } else { $null }
-        if (-not $issue) { Log "PR #$($review.number) has changes requested but no 'Closes #n'; skipping"; $review = $null }
-    }
-    if (-not $review) {
-        $issue = Get-NextIssue
-        if (-not $issue) { Log "no ready, unclaimed issue"; break }
-    }
-    $env:GH_TOKEN = Get-Token
-    $script:limitText = ""
-    $r = Invoke-Session $issue $review
-    $i++
-    if ($r.outcome -eq "lost-claim") { continue }
-    if ($r.outcome -eq "limit-hit") {
-        $until = Get-ResetTime $script:limitText
-        Log "usage limit; waiting until $($until.ToString('HH:mm')) then running issue #$($issue.number) again"
-        while ((Get-Date) -lt $until) { if (Test-Path $stopFile) { break }; Start-Sleep -Seconds 30 }
-        if (Test-Path $stopFile) { Log "stop requested"; Remove-Item $stopFile; break }
-        $i--
-        continue
-    }
-    if ($Once -or $r.outcome -in "stalled", "ended-short") { break }
+if ($Scheduled) { Start-Transcript -Path (Join-Path $stateDir "loop.log") -Append | Out-Null }
+# One run at a time: a scheduled run and a hand start must never share the clone. Taken after
+# the self-update above, since that restart is the same run under a new process.
+if (Test-Path $lockFile) {
+    $holder = [int](Get-Content $lockFile -Raw)
+    if ($holder -ne $PID -and (Get-Process -Id $holder -ErrorAction SilentlyContinue)) { Log "another run is alive (pid $holder); leaving it be"; exit 0 }
 }
-Log "done after $i session(s)"
+Set-Content $lockFile $PID
+# Where the chain goes next: in 15 minutes unless something below says otherwise; $null ends it.
+$nextRun = (Get-Date).AddMinutes(15)
+$i = 0
+try {
+    if (Test-Path $stopFile) {
+        Log "stop requested: no work, no next run"; Remove-Item $stopFile; Remove-NextRun; $nextRun = $null; return
+    }
+    $hold = Get-UsageHold
+    if ($hold) { Log "usage $script:holdReason, past its threshold; holding until $($hold.ToString('yyyy-MM-dd HH:mm'))"; $nextRun = $hold; return }
+    $env:GH_TOKEN = Get-Token
+    Initialize-Clone
+    Close-MergedIssues
+    while ($i -lt $MaxIterations) {
+        if (Test-Path $stopFile) { Log "stop requested: no next run"; Remove-Item $stopFile; Remove-NextRun; $nextRun = $null; break }
+        $review = Get-NextReview
+        if ($review) {
+            $m = [regex]::Match($review.body, '(?i)closes #(\d+)')
+            $issue = if ($m.Success) { gh issue view $m.Groups[1].Value -R "$owner/$repo" --json number,title,labels,body,assignees | ConvertFrom-Json } else { $null }
+            if (-not $issue) { Log "PR #$($review.number) has changes requested but no 'Closes #n'; skipping"; $review = $null }
+        }
+        if (-not $review) {
+            $issue = Get-NextIssue
+            if (-not $issue) { Log "no ready, unclaimed issue"; break }
+        }
+        $env:GH_TOKEN = Get-Token
+        $script:limitText = ""; $script:limitResetsAt = 0
+        $r = Invoke-Session $issue $review
+        $i++
+        if ($r.outcome -eq "lost-claim") { continue }
+        if ($r.outcome -eq "limit-hit") {
+            $nextRun = Get-RetryTime $script:limitText $script:limitResetsAt
+            Log "usage limit on issue #$($issue.number); it runs again at $($nextRun.ToString('yyyy-MM-dd HH:mm'))"
+            break
+        }
+        $hold = Get-UsageHold
+        if ($hold) { Log "usage $script:holdReason, past its threshold; holding until $($hold.ToString('yyyy-MM-dd HH:mm'))"; $nextRun = $hold; break }
+        if ($Once -or $r.outcome -in "stalled", "ended-short") { break }
+    }
+    if ($i -ge $MaxIterations) { $nextRun = (Get-Date).AddMinutes(1) }
+} finally {
+    Log "done after $i session(s)"
+    if ($Scheduled -and -not $DryRun -and $nextRun) { Set-NextRun $nextRun }
+    Remove-Item $lockFile -ErrorAction SilentlyContinue
+    if ($Scheduled) { Stop-Transcript | Out-Null }
+}
