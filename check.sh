@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The only definition of green. Every gate tolerates an empty repository and says so.
-# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER, EFFICACY
+# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER, EFFICACY,
+#   SKIP_GO=1 (CI, a change set with no Go in it), TESTRUN (CI, a -run pattern for go test)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -19,9 +20,9 @@ if [ -d docs/spec ]; then
 fi
 
 # 3. Developer-owned paths are not touched by a bot-authored commit. automation/ is the
-# loop's own driver: a session may not change the process that runs it.
+# loop's own driver and .github/ the CI that judges it: a session may change neither.
 if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features automation '*/contract.go' | grep '\[bot\]@' || true)
+  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features automation .github '*/contract.go' | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
@@ -62,6 +63,8 @@ if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >
 fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
+# CI sets SKIP_GO for a change set of Markdown and workflows other than check.yml alone.
+if [ "${SKIP_GO:-}" = 1 ]; then echo "no Go in the change set; Go gates skipped"; echo green; exit 0; fi
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
@@ -71,7 +74,7 @@ if [ -n "$pkgs" ]; then
   go vet ./...
   golangci-lint run ./...
   go run ./tools/namecheck .
-  go test ${RACE:-} ${COVER:-} -count=1 ./...
+  go test ${RACE:-} ${COVER:-} ${TESTRUN:+-run "$TESTRUN"} -count=1 ./...
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"

@@ -17,40 +17,70 @@ permissions:
   contents: read
 
 jobs:
-  # Both architectures the engine ships on; ARM64 is the deployment target. The ruleset
-  # requires the one job named check, which gathers them.
+  # The two Linux architectures the engine ships on, ARM64 the deployment target, run every
+  # gate with the race detector and the oracles. Windows runs build, vet, lint, namecheck
+  # and compiles every test: its runners cannot run Linux containers, so the oracle rows
+  # cannot run there, and the race detector would need a C compiler installed every run.
+  # Database tests will be Linux-only for the same reason (developer, 2026-10-02). The
+  # ruleset requires the one job named check, which gathers them.
   run:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
+      # Windows checks out CRLF by default, and gofmt reads CRLF as unformatted.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # A change set of Markdown and workflows other than this one carries no Go: the cheap
+      # gates still run, the Go gates and the oracle build do not. A change to this file is
+      # always run in full, since it is the CI being changed.
+      - name: Change set
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"; else base="HEAD^"; fi
+          files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
+          printf '%s\n' "$files"
+          rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^\.github/' || true)
+          full=$(printf '%s\n' "$files" | grep -xF '.github/workflows/check.yml' || true)
+          if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-go@v7
+        if: steps.changes.outputs.skip == '0'
         with:
           go-version-file: go.mod
       - name: Install gates
+        if: steps.changes.outputs.skip == '0'
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+          if [ "$RUNNER_OS" = Windows ]; then
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          else
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+          fi
           go install golang.org/x/vuln/cmd/govulncheck@latest
           go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # Every oracle the tree holds, none on a tree without any: main is the skeleton.
       - name: Build the oracles
+        if: steps.changes.outputs.skip == '0' && runner.os == 'Linux'
         run: for d in oracle/*/; do [ -d "$d" ] && docker build -q -t "heliosestate/$(basename "$d")-oracle:0.1" "$d"; done; true
       - name: check.sh
         env:
-          RACE: -race
-          COVER: -coverprofile=coverage.out
+          SKIP_GO: ${{ steps.changes.outputs.skip }}
+          RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
+          COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
+          TESTRUN: ${{ runner.os == 'Windows' && '^$' || '' }}
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
       # the gate on test strength.
       - name: Coverage report
-        if: always()
+        if: always() && runner.os == 'Linux' && steps.changes.outputs.skip == '0'
         run: |
           [ -f coverage.out ] || { echo "no coverage profile: the tests did not run" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
           go tool cover -html=coverage.out -o coverage.html
@@ -62,7 +92,7 @@ jobs:
             go tool cover -func=coverage.out | awk '$1!="total:"{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); p=$NF; sub(/%/,"",p); n[d]++; s[d]+=p} END{for(k in n) printf "| %s | %.1f%% |\n", k, s[k]/n[k]}' | sort
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && runner.os == 'Linux' && steps.changes.outputs.skip == '0'
         with:
           name: coverage-${{ matrix.os }}
           path: |
