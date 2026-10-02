@@ -92,7 +92,9 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 		conversation.opt.Progress(Progress{Name: base, Done: offset, Total: size})
 	}
 
-	sendRPos := func() error { return conversation.writeHeader(posHeader(zrpos, offset), false) }
+	// A receiver's headers go out in hex, as lrzsz's rz sends them: sexyz stalls ten
+	// seconds on a binary ZRPOS/ZACK arriving mid-stream (see issue #15).
+	sendRPos := func() error { return conversation.writeHeader(posHeader(zrpos, offset), true) }
 	head, hcrc32, err := conversation.await(sendRPos, maxRetries)
 	if err != nil {
 		return Received{}, mapErr(err)
@@ -125,12 +127,12 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 			// skip back over whatever this frame repeats instead of rewriting it.
 			skip := max(offset-head.position(), 0)
 			before := offset
-			var broken bool
-			broken, err = conversation.consumeDataFrame(file, &offset, size, base, hcrc32, skip)
+			var corrupted bool
+			corrupted, err = conversation.consumeDataFrame(file, &offset, size, base, hcrc32, skip)
 			if err != nil {
 				return Received{}, err
 			}
-			if broken {
+			if corrupted {
 				if offset == before && offset == stuckAt {
 					stuckCount++
 					if stuckCount >= maxRetries {
@@ -141,7 +143,16 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 				}
 				head, hcrc32, err = conversation.await(sendRPos, maxRetries)
 			} else {
-				head, hcrc32, err = conversation.awaitHeaderOnly(maxRetries)
+				// A clean end normally gets a header on its own; try that passively first,
+				// for up to the real silence a dead line would be, before nudging with a
+				// ZRPOS for a sender that needs it instead (lrzsz's sz under corruption).
+				// This is the one nudge a clean end ever earns, on real silence alone, never
+				// right away: a ZRPOS straight after a good ACK reads as an error report to
+				// some senders (sexyz), which then back off and halve their block size.
+				head, hcrc32, err = conversation.awaitHeaderOnly(1)
+				if errors.Is(err, ErrTimeout) {
+					head, hcrc32, err = conversation.await(sendRPos, maxRetries)
+				}
 			}
 		default:
 			head, hcrc32, err = conversation.await(sendRPos, maxRetries)
@@ -154,8 +165,8 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 
 // consumeDataFrame reads subpackets from one ZDATA frame, writing each to f and
 // reporting progress, until a terminator ends the frame or a bad CRC breaks it (the
-// caller then re-requests from the last good offset).
-func (conversation *session) consumeDataFrame(file *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64) (broken bool, err error) {
+// caller then re-requests from the last good offset with a ZRPOS).
+func (conversation *session) consumeDataFrame(file *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64) (corrupted bool, err error) {
 	for {
 		select {
 		case <-conversation.ctx.Done():
@@ -199,13 +210,21 @@ func (conversation *session) consumeDataFrame(file *os.File, offset *int64, tota
 			}
 		}
 		switch term {
-		case zcrcw, zcrcq:
-			// Both ask for an ack; neither ends the frame (sz can keep streaming more
-			// subpackets after a zcrcw ack without a fresh header, e.g. once it starts
-			// windowing after noticing a lossy line). Only ZCRCE really ends it.
-			if err := conversation.writeHeader(posHeader(zack, *offset), false); err != nil {
+		case zcrcq:
+			// Asks for an ack but keeps streaming more subpackets in the same frame with
+			// no fresh header (sz windowing mid-file). Hex, like every receiver header.
+			if err := conversation.writeHeader(posHeader(zack, *offset), true); err != nil {
 				return false, err
 			}
+		case zcrcw:
+			// Ends the frame and asks for an ack; a header is supposed to follow. We never
+			// nudge with a ZRPOS here on our own account: a ZRPOS is for a bad frame or a
+			// real silence, and some senders (sexyz) read one after a good ACK as an error
+			// report and back off. Hex, like every receiver header.
+			if err := conversation.writeHeader(posHeader(zack, *offset), true); err != nil {
+				return false, err
+			}
+			return false, nil
 		case zcrce:
 			return false, nil
 		}

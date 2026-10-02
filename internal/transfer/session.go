@@ -67,7 +67,12 @@ func (conversation *session) awaitHeaderOnly(retries int) (header, bool, error) 
 	for range retries {
 		head, crc32mode, ok, err := readFrame(conversation.ctx, conversation.src, conversation.timeout)
 		switch {
-		case err != nil && (errors.Is(err, errGotCancel) || errors.Is(err, ErrCancelled)):
+		case err != nil && errors.Is(err, errGotCancel):
+			return header{}, false, ErrCancelled
+		case err != nil && errors.Is(err, ErrCancelled):
+			// The far end didn't send this one, our own ctx gave up: tell it, rather
+			// than just going silent on a line it may still be waiting on.
+			conversation.cancelPeer()
 			return header{}, false, ErrCancelled
 		case err != nil && errors.Is(err, ErrTimeout):
 			continue
