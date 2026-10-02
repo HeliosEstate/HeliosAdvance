@@ -103,11 +103,6 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 	// after maxRetries of those in a row rather than retrying a corrupted frame forever.
 	stuckAt := int64(-1)
 	stuckCount := 0
-	// Once a frame has come back corrupted, some senders (lrzsz's sz especially) switch
-	// into a cautious windowed mode where a ZCRCW's ack is not reliably followed by a
-	// fresh header on their own; from then on a ZCRCW gets an immediate ZRPOS nudge
-	// rather than the one passive wait a clean transfer gets.
-	recovering := false
 	for {
 		switch head.typ {
 		case zeof:
@@ -130,19 +125,12 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 			// skip back over whatever this frame repeats instead of rewriting it.
 			skip := max(offset-head.position(), 0)
 			before := offset
-			var corrupted, resync bool
-			corrupted, resync, err = conversation.consumeDataFrame(file, &offset, size, base, hcrc32, skip, recovering)
+			var corrupted bool
+			corrupted, err = conversation.consumeDataFrame(file, &offset, size, base, hcrc32, skip)
 			if err != nil {
 				return Received{}, err
 			}
 			if corrupted {
-				recovering = true
-				// A resync landing at the same offset as the last one means a dead line,
-				// not a transient error (the far end genuinely retried and we're still
-				// stuck): give up after maxRetries of those in a row rather than retrying
-				// a corrupted frame forever. A clean ZCRCW resync (no corruption) never
-				// counts here: the far end does not always follow it with a fresh header
-				// on its own, so asking again at the same offset there is routine, not stuck.
 				if offset == before && offset == stuckAt {
 					stuckCount++
 					if stuckCount >= maxRetries {
@@ -151,13 +139,14 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 				} else {
 					stuckAt, stuckCount = offset, 0
 				}
-			}
-			switch {
-			case resync:
 				head, hcrc32, err = conversation.await(sendRPos, maxRetries)
-			default:
-				// A clean end normally gets a header on its own; try that passively once
-				// before nudging with a ZRPOS, for senders that need the nudge instead.
+			} else {
+				// A clean end normally gets a header on its own; try that passively first,
+				// for up to the real silence a dead line would be, before nudging with a
+				// ZRPOS for a sender that needs it instead (lrzsz's sz under corruption).
+				// This is the one nudge a clean end ever earns, on real silence alone, never
+				// right away: a ZRPOS straight after a good ACK reads as an error report to
+				// some senders (sexyz), which then back off and halve their block size.
 				head, hcrc32, err = conversation.awaitHeaderOnly(1)
 				if errors.Is(err, ErrTimeout) {
 					head, hcrc32, err = conversation.await(sendRPos, maxRetries)
@@ -173,35 +162,32 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 }
 
 // consumeDataFrame reads subpackets from one ZDATA frame, writing each to f and
-// reporting progress, until a terminator ends the frame or a bad CRC breaks it. corrupted
-// reports a genuine CRC or protocol failure, needing a fresh offset to retry from; resync
-// reports that the caller should proactively ask for the next position (ZRPOS) rather than
-// passively wait for a header, which covers both corruption and a clean ZCRCW end (the far
-// end, lrzsz's sz especially, does not reliably follow ZCRCW with a fresh header on its own).
-func (conversation *session) consumeDataFrame(file *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64, recovering bool) (corrupted, resync bool, err error) {
+// reporting progress, until a terminator ends the frame or a bad CRC breaks it (the
+// caller then re-requests from the last good offset with a ZRPOS).
+func (conversation *session) consumeDataFrame(file *os.File, offset *int64, total int64, name string, crc32mode bool, skip int64) (corrupted bool, err error) {
 	for {
 		select {
 		case <-conversation.ctx.Done():
 			conversation.cancelPeer()
-			return false, false, ErrCancelled
+			return false, ErrCancelled
 		default:
 		}
 		data, term, ok, err := readSubpacket(conversation.ctx, conversation.src, conversation.timeout, maxSubpacket, crc32mode)
 		if err != nil {
 			switch {
 			case errors.Is(err, errGotCancel), errors.Is(err, ErrCancelled):
-				return false, false, ErrCancelled
+				return false, ErrCancelled
 			case errors.Is(err, ErrTimeout), errors.Is(err, ErrProtocol):
 				// A corrupted ZDLE can eat the terminator and CRC bytes along with it,
 				// so the far end's next write (often just silence, waiting for our ack)
 				// looks like a stall rather than a bad CRC. Either way, resync.
-				return true, true, nil
+				return true, nil
 			default:
-				return false, false, mapErr(err)
+				return false, mapErr(err)
 			}
 		}
 		if !ok {
-			return true, true, nil
+			return true, nil
 		}
 		if skip > 0 {
 			if skip >= int64(len(data)) {
@@ -214,7 +200,7 @@ func (conversation *session) consumeDataFrame(file *os.File, offset *int64, tota
 		}
 		if len(data) > 0 {
 			if _, err := file.Write(data); err != nil {
-				return false, false, err
+				return false, err
 			}
 			*offset += int64(len(data))
 			if conversation.opt.Progress != nil {
@@ -226,19 +212,19 @@ func (conversation *session) consumeDataFrame(file *os.File, offset *int64, tota
 			// Asks for an ack but keeps streaming more subpackets in the same frame with
 			// no fresh header (sz windowing mid-file).
 			if err := conversation.writeHeader(posHeader(zack, *offset), false); err != nil {
-				return false, false, err
+				return false, err
 			}
 		case zcrcw:
-			// Ends the frame and asks for an ack; a header is supposed to follow. Once a
-			// sender has needed a resync, it may not reliably send one on its own (lrzsz's
-			// sz under heavy windowing): nudge it with a ZRPOS right away. Otherwise try
-			// a passive wait first, like zcrce, since the sender usually sends one anyway.
+			// Ends the frame and asks for an ack; a header is supposed to follow. We never
+			// nudge with a ZRPOS here on our own account: a ZRPOS is for a bad frame or a
+			// real silence, and some senders (sexyz) read one after a good ACK as an error
+			// report and back off.
 			if err := conversation.writeHeader(posHeader(zack, *offset), false); err != nil {
-				return false, false, err
+				return false, err
 			}
-			return false, recovering, nil
+			return false, nil
 		case zcrce:
-			return false, false, nil
+			return false, nil
 		}
 	}
 }
