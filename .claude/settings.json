@@ -1,14 +1,4 @@
 {
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Edit|Write", "hooks": [ { "type": "command", "command": "bash .claude/hooks/lock.sh" } ] },
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash .claude/hooks/git-gate.sh" } ] },
-      { "matcher": "WebFetch|Bash|PowerShell|Read|Grep|Glob", "hooks": [ { "type": "command", "command": "bash .claude/hooks/no-foreign-source.sh" } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
-    ]
-  },
   "permissions": {
     "allow": [
       "Bash(bash check.sh*)",

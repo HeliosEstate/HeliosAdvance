@@ -1,0 +1,13 @@
+# Developer-owned paths: a loop session may not write them (the loop's edit lock reads this
+# file) and a bot-authored commit may not touch them (check.sh reads it too). One pattern a
+# line, a shell glob that is also a git pathspec.
+docs/spec/*
+docs/architecture.md
+features/*
+.github/*
+*/contract.go
+CLAUDE.md
+check.sh
+.golangci.yml
+.claude/*
+developer-owned-paths
