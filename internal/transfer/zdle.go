@@ -116,6 +116,16 @@ func (source *byteSource) readRawByte(ctx context.Context, timeout time.Duration
 	case value := <-source.queue:
 		return value, nil
 	case err := <-source.errc:
+		// The end can win this select while bytes the reader goroutine queued before
+		// sending it are still sitting in queue, unread: Go picks at random between two
+		// ready cases, and a read already waiting here is exactly such a case. Check
+		// queue once more before handing back the end.
+		select {
+		case value := <-source.queue:
+			source.errc <- err // capacity one, and the reader goroutine has exited
+			return value, nil
+		default:
+		}
 		return 0, err
 	case <-timer.C:
 		return 0, ErrTimeout
