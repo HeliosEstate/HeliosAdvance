@@ -459,8 +459,10 @@ $claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--o
         # A session that cannot speak for itself gets the loop to say why on the issue.
         $why = switch ($outcome) {
             "stopped-red" { "The session ended on a red check after three attempts. Last output:`n`n``````n$(Get-Content (Join-Path $clone '.helios-stop-red') -Raw)`n``````" }
-            "stalled" { "The session was stopped after $SessionMinutes minutes without finishing. Its log is $log on the loop machine." }
-            "ended-short" { "The session ended without opening a PR or going out of road. Its last message:`n`n$([string](Get-Field $parsed.Result result))`n`nIts log is $log on the loop machine." }
+            # The log's name only: an issue is public, and a full path tells the world the loop
+            # machine's layout and account.
+            "stalled" { "The session was stopped after $SessionMinutes minutes without finishing. Its log is $(Split-Path $log -Leaf) in the loop's state folder." }
+            "ended-short" { "The session ended without opening a PR or going out of road. Its last message:`n`n$([string](Get-Field $parsed.Result result))`n`nIts log is $(Split-Path $log -Leaf) in the loop's state folder." }
             "limit-hit" { $null }
             default { $null }
         }
