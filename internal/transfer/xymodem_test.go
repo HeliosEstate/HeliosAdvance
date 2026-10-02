@@ -287,17 +287,17 @@ func TestYMODEMG(t *testing.T) {
 	})
 }
 
-// Line 6: hadv-transfer takes the options of sx, sb, rx and rb: -X, --ymodem, -k, -c, and
+// Line 6: hadv-xyz takes the options of sx, sb, rx and rb: -X, --ymodem, -k, -c, and
 // the file name as its argument on an XMODEM receive.
 func TestCommandXY(t *testing.T) {
 	t.Parallel()
-	bin := filepath.Join(t.TempDir(), "hadv-transfer")
+	bin := filepath.Join(t.TempDir(), "hadv-xyz")
 	if runtime.GOOS == "windows" {
 		bin += ".exe" // exec refuses a path with no extension on Windows
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-transfer")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-xyz")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building hadv-transfer: %v\n%s", err, out)
+		t.Fatalf("building hadv-xyz: %v\n%s", err, out)
 	}
 	t.Run("as sx -k", func(t *testing.T) {
 		t.Parallel()

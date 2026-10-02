@@ -549,13 +549,13 @@ func TestSexyzYMODEMG(t *testing.T) {
 	})
 }
 
-// #13 line 13 and #14 line 6: hadv-transfer stands in for the lrzsz commands against sexyz.
+// #13 line 13 and #14 line 6: hadv-xyz stands in for the lrzsz commands against sexyz.
 func TestSexyzCommand(t *testing.T) {
 	t.Parallel()
 	bin := mustBuildCommand(t)
 	rows := []struct {
 		name  string
-		ours  []string // hadv-transfer flags; a send gets the source path appended
+		ours  []string // hadv-xyz flags; a send gets the source path appended
 		far   []string // sexyz arguments
 		send  bool
 		check string // the file to compare, in the far dir for a send, ours for a receive
@@ -598,17 +598,17 @@ func TestSexyzCommand(t *testing.T) {
 	}
 }
 
-// mustBuildCommand builds hadv-transfer into a temp dir and returns its path.
+// mustBuildCommand builds hadv-xyz into a temp dir and returns its path.
 func mustBuildCommand(t *testing.T) string {
 	t.Helper()
 	const windowsOS, exeSuffix = "windows", ".exe"
-	bin := filepath.Join(t.TempDir(), "hadv-transfer")
+	bin := filepath.Join(t.TempDir(), "hadv-xyz")
 	if runtime.GOOS == windowsOS {
 		bin += exeSuffix // exec refuses a path with no extension on Windows
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-transfer")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/hadv-xyz")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building hadv-transfer: %v: %s", err, out)
+		t.Fatalf("building hadv-xyz: %v: %s", err, out)
 	}
 	return bin
 }
