@@ -10,7 +10,7 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 if command -v cygpath >/dev/null 2>&1; then path=$(cygpath -u "$path"); root=$(cygpath -u "$root"); fi
 rel=${path#"$root"/}
 case "$rel" in
-  docs/spec/*|docs/architecture.md|features/*|*/contract.go|CLAUDE.md|check.sh|.golangci.yml|.claude/*)
+  docs/spec/*|docs/architecture.md|features/*|*/contract.go|CLAUDE.md|check.sh|.golangci.yml|.claude/*|.github/*|automation/*)
     echo "lock.sh: $rel is developer-owned; a loop session may not write it. Comment on the issue and stop." >&2
     exit 2 ;;
 esac
