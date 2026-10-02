@@ -326,7 +326,11 @@ You are a build session of the Helios Advance loop, unattended, on issue #$n, br
 # an organisation setting, a private key on its way out) and lets build work through. A
 # refusal ends with the session explaining, which the out-of-road path already handles.
 # Bypass was the previous choice; the CLI itself recommends it only for an offline sandbox.
-$claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--output-format", "stream-json", "--verbose", "--permission-mode", "auto")
+$claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--output-format", "stream-json", "--verbose", "--permission-mode", "auto",
+    # A one-shot session has no later to wake into: a waiting tool ends it mid-work (#51's
+    # first session called ScheduleWakeup and stopped with its fix uncommitted). It waits on a
+    # foreground command instead.
+    "--disallowedTools", "ScheduleWakeup Monitor CronCreate CronDelete CronList")
         $started = Get-Date
         Push-Location $clone
         try {
@@ -360,12 +364,19 @@ $claudeArgs = @("-p", "--model", $config.model, "--effort", $config.effort, "--o
         }
         if (Test-Path (Join-Path $clone ".helios-stop-red")) { $outcome = "stopped-red" }
         $pr = gh pr list -R "$owner/$repo" --head $branch --state open --json number --jq '.[0].number'
+        # Finished means a PR or the out-of-road label; anything else ended short, whatever the
+        # session said.
+        if ($outcome -eq "finished" -and -not $pr) {
+            $flagged = gh issue view $n -R "$owner/$repo" --json labels --jq '[.labels[].name] | index("human-action-required") != null'
+            if ($flagged -ne "true") { $outcome = "ended-short" }
+        }
         Write-SessionLine @{ issue = $n; branch = $branch; outcome = $outcome; pr = $pr; model = $config.model; effort = $config.effort } $log
         if ($pr) { Set-BoardStatus $n "Review" }
         # A session that cannot speak for itself gets the loop to say why on the issue.
         $why = switch ($outcome) {
             "stopped-red" { "The session ended on a red check after three attempts. Last output:`n`n``````n$(Get-Content (Join-Path $clone '.helios-stop-red') -Raw)`n``````" }
             "stalled" { "The session was stopped after $SessionMinutes minutes without finishing. Its log is $log on the loop machine." }
+            "ended-short" { "The session ended without opening a PR or going out of road. Its last message:`n`n$([string](Get-Field $parsed.Result result))`n`nIts log is $log on the loop machine." }
             "limit-hit" { $null }
             default { $null }
         }
@@ -432,6 +443,6 @@ while ($i -lt $MaxIterations) {
         $i--
         continue
     }
-    if ($Once -or $r.outcome -eq "stalled") { break }
+    if ($Once -or $r.outcome -in "stalled", "ended-short") { break }
 }
 Log "done after $i session(s)"
