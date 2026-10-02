@@ -17,7 +17,7 @@ Free Pascal tools. One developer; the design record is the private `HeliosEstate
 - A QA session commits approved tests with the trailer `Helios-Role: qa`. From that commit on,
   `check.sh` refuses any change or deletion to a `*_test.go` that existed then, and refuses a
   later test file that declares `TestMain`, `init` or a build tag.
-- `docs/spec/`, `docs/architecture.md`, `features/`, `automation/`, `.github/` and every `contract.go` are developer-owned: a
+- `docs/spec/`, `docs/architecture.md`, `features/`, `.github/` and every `contract.go` are developer-owned: a
   commit authored as a `[bot]` may not touch them. `docs/spec/` names no language, path or library.
 - A loop session (`HELIOS_LOOP=1`) is denied those edits by a hook and is ended by the Stop
   hook after three red runs of `check.sh`, leaving `.helios-stop-red` for the loop.
