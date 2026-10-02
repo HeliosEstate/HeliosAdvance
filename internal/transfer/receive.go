@@ -92,7 +92,9 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 		conversation.opt.Progress(Progress{Name: base, Done: offset, Total: size})
 	}
 
-	sendRPos := func() error { return conversation.writeHeader(posHeader(zrpos, offset), false) }
+	// A receiver's headers go out in hex, as lrzsz's rz sends them: sexyz stalls ten
+	// seconds on a binary ZRPOS/ZACK arriving mid-stream (see issue #15).
+	sendRPos := func() error { return conversation.writeHeader(posHeader(zrpos, offset), true) }
 	head, hcrc32, err := conversation.await(sendRPos, maxRetries)
 	if err != nil {
 		return Received{}, mapErr(err)
@@ -210,16 +212,16 @@ func (conversation *session) consumeDataFrame(file *os.File, offset *int64, tota
 		switch term {
 		case zcrcq:
 			// Asks for an ack but keeps streaming more subpackets in the same frame with
-			// no fresh header (sz windowing mid-file).
-			if err := conversation.writeHeader(posHeader(zack, *offset), false); err != nil {
+			// no fresh header (sz windowing mid-file). Hex, like every receiver header.
+			if err := conversation.writeHeader(posHeader(zack, *offset), true); err != nil {
 				return false, err
 			}
 		case zcrcw:
 			// Ends the frame and asks for an ack; a header is supposed to follow. We never
 			// nudge with a ZRPOS here on our own account: a ZRPOS is for a bad frame or a
 			// real silence, and some senders (sexyz) read one after a good ACK as an error
-			// report and back off.
-			if err := conversation.writeHeader(posHeader(zack, *offset), false); err != nil {
+			// report and back off. Hex, like every receiver header.
+			if err := conversation.writeHeader(posHeader(zack, *offset), true); err != nil {
 				return false, err
 			}
 			return false, nil
