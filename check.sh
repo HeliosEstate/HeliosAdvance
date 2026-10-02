@@ -19,10 +19,14 @@ if [ -d docs/spec ]; then
   [ -z "$hits" ] || { echo "$hits"; fail "docs/spec names the implementation"; }
 fi
 
-# 3. Developer-owned paths are not touched by a bot-authored commit. .github/ is the CI
-# that judges the loop's work: a session may not change it.
+# 3. The paths in developer-owned-paths are not touched by a bot-authored commit. .github/ is
+# the CI that judges the loop's work: a session may not change it. The loop's edit lock reads
+# the same file, so the commit lock and the edit lock cannot disagree.
+[ -f developer-owned-paths ] || fail "developer-owned-paths is missing"
+mapfile -t owned < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' developer-owned-paths | grep . || true)
+[ "${#owned[@]}" -gt 0 ] || fail "developer-owned-paths names no path"
 if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- docs/spec docs/architecture.md features .github '*/contract.go' | grep '\[bot\]@' || true)
+  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- "${owned[@]}" | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
