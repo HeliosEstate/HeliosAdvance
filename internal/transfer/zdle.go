@@ -93,6 +93,15 @@ func (source *byteSource) readByte(ctx context.Context, timeout time.Duration) (
 // run of 0x18 inside a block is ordinary file content, not a cancel, and lrzsz's receiver
 // agrees, checking for CAN only between blocks.
 func (source *byteSource) readRawByte(ctx context.Context, timeout time.Duration) (byte, error) {
+	// A cancelled ctx must win even over a byte already queued: this is how a frame
+	// watcher hands a still-open stream back to the session's own sequential reads, and a
+	// watcher that kept consuming queued bytes after being told to stop would steal them
+	// from the read the session makes next.
+	select {
+	case <-ctx.Done():
+		return 0, ErrCancelled
+	default:
+	}
 	// A byte already queued must win over an errc that became ready at the same instant:
 	// Go picks at random between two ready cases, and the reader goroutine always queues
 	// every byte before it sends the end, so draining queue first here preserves that order.

@@ -11,6 +11,17 @@ import (
 	"path/filepath"
 )
 
+// finishErr maps an error from the final ZFIN exchange: every file is already sent and
+// acknowledged by this point, so a far end that hangs up instead of replying (sexyz exits
+// the instant it sends its own ZFIN) has finished, not cancelled. An explicit cancel
+// sequence is still reported, since that is the far end actively saying so.
+func finishErr(err error) error {
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return mapErr(err)
+}
+
 // send drives the sender side of a ZMODEM batch: wait for the far end's readiness, then
 // offer each file in order, then finish the session.
 func (conversation *session) send(paths []string) error {
@@ -48,7 +59,7 @@ func (conversation *session) send(paths []string) error {
 
 	head, _, err := conversation.await(func() error { return writeHex(conversation.writer, header{typ: zfin}) }, maxRetries)
 	if err != nil {
-		return mapErr(err)
+		return finishErr(err)
 	}
 	for head.typ != zfin {
 		if head.typ == zcan {
@@ -56,10 +67,14 @@ func (conversation *session) send(paths []string) error {
 		}
 		head, _, err = conversation.awaitHeaderOnly(maxRetries)
 		if err != nil {
-			return mapErr(err)
+			return finishErr(err)
 		}
 	}
-	return conversation.writer.raw([]byte("OO"))
+	// Best-effort only: the far end's ZFIN already confirmed it has everything, and sexyz
+	// exits the instant it sends that ZFIN, so a line it already closed must not turn a
+	// completed transfer into a reported failure.
+	_ = conversation.writer.raw([]byte("OO")) //nolint:errcheck // courtesy only, after completion is already confirmed
+	return nil
 }
 
 // sendFile offers one file: its info subpacket, then its data from wherever the far end
