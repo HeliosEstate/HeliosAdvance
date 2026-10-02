@@ -268,7 +268,10 @@ func (conversation *xysession) receiveXMODEM(dir string) ([]Received, error) {
 	defer func() { _ = file.Close() }() //nolint:errcheck // best-effort on an error exit; the success path closes and checks explicitly
 
 	open := byte(xcrc)
-	if conversation.opt.Checksum {
+	switch {
+	case conversation.opt.Streaming:
+		open = xgmode
+	case conversation.opt.Checksum:
 		open = xnak
 	}
 	werr := conversation.blocks(open, func(data []byte) error {
@@ -307,13 +310,15 @@ func (conversation *xysession) sendXMODEM(paths []string) error {
 	if open == xcan {
 		return ErrCancelled
 	}
-	return mapErr(conversation.sendBlocks(file, open == xcrc || open == xgmode))
+	return mapErr(conversation.sendBlocks(file, open == xcrc || open == xgmode, open == xgmode))
 }
 
 // sendBlocks sends file's remaining content as blocks of Options.SubpacketSize (128 or
 // 1024, default 1024) starting at 1, padding the last block to the block size with
-// 0x1A, then sends EOT and waits for the ACK.
-func (conversation *xysession) sendBlocks(file *os.File, useCRC bool) error {
+// 0x1A, then sends EOT and waits for the ACK. In streaming (G) mode each block is sent
+// without waiting for its own ack, since the receiver opened with G precisely to skip that
+// round trip; only EOT still waits, same as the receiver's own G handling in blocks().
+func (conversation *xysession) sendBlocks(file *os.File, useCRC, streaming bool) error {
 	blockSize := conversation.opt.SubpacketSize
 	if blockSize != 128 {
 		blockSize = 1024
@@ -332,7 +337,11 @@ func (conversation *xysession) sendBlocks(file *os.File, useCRC bool) error {
 		if n < blockSize {
 			data = append(data, bytes.Repeat([]byte{xpad}, blockSize-n)...)
 		}
-		if err := conversation.sendOneBlock(blk, data, useCRC); err != nil {
+		if streaming {
+			if err := xywriteBlock(conversation.raw, blk, data, useCRC); err != nil {
+				return err
+			}
+		} else if err := conversation.sendOneBlock(blk, data, useCRC); err != nil {
 			return err
 		}
 		blk++
@@ -519,7 +528,14 @@ func (conversation *xysession) sendYMODEM(paths []string) error {
 	if open == xcan {
 		return ErrCancelled
 	}
-	return mapErr(conversation.sendHeaderBlock(nil, open == xcrc || open == xgmode))
+	_, err = conversation.sendHeaderBlock(nil, open == xcrc || open == xgmode)
+	if errors.Is(err, io.EOF) {
+		// Every real file already got its ack; some receivers (sexyz's ry) exit the
+		// moment they see the batch's closing null block instead of acking it too, which
+		// is a clean end, not a cancel.
+		return nil
+	}
+	return mapErr(err)
 }
 
 // sendOneYMODEMFile sends path's block 0 (name, size, modification time), waits for a
@@ -544,23 +560,30 @@ func (conversation *xysession) sendOneYMODEMFile(path string) error {
 		return ErrCancelled
 	}
 	info := encodeFileInfo(filepath.Base(path), stat.Size(), stat.ModTime(), 0, 0)
-	if err := conversation.sendHeaderBlock(info, open == xcrc || open == xgmode); err != nil {
-		return mapErr(err)
-	}
-
-	open, err = conversation.openByte()
+	reply, err := conversation.sendHeaderBlock(info, open == xcrc || open == xgmode)
 	if err != nil {
 		return mapErr(err)
 	}
-	if open == xcan {
+	// In streaming mode sexyz's ry/rg acks the header with a fresh 'G' directly, rather
+	// than a plain ACK followed by its own separate open byte for the data phase; a plain
+	// ACK still gets the usual fresh open byte before data starts.
+	if reply != xgmode {
+		reply, err = conversation.openByte()
+		if err != nil {
+			return mapErr(err)
+		}
+	}
+	if reply == xcan {
 		return ErrCancelled
 	}
-	return mapErr(conversation.sendBlocks(file, open == xcrc || open == xgmode))
+	return mapErr(conversation.sendBlocks(file, reply == xcrc || reply == xgmode, reply == xgmode))
 }
 
 // sendHeaderBlock sends YMODEM's block 0, info padded with NUL to the block size (or all
-// NUL when info is nil, which ends the batch), and waits for the ACK like any other block.
-func (conversation *xysession) sendHeaderBlock(info []byte, useCRC bool) error {
+// NUL when info is nil, which ends the batch), and waits for the ack, reporting it back:
+// a plain ACK, or sexyz's streaming receivers which fold the ack and their next open byte
+// into a single 'G'.
+func (conversation *xysession) sendHeaderBlock(info []byte, useCRC bool) (byte, error) {
 	blockSize := conversation.opt.SubpacketSize
 	if blockSize != 128 {
 		blockSize = 1024
@@ -569,23 +592,23 @@ func (conversation *xysession) sendHeaderBlock(info []byte, useCRC bool) error {
 	copy(data, info)
 	for range maxRetries {
 		if err := xywriteBlock(conversation.raw, 0, data, useCRC); err != nil {
-			return err
+			return 0, err
 		}
 		reply, err := conversation.src.readByte(conversation.ctx, conversation.timeout)
 		switch {
 		case err != nil && errors.Is(err, errGotCancel):
-			return ErrCancelled
+			return 0, ErrCancelled
 		case err != nil && errors.Is(err, ErrTimeout):
 			continue
 		case err != nil:
-			return err
-		case reply == xack:
-			return nil
+			return 0, err
+		case reply == xack, reply == xgmode:
+			return reply, nil
 		case reply == xcan:
-			return ErrCancelled
+			return 0, ErrCancelled
 		default:
 			continue // a NAK, or noise: resend block 0
 		}
 	}
-	return ErrTimeout
+	return 0, ErrTimeout
 }
