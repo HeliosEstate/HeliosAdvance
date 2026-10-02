@@ -10,4 +10,5 @@ CLAUDE.md
 check.sh
 .golangci.yml
 .claude/*
+.codex/*
 developer-owned-paths
