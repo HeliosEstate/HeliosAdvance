@@ -59,7 +59,6 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            - github.com/heliosestate/heliosadvance/internal/board
         audit:
           files: ["**/internal/audit/**"]
           list-mode: strict
