@@ -28,8 +28,9 @@ PR, with its reason.
 
 - Everything above `board` and `database` goes to the database and returns
   `database.ErrUnavailable` rather than a default. There is no degraded mode.
-- Only `database` reaches PostgreSQL. Every write runs in `Transact`; a unit's SQL is its
-  own, against its own tables; a migration is written in the QA session, never in a build.
+- Only `database` reaches PostgreSQL. Every write runs in `Transact`. A unit writes only its
+  own tables; its SQL may read another unit's where that unit's contract names the reader.
+  A migration is written in the QA session, never in a build.
 - The registry never reads the lease. A removed server finds out at its next renewal.
 - The lease never calls anyone. Expiry is a fact readers compute; the allocator's
   occupancy rule, who's-online's filter and health's one line all read `Live`.

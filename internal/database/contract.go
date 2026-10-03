@@ -107,8 +107,9 @@ type Row interface {
 }
 
 // Transaction is a change's own transaction. It carries the deadline Transact was given,
-// so its operations take none. Statements are each unit's own SQL against its own tables.
-// A unit that inserts a key that could collide checks for it first in the same
+// so its operations take none. Statements are each unit's own SQL. A unit writes only its
+// own tables; its statement may read another unit's where that unit's contract names the
+// reader. A unit that inserts a key that could collide checks for it first in the same
 // transaction: then a race is a serialization failure, which Transact retries, and a
 // duplicate the check finds is the unit's own refusal.
 type Transaction interface {
