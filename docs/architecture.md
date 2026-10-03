@@ -11,7 +11,7 @@ and a contract disagree, the contract is right and this page is fixed.
 | Unit | Owns | Uses |
 |---|---|---|
 | `board` | The identifiers every unit shares: `ServerID`, `AccountID`, `RoleID`. Nothing else, so no unit imports another for a type. | nothing |
-| `database` | What every unit that goes to the database shares: `ErrUnavailable`, `Transaction`. The rest is the database-access unit's, not yet designed. | nothing |
+| `database` | The board's one PostgreSQL database as every unit reaches it: the connection (TLS, chain and host name verified), `Transact` (SERIALIZABLE, retried on a collision), one-statement reads, `ErrUnavailable` and what counts as it, the one sequence of additive migrations only `hadv-setup` applies, and the harness that gives every test its own database. The only importer of the driver. | `board` |
 | `audit` | The record of operator actions: who, what, to which server or setting, before and after, on the database's UTC clock. Written inside the change's transaction. Read by tools only. | `board`, `database` |
 | `registry` | The servers of one board: ID, display name, version, admitted or removed. Admission at start with the one-minor version check; removal as a mark; the board's minimum version. | `audit`, `board` |
 | `lease` | Liveness: one row per server on the database's clock, a generation per acquisition, expiry computed by readers. The refusal protocol the engine follows is on `RenewalResult`. | `board` |
@@ -28,6 +28,9 @@ PR, with its reason.
 
 - Everything above `board` and `database` goes to the database and returns
   `database.ErrUnavailable` rather than a default. There is no degraded mode.
+- Only `database` reaches PostgreSQL. Every write runs in `Transact`. A unit writes only its
+  own tables; its SQL may read another unit's where that unit's contract names the reader.
+  A migration is written in the QA session, never in a build.
 - The registry never reads the lease. A removed server finds out at its next renewal.
 - The lease never calls anyone. Expiry is a fact readers compute; the allocator's
   occupancy rule, who's-online's filter and health's one line all read `Live`.
@@ -47,9 +50,9 @@ PR, with its reason.
 
 ## The engine's loop, as the contracts imply it
 
-Start: read the bootstrap record; `registry.Approve`; `lease.Acquire`; `session.Repair`;
+Start: read the bootstrap record; `database.Verify`; `registry.Approve`; `lease.Acquire`; `session.Repair`;
 declare settings and register permissions; open listeners. Then renew at the interval.
 On `Expired`: `session.DisconnectAll`, refuse new callers, `Approve` and `Acquire` again on
 your own. On `Superseded` or `NotAdmitted`: `DisconnectAll` and stay down. On
 `database.ErrUnavailable` at renewal: count a miss and try again. On a clean stop:
-`DisconnectAll`, then `lease.Release`.
+`DisconnectAll`, then `lease.Release`, then `database.Close`.
