@@ -6,8 +6,6 @@ docs/architecture.md
 features/*
 .github/*
 */contract.go
-internal/database/migrations/*
-internal/database/databasetest/*
 CLAUDE.md
 check.sh
 .golangci.yml
