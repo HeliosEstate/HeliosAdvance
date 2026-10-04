@@ -3,6 +3,7 @@
 # line, a shell glob that is also a git pathspec.
 docs/spec/*
 docs/architecture.md
+docs/behavior.md
 features/*
 .github/*
 */contract.go
