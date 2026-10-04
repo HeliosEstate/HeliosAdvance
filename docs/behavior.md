@@ -270,3 +270,320 @@ Each term below has one meaning in these lines.
 - **door**: a door game, an external program the board runs for a caller; used in no other sense.
 - **size limits**: the bounds the storage subsystem sets on every size an SMB server or an
   ISO image states; not settled yet.
+
+## Shared secrets
+
+Shared secrets are the passwords, keys and other secret values the board presents to other
+systems, along with those a protocol needs in plain form to check: SMB and S3 credentials, network
+node passwords, mail account passwords and a DKIM private key, among others. Every server needs
+them. The shared secrets subsystem keeps them encrypted in the database, where every server can
+reach them, and hands each one only to the part of the board that owns it. Passwords that others
+use to sign in to the board are not kept here; the board keeps only one-way hashes of those.
+
+A board comes back up on its own after a reboot, so no passphrase guards the key that opens the
+secrets. Each server keeps that key in its own bootstrap file, sealed with the operating system's
+credential store, and never in the database. If no server holds the key any more, the only way back
+is the 24-word recovery code the sysop wrote down by hand at first setup. Without it, every secret
+has to be entered again. A sysop runs the board, not a systems administrator, so every default
+starts at the secure end and loosening one is the sysop's choice.
+
+### Names, the vault key and values
+
+- When a value is stored from any server, the shared secrets subsystem shall return it to its owner
+  on every server.
+- The shared secrets subsystem shall return a value to its owner byte for byte as it was stored.
+- The shared secrets subsystem shall keep the vault key in each server's bootstrap file, sealed by the
+  bootstrap key subsystem.
+- The shared secrets subsystem shall not write the vault key to the database.
+- The shared secrets subsystem shall not give the vault key to any program other than `hadv-service`.
+- When a server starts, the shared secrets subsystem shall open the vault key from the bootstrap file
+  without asking for a passphrase.
+- The shared secrets subsystem shall encrypt and decrypt every value inside `hadv-service`.
+- The shared secrets subsystem shall not send the vault key, a working key or a decrypted value to the
+  database.
+- The shared secrets subsystem shall encrypt each value with AES-256-GCM under its own working key.
+- The shared secrets subsystem shall derive each write's working key with HKDF-SHA256 from the vault
+  key, the owner, the identity and a new random salt.
+- The shared secrets subsystem shall store each value's salt beside the value.
+- The shared secrets subsystem shall seal each value to its owner and identity as authenticated data.
+- If a value is moved in the database to another secret, then the shared secrets subsystem shall
+  treat it as a value that fails to decrypt.
+- The shared secrets subsystem shall record on each value the vault-key version that encrypted it.
+- The shared secrets subsystem shall record on each value its format version.
+- The shared secrets subsystem shall not write a format version that the previous engine release
+  does not read.
+- If a value records a format version this engine release does not read, then the shared secrets
+  subsystem shall treat it as a value that fails to decrypt.
+- If a store carries a value larger than 64 KiB, then the shared secrets subsystem shall refuse the
+  store.
+- If a store carries a value larger than 64 KiB, then the shared secrets subsystem shall log the
+  refusal.
+
+### Changing the vault key
+
+- The shared secrets subsystem shall start a vault-key change only when the event subsystem tells it
+  to, on the server the event subsystem names.
+- When a sysop asks for a vault-key change through the Admin API, the shared secrets subsystem shall
+  ask the event subsystem to start one.
+- The shared secrets subsystem shall schedule a vault-key change once a year by default.
+- If a sysop sets the vault-key schedule shorter than 45 days, then the shared secrets subsystem shall
+  refuse the setting.
+- If a sysop sets the vault-key schedule longer than two years, then the shared secrets subsystem
+  shall refuse the setting.
+- While the vault-key schedule is switched off, the shared secrets subsystem shall not schedule a
+  vault-key change.
+- When a vault-key change finishes, the shared secrets subsystem shall restart the schedule's clock.
+- If a vault-key change is asked for while another is unfinished, then the shared secrets subsystem
+  shall refuse the second change.
+- If a vault-key change is asked for while another is unfinished, then the shared secrets subsystem
+  shall resume the unfinished change.
+- When a vault-key change starts, the shared secrets subsystem shall write a copy of the new vault key
+  for every registered server and for the recovery key before it re-encrypts any value.
+- When every copy of a new vault key is written, the shared secrets subsystem shall send a NOTIFY that
+  a new vault key is ready.
+- When the NOTIFY for a new vault key is sent, the shared secrets subsystem shall re-encrypt every
+  value under the new vault key.
+- While a vault-key change is unfinished, the shared secrets subsystem shall decrypt each value under
+  either the old or the new vault key, as the value records.
+- If a vault-key change stops before it finishes, then the shared secrets subsystem shall resume it
+  from the values still under the old vault-key version.
+- When no value records the old vault-key version, the shared secrets subsystem shall delete every
+  copy of the old vault key from the database.
+- When a vault-key change has finished, the shared secrets subsystem on each server shall delete the
+  old vault key from that server's bootstrap file.
+- The shared secrets subsystem shall encrypt every store under the newest vault key.
+- If a value records a vault-key version newer than the server holds, then the shared secrets
+  subsystem shall collect that version's copy before it decrypts the value.
+
+### Delivering a new vault key
+
+- The shared secrets subsystem shall keep each server's two private keys only in that server's
+  bootstrap file.
+- The shared secrets subsystem shall use a server's receiving key pair only to open copies of the
+  vault key.
+- The shared secrets subsystem shall use a server's signing key pair only to sign copies of the vault
+  key.
+- The shared secrets subsystem shall encrypt each copy to the receiving server's public key with HPKE
+  (RFC 9180) in base mode, using `MLKEM768-X25519`.
+- The shared secrets subsystem shall sign each copy with Ed25519 over the copy, the server it is for
+  and its vault-key version.
+- If a copy's signer is not a registered server, then the shared secrets subsystem shall refuse the
+  copy.
+- If a copy's signature does not verify for this server and the copy's vault-key version, then the
+  shared secrets subsystem shall refuse the copy.
+- If a copy's vault-key version is not newer than the vault key the server holds, then the shared
+  secrets subsystem shall refuse the copy.
+- If a copy fails to decrypt, then the shared secrets subsystem shall refuse the copy.
+- If a copy records a format version this engine release does not read, then the shared secrets
+  subsystem shall refuse the copy.
+- When the shared secrets subsystem refuses a copy, it shall keep its current vault key.
+- When the shared secrets subsystem refuses a copy, it shall alert every sysop.
+- The shared secrets subsystem shall send no key and no part of a copy in a NOTIFY.
+- When a server receives a NOTIFY that a new vault key is ready, the shared secrets subsystem shall
+  collect that server's copy.
+- If a NOTIFY arrives and no newer copy exists for the server, then the shared secrets subsystem shall
+  keep its current vault key.
+- When a server starts, the shared secrets subsystem shall collect any newer copy of the vault key for
+  that server before the engine serves anything.
+- If a newer vault-key version exists and no copy of it is there for the server, then the shared
+  secrets subsystem shall treat it as a refused copy.
+- If a server starts without the newest vault key, then the shared secrets subsystem shall stop the
+  engine from starting.
+- The shared secrets subsystem shall use only Go's standard library for its cryptography.
+
+### The recovery code
+
+- `hadv-setup` shall derive the recovery key pair from the 256-bit seed that the recovery code
+  encodes.
+- `hadv-setup` shall encode the recovery code as 24 words with the published BIP-39 English word list
+  and checksum, unchanged.
+- `hadv-setup` shall not use BIP-39's seed process to derive the recovery key pair.
+- `hadv-setup` shall show the recovery code as 24 numbered words in six rows of four.
+- `hadv-setup` shall show the recovery code in English words whatever the interface's language.
+- `hadv-setup` shall show the recovery code only when it is made, at first setup or on a replacement.
+- `hadv-setup` shall offer no clipboard, save or print option for the recovery code.
+- `hadv-setup` shall show with the recovery code that it is to be written by hand, kept where no one
+  else finds it, and never typed into anything else.
+- `hadv-setup` shall show with the recovery code that without it there is no recovery and every
+  secret is entered again.
+- `hadv-setup` shall not store, log or send the recovery code.
+- `hadv-setup` shall keep nothing of the recovery key pair but its public half, registered in the
+  database.
+- When the recovery code is shown, `hadv-setup` shall require it typed back before it continues.
+- `hadv-setup` shall offer no way to skip or postpone typing the recovery code back.
+- `hadv-setup` shall complete a typed word once its first four letters are entered.
+- `hadv-setup` shall accept a typed recovery code in Latin letters whatever the interface's script.
+- If a typed word is not on the word list, then `hadv-setup` shall refuse the code.
+- If a typed recovery code fails its checksum, then `hadv-setup` shall refuse the code.
+- If a typed-back recovery code does not match the code shown, then `hadv-setup` shall not continue.
+
+### `hadv-setup` and first setup
+
+- `hadv-setup` shall offer no way to be run from another machine.
+- If `hadv-setup` runs without the OS rights that open the bootstrap file, then `hadv-setup` shall
+  refuse to run.
+- `hadv-setup` shall hold the vault key only until it is sealed into the bootstrap file, before the
+  engine starts.
+- When first setup runs, `hadv-setup` shall make the vault key and the server's two key pairs.
+- When first setup runs, `hadv-setup` shall seal the vault key and the server's two private keys in
+  the bootstrap file.
+- When first setup runs, `hadv-setup` shall register the server's two public keys in the database.
+- When first setup runs, `hadv-setup` shall make the recovery key pair and register its public half.
+- When first setup runs, `hadv-setup` shall write a signed copy of the vault key for the recovery key.
+- While first setup is unfinished, the shared secrets subsystem shall refuse every store.
+
+### Restore and replacing the recovery code
+
+- When restore is chosen, `hadv-setup` shall ask for the recovery code.
+- `hadv-setup` shall not ask for a sign-in to restore.
+- When a recovery code is typed for a restore, `hadv-setup` shall rebuild the recovery key pair from
+  it.
+- When the recovery key pair is rebuilt, `hadv-setup` shall open the recovery copy of the newest vault
+  key.
+- If the recovery copy does not open with the rebuilt key pair, then `hadv-setup` shall refuse the
+  restore.
+- If the recovery copy's signer is not a registered server, then `hadv-setup` shall refuse the
+  restore.
+- If the recovery copy's signature does not verify for the recovery key and its vault-key version,
+  then `hadv-setup` shall refuse the restore.
+- `hadv-setup` shall show each registered server's health status on the restore screen.
+- When the sysop picks the server a restore replaces, `hadv-setup` shall show a warning and require
+  confirmation before it continues.
+- If any registered server shows as healthy, then `hadv-setup` shall warn that the replacement server
+  joins through a healthy server, with no restore.
+- When a restore opens the vault key, `hadv-setup` shall make the server's two key pairs.
+- When a restore opens the vault key, `hadv-setup` shall seal the vault key and the server's two
+  private keys in a new bootstrap file.
+- When a restore opens the vault key, `hadv-setup` shall register the server's two public keys in the
+  database.
+- When a restore registers the new server, `hadv-setup` shall remove the registration of the server
+  the sysop picks as the one it replaces.
+- When a restore finishes, `hadv-setup` shall ask the event subsystem to start a vault-key change.
+- When a restore finishes, `hadv-setup` shall alert every sysop.
+- If a replacement of the recovery code is asked for without the #1 Sysop's sign-in with a second
+  factor, then `hadv-setup` shall refuse the replacement.
+- `hadv-setup` shall not ask for the old recovery code to replace it.
+- When the #1 Sysop's sign-in is accepted for a replacement, `hadv-setup` shall make a new recovery key
+  pair.
+- When the new recovery code is typed back correctly, `hadv-setup` shall register its public half in
+  place of the old one.
+- When the new public half is registered, `hadv-setup` shall ask the event subsystem to start a
+  vault-key change.
+- `hadv-setup` shall not open the vault key for a replacement.
+- When a replacement finishes, `hadv-setup` shall alert every sysop.
+
+### Access and failures
+
+- The shared secrets subsystem shall offer only five operations on secrets: store, read, delete,
+  status and deliver.
+- The shared secrets subsystem shall accept a store only through the Admin API.
+- When a store arrives, the shared secrets subsystem shall write the value under the owner and
+  identity the store names, replacing any value already there.
+- The shared secrets subsystem shall not return a value through the Admin API.
+- When the owner reads a secret, the shared secrets subsystem shall return its value.
+- If no value is stored for a secret its owner reads, then the shared secrets subsystem shall answer
+  "not set".
+- If a reader is not the secret's owner, then the shared secrets subsystem shall answer "refused",
+  whether or not a value is stored.
+- The shared secrets subsystem shall decrypt each value only with the vault key of the version the
+  value records.
+- If a value fails to decrypt, then the shared secrets subsystem shall answer "unavailable" to its
+  owner.
+- If a value fails to decrypt, then the shared secrets subsystem shall log it as possible tampering,
+  with the secret's owner and identity.
+- If a value fails to decrypt, then the shared secrets subsystem shall alert every sysop.
+- When a sysop deletes a secret through the Admin API, the shared secrets subsystem shall remove its
+  value.
+- When an owner deletes one of its own secrets, the shared secrets subsystem shall remove its value.
+- When asked for a secret's status, the shared secrets subsystem shall answer only whether a value is
+  set and when it last changed.
+- When an authenticated helper program asks for its secrets, the shared secrets subsystem shall
+  deliver only the secrets that helper program owns.
+- If a program that is not an authenticated helper program asks for secrets, then the shared secrets
+  subsystem shall deliver nothing.
+- The shared secrets subsystem shall not pass a secret to a helper program on a command line or in an
+  environment variable.
+
+### Logs and memory
+
+- When a secret is stored or replaced, the shared secrets subsystem shall log its owner and identity,
+  who did it, from which server and when.
+- When a secret is deleted, the shared secrets subsystem shall log its owner and identity, who did it,
+  from which server and when.
+- The shared secrets subsystem shall log the start and the finish of every vault-key change.
+- When the shared secrets subsystem answers "refused", it shall log the reader and the secret's owner
+  and identity.
+- When the shared secrets subsystem delivers nothing to a program that is not an authenticated helper
+  program, it shall log the attempt.
+- When the shared secrets subsystem refuses a copy, it shall log the refusal.
+- When the vault-key schedule is switched off, the shared secrets subsystem shall log who did it and
+  when.
+- `hadv-setup` shall log every restore, whether it finishes or is refused.
+- `hadv-setup` shall log every replacement of the recovery code.
+- The shared secrets subsystem shall not log a value, any part of a value, or its length.
+- The shared secrets subsystem shall not log the vault key, a working key or a server's private key.
+- The shared secrets subsystem shall hold decrypted values and keys as byte slices, never as strings.
+- The shared secrets subsystem shall overwrite a decrypted value's bytes as soon as its use ends.
+- `hadv-service` shall not write a crash dump of its own.
+
+### Terms
+
+Each term below has one meaning in these lines.
+
+- **shared secrets subsystem**: the part of `hadv-service` that keeps the secrets every server needs,
+  encrypted in the shared vault, and hands each only to its owner.
+- **shared vault**: the shared secrets subsystem's store, in the database.
+- **bootstrap key subsystem**: the per-server subsystem that seals the bootstrap file with the
+  operating system's own secret store. A separate subsystem from the shared secrets subsystem.
+- **bootstrap file**: the per-server file holding the database connection, settings such as pool
+  size, the vault key and the server's private keys.
+- **vault key**: the one key every server keeps in its bootstrap file; each value's working key is
+  derived from it; never stored in the database.
+- **working key**: the key that encrypts one write of one value, derived from the vault key, owner,
+  identity and salt.
+- **vault-key change**: replacing the vault key and re-encrypting every value under the new one.
+- **vault-key schedule**: the yearly vault-key change, on by default, settable from 45 days to two
+  years, switched off only by the #1 Sysop. Not the event subsystem's schedule as a whole.
+- **copy** (of the vault key): the vault key encrypted to one server's or the recovery key's public
+  key, and signed. Used in no other sense: never a clipboard copy.
+- **recovery copy**: the copy of the vault key made for the recovery key. Not a backup.
+- **vault-key version**, **format version**: recorded on every value; which vault key encrypted it,
+  and which cipher and derivation. Not the engine release.
+- **engine release**: one released version of `hadv-service`; servers run at most one release apart.
+- **receiving key pair**, **signing key pair**: a server's two single-purpose key pairs; one opens
+  the copies sent to it, the other signs the copies it makes. Neither is the server's TLS certificate.
+- **registered server**: a server whose two public keys are registered in the database and which has
+  not been deleted. Not a server that is running; that is its health status.
+- **health status**: what a registered server's public, basic health check answers: whether it is
+  running and reachable, as the restore screen shows it. Not the Admin API's detailed health report,
+  which needs a sign-in.
+- **recovery key pair**: the key pair whose private half the recovery code rebuilds.
+- **recovery code**: the 24 numbered words that rebuild the recovery key pair.
+- **secret**: one owner's named entry in the shared vault: its owner, identity and value. Not a
+  "shared secret" in the protocol sense; that is a session password.
+- **value**: the opaque bytes a secret holds, which the vault never interprets. Not a setting's
+  value in the configuration.
+- **owner**: the engine subsystem or helper program a secret belongs to, named when it is stored; the
+  only one that reads it, or, for a helper program, the only one it is delivered to.
+- **identity**: the name an owner gives a secret, unique for that owner.
+- **store**, **read**, **delete**, **status**, **deliver**: the five operations on secrets. "Store" is
+  never the operating system's credential store; "deliver" is only ever to a helper program.
+- **not set**, **unavailable**, **refused**: the read results other than a value: no value stored; a
+  value that failed to decrypt; a reader that is not the owner.
+- **helper program**: one of the board's own programs running beside `hadv-service` on the same
+  server and doing part of the board's ongoing work (the mail processors, `hadv-xyz`, `hadv-doors`);
+  it receives only the secrets it owns, if any. `hadv-setup` and the configuration utilities are not
+  helper programs.
+- **authenticated helper program**: a helper program that has proven which helper it is on the
+  channel that delivers its secrets.
+- **engine**: `hadv-service`.
+- **`hadv-setup`**: the setup wizard; it runs only on the server itself. **First setup** seeds the
+  first server; **restore** rebuilds a server from a backup and the recovery code.
+- **Admin API**: the sysops' endpoint on each server, on its own port.
+- **Sysop role**: the default role that runs the board. **#1 Sysop**: the main Sysop, the #1 account,
+  who owns the board. **sysop**, lower case: anyone holding the Sysop role.
+- **alert every sysop**: a message that reaches every sysop directly. Not a log entry.
+- **log**: an entry in both the server's local log and the central audit system, unless a line
+  names one.
+- **NOTIFY**: PostgreSQL's NOTIFY, a nudge that carries no key. Not an alert.
+- **session password**: the password two FidoNet-technology nodes share for a link.
