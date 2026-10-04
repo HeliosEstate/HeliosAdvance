@@ -152,7 +152,7 @@ administrator, so every default starts at the secure end and loosening one is th
 
 ### Unreachable entries, downloads, transfers, work folder
 
-- If a registry entry cannot be reached, then the storage subsystem shall report it as unreachable to
+- If a registry entry is unreachable, then the storage subsystem shall report it as unreachable to
   every caller that uses it.
 - When a registry entry becomes unreachable, the storage subsystem shall raise one event for the
   sysop, and no further event for that registry entry until it has been reachable again.
