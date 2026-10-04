@@ -152,7 +152,7 @@ administrator, so every default starts at the secure end and loosening one is th
 
 ### Unreachable entries, downloads, transfers, work folder
 
-- If a registry entry cannot be reached, then the storage subsystem shall report it as unreachable to
+- If a registry entry is unreachable, then the storage subsystem shall report it as unreachable to
   every caller that uses it.
 - When a registry entry becomes unreachable, the storage subsystem shall raise one event for the
   sysop, and no further event for that registry entry until it has been reachable again.
@@ -213,8 +213,8 @@ Each term below has one meaning in these lines.
 - **the registry**: the list of all registry entries.
 - **storage subsystem**: the part of the engine that reaches storages and does the broad checks.
 - **server**: one computer, physical or virtual, running the board.
-- **local vault**: one per server; it only unlocks that server's bootstrap file at startup (the
-  bootstrap holds the database connection details and settings such as pool size).
+- **bootstrap key subsystem**: one per server; it only unlocks that server's bootstrap file at
+  startup (the bootstrap holds the database connection details and settings such as pool size).
 - **shared vault**: in the database; it holds every credential the servers share (network node
   credentials, registry entries' credentials). The storage subsystem uses only the shared vault.
 
