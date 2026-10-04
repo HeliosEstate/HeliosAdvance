@@ -20,6 +20,7 @@ page is fixed.
 | `settings` | Every sysop setting, board, server or role scoped, declared in code by its feature, read on use with no cache, Set and audit in one transaction. | `audit`, `board` |
 | `session` | One caller on one server from arrival to disconnect, transport-agnostic: identity, lifecycle, account, node, the row who's-online is built from, and the view a script is handed. | `audit`, `board`, `nodes` |
 | `rbac` | Roles, permissions, holders, and the one check every gate asks. Five seeded roles by fixed ID, none deletable; account #1 is Sysop always. | `audit`, `board` |
+| `bootstrap` | The bootstrap key subsystem: one server's bootstrap file, sealed under the bootstrap key that the OS credential store holds; its checks on the bootstrap folder as opened; a handle for `hadv-setup` that changes any field and one for `hadv-service` that changes only the vault keys. | `board` |
 
 `cmd/hadv-service` is the composition root and may import anything. The `Uses` column is
 enforced by `depguard` in `.golangci.yml`; a new arrow is a change to that file in the same
@@ -27,8 +28,10 @@ PR, with its reason.
 
 ## The arrows, in words
 
-- Everything above `board` and `database` goes to the database and returns
+- Everything above `board` and `database` but `bootstrap` goes to the database and returns
   `database.ErrUnavailable` rather than a default. There is no degraded mode.
+- `bootstrap` never reaches the database: it is what a server reads before it can. Only
+  `hadv-setup` and `hadv-service` link it, each with its own handle.
 - The registry never reads the lease. A removed server finds out at its next renewal.
 - The lease never calls anyone. Expiry is a fact readers compute; the allocator's
   occupancy rule, who's-online's filter and health's one line all read `Live`.
@@ -48,8 +51,9 @@ PR, with its reason.
 
 ## The engine's loop, as the contracts imply it
 
-Start: read the bootstrap record; `registry.Approve`; `lease.Acquire`; `session.Repair`;
-declare settings and register permissions; open listeners. Then renew at the interval.
+Start: `bootstrap.UnlockForService`, which gives the server's ID and its database account;
+`registry.Approve`; `lease.Acquire`; `session.Repair`; declare settings and register
+permissions; open listeners. Then renew at the interval.
 On `Expired`: `session.DisconnectAll`, refuse new callers, `Approve` and `Acquire` again on
 your own. On `Superseded` or `NotAdmitted`: `DisconnectAll` and stay down. On
 `database.ErrUnavailable` at renewal: count a miss and try again. On a clean stop:

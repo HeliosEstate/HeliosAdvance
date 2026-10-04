@@ -465,8 +465,8 @@ starts at the secure end and loosening one is the sysop's choice.
 ## Bootstrap key
 
 Each server keeps a file of its own, the bootstrap file, with what it needs before it can reach the
-database: the database connection, the server's database account, the vault key and the server's
-two private keys. The bootstrap key subsystem seals that file under a random key, the bootstrap key,
+database: its ID, the database connection, the server's database account, the vault key and the
+server's two private keys. The bootstrap key subsystem seals that file under a random key, the bootstrap key,
 and the operating system's credential store holds that key. So the file opens only where its key is
 held, and only for `hadv-setup` and `hadv-service`. No other program of the board reads it. Where no
 credential store fits, the sysop can choose a key file instead, and the board warns about that
@@ -478,8 +478,9 @@ at the secure end and loosening one is the sysop's choice.
 
 - The bootstrap key subsystem shall unlock the bootstrap file for no program other than `hadv-setup`
   and `hadv-service`.
-- The bootstrap key subsystem shall keep in the bootstrap file the database connection, the server's
-  database account, the vault key and the server's two private keys, and no other setting.
+- The bootstrap key subsystem shall keep in the bootstrap file the server's ID, the database
+  connection, the server's database account, the vault key and the server's two private keys, and
+  no other setting.
 - While the OS credential store holds the bootstrap key on Windows or on Linux on a bare OS, when
   `hadv-setup` builds a bootstrap file, the bootstrap key subsystem shall seal it under a new
   bootstrap key.
@@ -584,6 +585,7 @@ at the secure end and loosening one is the sysop's choice.
 | it is on a network share |
 | it is on a removable drive |
 | it is a symbolic link or, on Windows, a junction |
+| its file system is not NTFS or ReFS on Windows, or ext2, ext3, ext4, XFS, Btrfs or ZFS on Linux |
 
 ### Permissions and refusals
 
@@ -611,6 +613,7 @@ at the secure end and loosening one is the sysop's choice.
 |---|---|---|
 | the bootstrap folder | owned by the service account, mode `0700` | the service account, SYSTEM and Administrators only, with no inherited access |
 | the bootstrap file | owned by the service account, mode `0600` | the service account, SYSTEM and Administrators only, with no inherited access |
+| every other file in the bootstrap folder but the key file | the bootstrap file's rule | the bootstrap file's rule |
 | the key file, or the Swarm secret's file | owned by the service account, mode `0400` | none (no key file on Windows) |
 | the machine key pair | none | usable only by the service account, SYSTEM and Administrators |
 
@@ -670,10 +673,11 @@ at the secure end and loosening one is the sysop's choice.
   for the detailed health report.
 - If a rewrite of the bootstrap file fails, then `hadv-service` shall retry it on a timer and at every
   start until it succeeds.
-- The bootstrap key subsystem shall hold the bootstrap key in memory only while it unlocks or rewrites
-  the bootstrap file.
+- The bootstrap key subsystem shall hold the bootstrap key in its own memory only while it unlocks or
+  rewrites the bootstrap file.
 - When the bootstrap key subsystem rewrites the bootstrap file, the bootstrap key subsystem shall
-  unseal the bootstrap key again for that rewrite.
+  unseal the bootstrap key again, or on Linux with systemd older than 256 read it again from
+  systemd, for that rewrite.
 - The bootstrap key subsystem shall not show the bootstrap key or the bootstrap file's contents in a
   log, an error message, an audit entry, the detailed health report or a screen.
 
