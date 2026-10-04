@@ -209,7 +209,7 @@ Each term below has one meaning in these lines.
 
 - **storage**: a physical place where the board's files live: a folder on a server's disk, an SMB
   share, an S3 bucket, an ISO or an optical drive.
-- **registry entry**: the record describing one storage (its kind, path, owner, credentials).
+- **registry entry**: the record describing one storage (its kind, path, owning server, credentials).
 - **the registry**: the list of all registry entries.
 - **storage subsystem**: the part of the engine that reaches storages and does the broad checks.
 - **server**: one computer, physical or virtual, running the board.
