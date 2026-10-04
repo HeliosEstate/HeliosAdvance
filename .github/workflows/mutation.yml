@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+    inputs:
+      base:
+        description: "Mutate everything changed since this commit (default: the last day)"
+        required: false
 
 permissions:
   contents: read
@@ -35,8 +39,10 @@ jobs:
       - name: Mutate the last day's changes
         env:
           RACE: -race
+          BASE_INPUT: ${{ inputs.base }}
         run: |
           base=$(git rev-list -1 --before="24 hours ago" origin/development)
+          if [ -n "$BASE_INPUT" ]; then base=$(git rev-parse --verify "$BASE_INPUT^{commit}"); fi
           if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then echo "nothing changed in the last day"; exit 0; fi
           echo "mutating $base..HEAD"
           BASE="$base" bash check.sh --mutation
