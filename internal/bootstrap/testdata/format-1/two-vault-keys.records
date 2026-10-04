@@ -1,0 +1,11 @@
+magic "HADVBOOT"
+version 1
+nonce hex:cb8dd910c53b2a791d213453
+record "server" hex:0000002a
+record "database.connection" "host=db.example.test port=5432 dbname=heliosadvance sslmode=verify-full"
+record "database.account.name" "hadv_server_42"
+record "database.account.password" hex:b9bdd90703f314d5a6129e84de685fceb8d5c5208402aa48
+record "vault.key.6" hex:ceeb5f2ab707abcd292b51c3e02bda7cdc0484a0ddef5379096340cdb4c12b02
+record "vault.key.7" hex:6b688c7a2dd7d80aac70973b904f6fa154479a711e2ef096b22de10ca0971700
+record "receiving.key" hex:49e672c6e349bbb32780e87b514b6cd444a3c69aecffef4b63c455f2fe7e0187
+record "signing.key" hex:eb7e4a9a2164288f001f502ce80386e81153104b684dedc4910e498fa80626a7
