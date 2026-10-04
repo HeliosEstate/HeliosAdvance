@@ -71,7 +71,7 @@ administrator, so every default starts at the secure end and loosening one is th
   limits, then the storage subsystem shall close the connection, report the registry entry as
   unreachable, and continue serving every other registry entry.
 - The storage subsystem shall not support NFS.
-- When first-time setup completes, the installer shall have created a local registry entry at
+- When first setup completes, `hadv-setup` shall have created a local registry entry at
   `C:\HADV\DOWNLOADS` on Windows or `/var/lib/hadv/downloads` on Linux.
 
 ### Kinds, areas, names, writes, uploads, imports
@@ -171,7 +171,7 @@ administrator, so every default starts at the secure end and loosening one is th
   subsystem shall fetch it from that server over the ClusterAPI.
 - The web server, X/Y/Zmodem and the FTP server shall not open files through the storage subsystem,
   and shall receive opened files only from the owning subsystem.
-- When first-time setup completes, the installer shall have set the server's work folder to
+- When first setup completes, `hadv-setup` shall have set the server's work folder to
   `C:\HADV\WORK` on Windows or `/var/lib/hadv/work` on Linux.
 - The configuration utilities shall let the sysop change each server's work folder.
 - If a work folder lies inside a registry entry's path, or a registry entry's path lies inside a work
@@ -186,7 +186,7 @@ administrator, so every default starts at the secure end and loosening one is th
 - The configuration utilities shall let the sysop change both ports.
 - If a caller to the ClusterAPI port presents no paired server's certificate, then the server shall
   refuse the connection during the TLS handshake.
-- If a caller to the Admin API presents anything other than a sysop login, a paired server's
+- If a caller to the Admin API presents anything other than an admin sign-in, a paired server's
   certificate included, then the Admin API shall refuse the request.
 - The storage subsystem shall offer other servers, over the ClusterAPI, four operations on its local
   registry entries: read a range of a file, write a file, list a folder, and read a file's recorded
@@ -197,7 +197,7 @@ administrator, so every default starts at the secure end and loosening one is th
   folders on a registry entry.
 - The storage subsystem shall offer, through the Admin API and only to a sysop, a listing of a
   server's drives and folders that leaves out every location the path rules refuse.
-- The storage subsystem shall raise its events for the sysop through the event system.
+- The storage subsystem shall raise its events for the sysop through the event subsystem.
 - When a message is deleted, the message system shall have the storage subsystem delete that message's
   attachments.
 - The network-mail subsystem shall place files arriving by network mail, TIC files and file
@@ -209,7 +209,7 @@ Each term below has one meaning in these lines.
 
 - **storage**: a physical place where the board's files live: a folder on a server's disk, an SMB
   share, an S3 bucket, an ISO or an optical drive.
-- **registry entry**: the record describing one storage (its kind, path, owner, credentials).
+- **registry entry**: the record describing one storage (its kind, path, owning server, credentials).
 - **the registry**: the list of all registry entries.
 - **storage subsystem**: the part of the engine that reaches storages and does the broad checks.
 - **server**: one computer, physical or virtual, running the board.
@@ -218,11 +218,15 @@ Each term below has one meaning in these lines.
 - **shared vault**: in the database; it holds every credential the servers share (network node
   credentials, registry entries' credentials). The storage subsystem uses only the shared vault.
 
-- **sysop**: the person who runs the board and holds a sysop login.
-- **user**: a person who uses the board without a sysop login.
+- **sysop**: anyone holding the Sysop role, who runs the board. **#1 Sysop**: the main Sysop, the #1
+  account, who owns the board.
+- **user**: a person who uses the board without the Sysop role.
+- **admin sign-in**: signing in to the Admin API, by anyone holding the permission for it; by default
+  only the Sysop role holds it. Not a paired server's certificate.
 - **configuration utilities**: `hadv-config` and `hadv-config-gui`.
 - **import utility**: the CLI/TUI tool that brings files into an area through the Admin API.
-- **installer**: `hadv-setup`; **first-time setup** is its path that seeds the first server.
+- **`hadv-setup`**: the setup wizard; it runs only on the server itself. **first setup** is its path
+  that seeds the first server.
 - **engine**: the board's server program; its own subsystems are the ones compiled into it, not
   custom scripts.
 - **custom script**: a Lua script a sysop adds; not part of the engine.
@@ -231,7 +235,9 @@ Each term below has one meaning in these lines.
 - **message system**: the engine subsystem for message areas and mail.
 - **network-mail subsystem**: the engine subsystem that exchanges mail with other systems (FidoNet,
   QWK and the like).
-- **event system**: database tables with NOTIFY/LISTEN, carrying events between subsystems.
+- **event subsystem**: the multi-server-aware subsystem that carries events between subsystems and
+  decides when an event runs and on which server, so the same event never runs on two servers; it
+  tells the responsible subsystem to do the work and never owns it. Not an alert to the sysops.
 - **Admin API**: the sysops' endpoint on each server, on its own port.
 - **ClusterAPI**: the servers' endpoint on each server, on its own port, open only to paired servers.
 - **paired server**: a server that has joined the board and holds the certificate joining gave it.
