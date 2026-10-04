@@ -107,6 +107,12 @@ linters:
             - $gostd
             - github.com/heliosestate/heliosadvance/internal/audit
             - github.com/heliosestate/heliosadvance/internal/board
+        bootstrap:
+          files: ["**/internal/bootstrap/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/board
         transfer:
           files: ["**/internal/transfer/**"]
           list-mode: strict
