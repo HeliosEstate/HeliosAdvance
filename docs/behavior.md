@@ -216,8 +216,8 @@ reach them, and hands each one only to the part of the board that owns it. Passw
 use to sign in to the board are not kept here; the board keeps only one-way hashes of those.
 
 A board comes back up on its own after a reboot, so no passphrase guards the key that opens the
-secrets. Each server keeps that key in its own bootstrap file, sealed with the operating system's
-credential store, and never in the database. If no server holds the key any more, the only way back
+secrets. Each server keeps that key in its own bootstrap file, sealed under a bootstrap key that the
+operating system's credential store holds, and never in the database. If no server holds the key any more, the only way back
 is the 24-word recovery code the sysop wrote down by hand at first setup. Without it, every secret
 has to be entered again. A sysop runs the board, not a systems administrator, so every default
 starts at the secure end and loosening one is the sysop's choice.
@@ -461,3 +461,226 @@ starts at the secure end and loosening one is the sysop's choice.
 - The shared secrets subsystem shall overwrite a decrypted value's bytes as soon as its use ends.
 - `hadv-service` shall not write a crash dump of its own.
 
+
+## Bootstrap key
+
+Each server keeps a file of its own, the bootstrap file, with what it needs before it can reach the
+database: the database connection, the server's database account, the vault key and the server's
+two private keys. The bootstrap key subsystem seals that file under a random key, the bootstrap key,
+and the operating system's credential store holds that key. So the file opens only where its key is
+held, and only for `hadv-setup` and `hadv-service`. No other program of the board reads it. Where no
+credential store fits, the sysop can choose a key file instead, and the board warns about that
+choice at every start. A sysop runs the board, not a systems administrator, so every default starts
+at the secure end and loosening one is the sysop's choice.
+
+
+### Who unlocks and writes
+
+- The bootstrap key subsystem shall unlock the bootstrap file for no program other than `hadv-setup`
+  and `hadv-service`.
+- The bootstrap key subsystem shall keep in the bootstrap file the database connection, the server's
+  database account, the vault key and the server's two private keys, and no other setting.
+- While the OS credential store holds the bootstrap key on Windows or on Linux on a bare OS, when
+  `hadv-setup` builds a bootstrap file, the bootstrap key subsystem shall seal it under a new
+  bootstrap key.
+- The bootstrap key subsystem shall let `hadv-service` change only the vault-key fields of the
+  bootstrap file.
+- If `hadv-service` asks to change any other field of the bootstrap file, then the bootstrap key
+  subsystem shall refuse the change.
+- If `hadv-service` asks to change any other field of the bootstrap file, then the bootstrap key
+  subsystem shall log the attempt, naming the field.
+
+### The OS credential store by platform
+
+- Where the server runs Windows, the bootstrap key subsystem shall have the OS credential store seal
+  the bootstrap key under a machine key pair made for that server.
+- Where the server runs Windows, the bootstrap key subsystem shall make the machine key pair
+  non-exportable.
+- Where the server runs Windows, the bootstrap key subsystem shall make the machine key pair usable
+  only by the service account, SYSTEM and Administrators.
+- Where the server runs Windows and has a TPM, the bootstrap key subsystem shall keep the machine key
+  pair in the TPM.
+- Where the server runs Windows without a TPM, the bootstrap key subsystem shall keep the machine key
+  pair in the OS software key store.
+- Where the server runs Linux on a bare OS, the bootstrap key subsystem shall have systemd credentials
+  seal the bootstrap key.
+- Where the server runs Linux on a bare OS and has a TPM, the bootstrap key subsystem shall have the
+  bootstrap key sealed under both the TPM and the host key.
+- Where the server runs Linux on a bare OS without a TPM, the bootstrap key subsystem shall have the
+  bootstrap key sealed under the host key.
+- Where the server runs in a container, the bootstrap key subsystem shall read the bootstrap key from
+  a Swarm secret.
+- While the OS credential store holds the bootstrap key on Windows or on Linux on a bare OS, the
+  bootstrap key subsystem shall refuse to unlock a bootstrap file opened on another machine.
+- While a Swarm secret holds the bootstrap key, the bootstrap key subsystem shall refuse to unlock a
+  bootstrap file opened outside that Swarm.
+
+### The key file, containers, TPM, never replaced
+
+- If the server runs Linux on a bare OS without systemd 250 or later, then `hadv-setup` shall refuse
+  to build a bootstrap file until the sysop explicitly chooses a key file.
+- When the sysop chooses a key file, `hadv-setup` shall show that the bootstrap key sits unsealed on
+  the same disk as the bootstrap file.
+- While a key file holds the bootstrap key, `hadv-service` shall log a warning at every start that
+  the bootstrap key is not sealed.
+- Where the server runs in a container, `hadv-setup` shall use the bootstrap key it finds in a Swarm
+  secret or a key file.
+- Where the server runs in a container, `hadv-setup` shall create neither the bootstrap key nor the
+  service account.
+- If the server runs in a container with neither a Swarm secret nor a key file, then `hadv-setup`
+  shall refuse to build a bootstrap file, naming both.
+- Where the server runs in a container, if the file holding the bootstrap key is open to any account
+  other than the service account, then `hadv-service` shall name a Swarm secret and a volume-mounted
+  key file in its refusal.
+- The shipped Dockerfile shall create the service account with a fixed uid.
+- The shipped stack file shall make the service account own the Swarm secret, with mode `0400`.
+- If a key file or a Swarm secret holds anything other than 32 bytes as base64 in 44 characters, with
+  at most one trailing newline, then `hadv-service` shall refuse to start.
+- If a key file or a Swarm secret holds anything other than 32 bytes as base64 in 44 characters, with
+  at most one trailing newline, then `hadv-service` shall name the command that makes one,
+  `openssl rand -base64 32`.
+- The bootstrap key subsystem shall not require a TPM.
+- If the server has no TPM, then the bootstrap key subsystem shall not fall back to a key file.
+- The bootstrap key subsystem shall report how the bootstrap key is held, for the detailed health
+  report: in a TPM, in the OS software key store, under the host key, as a Swarm secret or in a key
+  file.
+- The bootstrap key subsystem shall not warn that the server has no TPM.
+- The bootstrap key subsystem shall offer no way to replace the bootstrap key on its own, by schedule
+  or by command.
+- While a Swarm secret or a key file holds the bootstrap key, when `hadv-setup` builds a bootstrap
+  file, the bootstrap key subsystem shall seal it under the bootstrap key the sysop made.
+
+### The account and the folder
+
+- Where the server runs Windows or Linux on a bare OS, `hadv-setup` shall create the service account.
+- `hadv-setup` shall give the service account no administrator or root rights.
+- If `hadv-service` runs under any account other than the account that owns the bootstrap folder,
+  then `hadv-service` shall refuse to start.
+- Where the server runs Windows or Linux on a bare OS, `hadv-setup` shall create the bootstrap
+  folder, owned by the service account.
+- The bootstrap key subsystem shall keep the bootstrap file in the bootstrap folder, outside the
+  program folder.
+- Where the sysop picks no other folder, `hadv-setup` shall put the bootstrap folder in the
+  platform's place for a service's machine-wide data: under `%ProgramData%` on Windows, under
+  `/var/lib` on Linux.
+- Where the server runs in a container, the bootstrap key subsystem shall keep the bootstrap folder at
+  one fixed path inside the container.
+- Where the sysop picks another bootstrap folder, `hadv-setup` shall record its location in the
+  service registration.
+- Where the service registration names no bootstrap folder, the bootstrap key subsystem shall use the
+  platform's default bootstrap folder.
+- If the bootstrap folder the sysop picks breaks a rule in the table below, then `hadv-setup` shall
+  refuse it.
+- If the bootstrap folder breaks a rule in the table below, then `hadv-service` shall refuse to
+  start.
+- If the bootstrap file or the key file is a symbolic link or, on Windows, a junction, then
+  `hadv-service` shall refuse to start.
+- The bootstrap key subsystem shall check each file and folder as it opened it, never by its name
+  alone.
+
+| The bootstrap folder is refused when |
+|---|
+| its path is not absolute |
+| it is on a network share |
+| it is on a removable drive |
+| it is a symbolic link or, on Windows, a junction |
+
+### Permissions and refusals
+
+- When `hadv-setup` builds a bootstrap file, `hadv-setup` shall set the bootstrap file and the
+  bootstrap folder to their rules in the table below.
+- If anything in the table below is set looser than its rule, then `hadv-service` shall refuse to
+  start, naming it.
+- If the bootstrap file is not writable by the service account, then `hadv-service` shall refuse to
+  start, naming its path.
+- `hadv-service` shall not change the permissions of anything in the table below.
+- When `hadv-setup` finds anything in the table below set looser than its rule, `hadv-setup` shall
+  offer to set it right.
+- When `hadv-setup` offers to set a permission right, `hadv-setup` shall show what it found and what
+  it sets.
+- `hadv-setup` shall change no permission without the sysop's yes.
+- Where the server runs in a container, if the Swarm secret's file is set looser than its rule, then
+  `hadv-setup` shall name the stack file's account and mode settings instead of offering to change
+  it.
+- Where the server runs Windows, if a machine key pair of the bootstrap key subsystem's name already
+  exists at first setup or joining, then `hadv-setup` shall refuse to create one.
+- When joining again or a restore runs on Windows, `hadv-setup` shall delete the server's existing
+  machine key pair and make a new one.
+
+| What | Rule on Linux and in a container | Rule on Windows |
+|---|---|---|
+| the bootstrap folder | owned by the service account, mode `0700` | the service account, SYSTEM and Administrators only, with no inherited access |
+| the bootstrap file | owned by the service account, mode `0600` | the service account, SYSTEM and Administrators only, with no inherited access |
+| the key file, or the Swarm secret's file | owned by the service account, mode `0400` | none (no key file on Windows) |
+| the machine key pair | none | usable only by the service account, SYSTEM and Administrators |
+
+### The file
+
+- The bootstrap key subsystem shall seal the bootstrap file with AES-256-GCM under the bootstrap key.
+- When the bootstrap key subsystem makes a bootstrap key, the bootstrap key subsystem shall make it
+  from 256 random bits.
+- The bootstrap key subsystem shall write the format version at the head of the bootstrap file,
+  unencrypted.
+- If any byte of the bootstrap file is changed, its format version included, then the bootstrap key
+  subsystem shall refuse to unlock it.
+- The bootstrap key subsystem shall act on nothing in the bootstrap file's header before the file's
+  integrity check passes, beyond what the check needs.
+- The bootstrap key subsystem shall raise the format version only when the bootstrap file's envelope
+  or the meaning of a field changes.
+- The bootstrap key subsystem shall keep the bootstrap file's contents as named fields.
+- When the bootstrap key subsystem rewrites the bootstrap file, the bootstrap key subsystem shall keep
+  every field it does not know, unchanged.
+- The bootstrap key subsystem shall read a bootstrap file of its own format version or any older one.
+- The bootstrap key subsystem shall write a bootstrap file only in its own format version.
+- If a bootstrap file's format version is newer than its own, then the bootstrap key subsystem shall
+  refuse to unlock it, naming both versions.
+- When the bootstrap key subsystem rewrites the bootstrap file, the bootstrap key subsystem shall
+  write the new file beside the old one.
+- When the bootstrap key subsystem has written a new bootstrap file, the bootstrap key subsystem shall
+  check that it reads back before replacing the old one.
+- When a new bootstrap file reads back, the bootstrap key subsystem shall replace the old one with it
+  in one step.
+- If a new bootstrap file does not read back, then the bootstrap key subsystem shall delete it and
+  keep the old one.
+- If a rewrite stops before it finishes, then the bootstrap key subsystem shall leave the old
+  bootstrap file whole.
+- If a half-made new bootstrap file is found at start, then the bootstrap key subsystem shall delete
+  it.
+- If a half-made new bootstrap file is found at start, then the bootstrap key subsystem shall unlock
+  the existing bootstrap file.
+
+### Startup, failure and recovery
+
+- If the bootstrap key subsystem refuses to unlock the bootstrap file, then `hadv-service` shall
+  refuse to start.
+- When the bootstrap key subsystem refuses to unlock the bootstrap file, the bootstrap key subsystem
+  shall name the cause the table below gives for where the unlock failed.
+- When `hadv-service` refuses to start, `hadv-service` shall name the path, the cause in plain words
+  and what the sysop does next.
+- When `hadv-service` refuses to start, `hadv-service` shall write the refusal to the server's local
+  log only.
+- If the bootstrap file does not unlock for any cause but a newer format version, then `hadv-service`
+  shall name `hadv-setup` as the way back: joining again on a board with other servers, restore on a
+  one-server board.
+- If a rewrite of the bootstrap file fails, then `hadv-service` shall keep running on the vault keys
+  it holds in memory.
+- If a rewrite of the bootstrap file fails, then `hadv-service` shall log the failure as an error,
+  naming the path.
+- If a rewrite of the bootstrap file fails, then the bootstrap key subsystem shall report the failure
+  for the detailed health report.
+- If a rewrite of the bootstrap file fails, then `hadv-service` shall retry it on a timer and at every
+  start until it succeeds.
+- The bootstrap key subsystem shall hold the bootstrap key in memory only while it unlocks or rewrites
+  the bootstrap file.
+- When the bootstrap key subsystem rewrites the bootstrap file, the bootstrap key subsystem shall
+  unseal the bootstrap key again for that rewrite.
+- The bootstrap key subsystem shall not show the bootstrap key or the bootstrap file's contents in a
+  log, an error message, an audit entry, the detailed health report or a screen.
+
+| Where the unlock fails | The cause it names |
+|---|---|
+| no bootstrap key in the OS credential store, the Swarm secret or the key file | the bootstrap key is not found |
+| the OS credential store does not unseal the bootstrap key | sealed on another machine, or corrupt; both where the store does not tell them apart |
+| no bootstrap file in the bootstrap folder | the bootstrap file is not found |
+| the bootstrap file does not unseal under the bootstrap key | the bootstrap file is corrupt or altered; under a Swarm secret or a key file, also that the key is not this file's |
+| the format version is newer than the program's | a newer format version, naming both |
