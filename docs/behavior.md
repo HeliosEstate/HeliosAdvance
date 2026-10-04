@@ -34,6 +34,9 @@ administrator, so every default starts at the secure end and loosening one is th
   image's size and the volume label inside it match the registry entry.
 - If either confirmation above fails, then the storage subsystem shall report the registry entry as
   unavailable to every caller that uses it.
+- If an ISO image is malformed or states a size above the storage subsystem's limits, then the
+  storage subsystem shall report the ISO registry entry as unavailable, and continue serving every
+  other registry entry.
 - The storage subsystem shall use one set of credentials per SMB or S3 registry entry, the same on
   every server.
 - The storage subsystem shall obtain an SMB or S3 registry entry's credentials from the shared vault
@@ -64,6 +67,9 @@ administrator, so every default starts at the secure end and loosening one is th
   shall warn the sysop what the setting gives up before saving it.
 - If an SMB server offers only a guest or anonymous login, then the storage subsystem shall refuse the
   connection.
+- If an SMB server sends a reply that is malformed or states a size above the storage subsystem's
+  limits, then the storage subsystem shall close the connection, report the registry entry as
+  unreachable, and continue serving every other registry entry.
 - The storage subsystem shall not support NFS.
 - When first-time setup completes, the installer shall have created a local registry entry at
   `C:\HADV\DOWNLOADS` on Windows or `/var/lib/hadv/downloads` on Linux.
@@ -78,6 +84,8 @@ administrator, so every default starts at the secure end and loosening one is th
   `<registry entry path>/<KIND>/<NAME>`.
 - If an area's Name contains a space or a character on the refused-characters list, then the storage
   subsystem shall refuse the Name.
+- If a file name to be written contains a path separator, a `..` component, or a character on the
+  refused-characters list, then the storage subsystem shall refuse the write.
 - The storage subsystem shall store every Name in uppercase.
 - If a Name is already used by another area of the same kind, then the storage subsystem shall refuse
   the Name.
@@ -178,8 +186,8 @@ administrator, so every default starts at the secure end and loosening one is th
 - The configuration utilities shall let the sysop change both ports.
 - If a caller to the ClusterAPI port presents no paired server's certificate, then the server shall
   refuse the connection during the TLS handshake.
-- The Admin API shall accept only sysop logins, and shall refuse a paired server's certificate offered
-  in place of one.
+- If a caller to the Admin API presents anything other than a sysop login, a paired server's
+  certificate included, then the Admin API shall refuse the request.
 - The storage subsystem shall offer other servers, over the ClusterAPI, four operations on its local
   registry entries: read a range of a file, write a file, list a folder, and read a file's recorded
   hash.
@@ -260,3 +268,5 @@ Each term below has one meaning in these lines.
 - **low-space warning level**: the room below which the sysop is warned.
 - **scrub job**: a job that reads every file on a registry entry and compares its hash.
 - **door**: a door game, an external program the board runs for a caller; used in no other sense.
+- **size limits**: the bounds the storage subsystem sets on every size an SMB server or an
+  ISO image states; not settled yet.
