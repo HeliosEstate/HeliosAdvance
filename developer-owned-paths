@@ -5,6 +5,7 @@ docs/spec/*
 docs/architecture.md
 docs/behavior.md
 features/*
+oracle/*
 .github/*
 */contract.go
 CLAUDE.md
