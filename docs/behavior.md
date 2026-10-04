@@ -5,6 +5,9 @@ test or a run on the real system can check. The lines use the EARS form and only
 "shall not". The developer approves every line, and the lines are locked like the contracts: a
 change goes back through design before it reaches this page.
 
+Every term in these lines has the one meaning the estate's
+[glossary](https://github.com/HeliosEstate/.github/blob/main/GLOSSARY.md) gives it.
+
 ## Storage
 
 Storage is where the board's files live and how its servers reach them: folders on a server's
@@ -202,80 +205,6 @@ administrator, so every default starts at the secure end and loosening one is th
   attachments.
 - The network-mail subsystem shall place files arriving by network mail, TIC files and file
   attachments, into a file area through the storage subsystem in the same way as an import.
-
-### Terms
-
-Each term below has one meaning in these lines.
-
-- **storage**: a physical place where the board's files live: a folder on a server's disk, an SMB
-  share, an S3 bucket, an ISO or an optical drive.
-- **registry entry**: the record describing one storage (its kind, path, owning server, credentials).
-- **the registry**: the list of all registry entries.
-- **storage subsystem**: the part of the engine that reaches storages and does the broad checks.
-- **server**: one computer, physical or virtual, running the board.
-- **bootstrap key subsystem**: one per server; it only unlocks that server's bootstrap file at
-  startup (the bootstrap holds the database connection details and settings such as pool size).
-- **shared vault**: in the database; it holds every credential the servers share (network node
-  credentials, registry entries' credentials). The storage subsystem uses only the shared vault.
-
-- **sysop**: anyone holding the Sysop role, who runs the board. **#1 Sysop**: the main Sysop, the #1
-  account, who owns the board.
-- **user**: a person who uses the board without the Sysop role.
-- **admin sign-in**: signing in to the Admin API, by anyone holding the permission for it; by default
-  only the Sysop role holds it. Not a paired server's certificate.
-- **configuration utilities**: `hadv-config` and `hadv-config-gui`.
-- **import utility**: the CLI/TUI tool that brings files into an area through the Admin API.
-- **`hadv-setup`**: the setup wizard; it runs only on the server itself. **first setup** is its path
-  that seeds the first server.
-- **engine**: the board's server program; its own subsystems are the ones compiled into it, not
-  custom scripts.
-- **custom script**: a Lua script a sysop adds; not part of the engine.
-- **owning subsystem**: the engine subsystem that asked the storage subsystem to keep a file, and
-  decides who may use it.
-- **message system**: the engine subsystem for message areas and mail.
-- **network-mail subsystem**: the engine subsystem that exchanges mail with other systems (FidoNet,
-  QWK and the like).
-- **event subsystem**: the multi-server-aware subsystem that carries events between subsystems and
-  decides when an event runs and on which server, so the same event never runs on two servers; it
-  tells the responsible subsystem to do the work and never owns it. Not an alert to the sysops.
-- **Admin API**: the sysops' endpoint on each server, on its own port.
-- **ClusterAPI**: the servers' endpoint on each server, on its own port, open only to paired servers.
-- **paired server**: a server that has joined the board and holds the certificate joining gave it.
-- **area**: a file area or a message area, as storage sees it: the files of one kind kept under one
-  folder, or one disc path, on one registry entry. Not to be confused with a registry entry.
-- **file area**: an area of files offered for download.
-- **Name**: an area's short identifier: no spaces, stored uppercase, unique within its kind; on a
-  writable registry entry, the area's folder name. Not to be confused with the descriptions users see.
-- **kind**: a category of files registered by an engine subsystem (file areas, message attachments),
-  with its own folder on each writable registry entry.
-- **visible**: appears in listings and can be opened. **hidden**: on a storage, seen only by the
-  owning subsystem.
-- **work folder**: a server's own local folder for files in progress and optical copies, outside the
-  registry.
-- **root path**: the top of a drive or file system (`C:\`, `/`).
-- **drive-letter administrative share**: a share named by one letter followed by `$` (`C$`).
-- **refused-locations list**: the system folders per OS, the board's program folders and the
-  database's data folder; the system folders are not settled yet.
-- **refused-characters list**: the characters and names unsafe on any supported OS; not settled yet.
-- **marker file**: a small file at a writable registry entry's path holding that entry's identity.
-- **path rules**: the root, refused-location, admin-share and nesting rules in the first section of
-  lines.
-- **volume label and serial**: the name and number recorded on a disc or image when it was made.
-- **missing**: in the records, but not on its storage.
-- **damaged**: its hash differs from the recorded hash.
-- **unreachable**: the storage cannot be contacted.
-- **unavailable**: the storage was contacted but is not the one its registry entry describes (wrong
-  disc, not an optical drive, an image that does not match).
-- **full**: too little room for the write.
-- **available**: none of the above.
-- **limit**: the most space the board may use on a registry entry; optional, set by the sysop.
-- **room**: the limit minus the space used, and on local and SMB registry entries no more than the
-  storage's free space.
-- **low-space warning level**: the room below which the sysop is warned.
-- **scrub job**: a job that reads every file on a registry entry and compares its hash.
-- **door**: a door game, an external program the board runs for a caller; used in no other sense.
-- **size limits**: the bounds the storage subsystem sets on every size an SMB server or an
-  ISO image states; not settled yet.
 
 ## Shared secrets
 
@@ -532,64 +461,3 @@ starts at the secure end and loosening one is the sysop's choice.
 - The shared secrets subsystem shall overwrite a decrypted value's bytes as soon as its use ends.
 - `hadv-service` shall not write a crash dump of its own.
 
-### Terms
-
-Each term below has one meaning in these lines.
-
-- **shared secrets subsystem**: the part of `hadv-service` that keeps the secrets every server needs,
-  encrypted in the shared vault, and hands each only to its owner.
-- **shared vault**: the shared secrets subsystem's store, in the database.
-- **bootstrap key subsystem**: the per-server subsystem that seals the bootstrap file with the
-  operating system's own secret store. A separate subsystem from the shared secrets subsystem.
-- **bootstrap file**: the per-server file holding the database connection, settings such as pool
-  size, the vault key and the server's private keys.
-- **vault key**: the one key every server keeps in its bootstrap file; each value's working key is
-  derived from it; never stored in the database.
-- **working key**: the key that encrypts one write of one value, derived from the vault key, owner,
-  identity and salt.
-- **vault-key change**: replacing the vault key and re-encrypting every value under the new one.
-- **vault-key schedule**: the yearly vault-key change, on by default, settable from 45 days to two
-  years, switched off only by the #1 Sysop. Not the event subsystem's schedule as a whole.
-- **copy** (of the vault key): the vault key encrypted to one server's or the recovery key's public
-  key, and signed. Used in no other sense: never a clipboard copy.
-- **recovery copy**: the copy of the vault key made for the recovery key. Not a backup.
-- **vault-key version**, **format version**: recorded on every value; which vault key encrypted it,
-  and which cipher and derivation. Not the engine release.
-- **engine release**: one released version of `hadv-service`; servers run at most one release apart.
-- **receiving key pair**, **signing key pair**: a server's two single-purpose key pairs; one opens
-  the copies sent to it, the other signs the copies it makes. Neither is the server's TLS certificate.
-- **registered server**: a server whose two public keys are registered in the database and which has
-  not been deleted. Not a server that is running; that is its health status.
-- **health status**: what a registered server's public, basic health check answers: whether it is
-  running and reachable, as the restore screen shows it. Not the Admin API's detailed health report,
-  which needs a sign-in.
-- **recovery key pair**: the key pair whose private half the recovery code rebuilds.
-- **recovery code**: the 24 numbered words that rebuild the recovery key pair.
-- **secret**: one owner's named entry in the shared vault: its owner, identity and value. Not a
-  "shared secret" in the protocol sense; that is a session password.
-- **value**: the opaque bytes a secret holds, which the vault never interprets. Not a setting's
-  value in the configuration.
-- **owner**: the engine subsystem or helper program a secret belongs to, named when it is stored; the
-  only one that reads it, or, for a helper program, the only one it is delivered to.
-- **identity**: the name an owner gives a secret, unique for that owner.
-- **store**, **read**, **delete**, **status**, **deliver**: the five operations on secrets. "Store" is
-  never the operating system's credential store; "deliver" is only ever to a helper program.
-- **not set**, **unavailable**, **refused**: the read results other than a value: no value stored; a
-  value that failed to decrypt; a reader that is not the owner.
-- **helper program**: one of the board's own programs running beside `hadv-service` on the same
-  server and doing part of the board's ongoing work (the mail processors, `hadv-xyz`, `hadv-doors`);
-  it receives only the secrets it owns, if any. `hadv-setup` and the configuration utilities are not
-  helper programs.
-- **authenticated helper program**: a helper program that has proven which helper it is on the
-  channel that delivers its secrets.
-- **engine**: `hadv-service`.
-- **`hadv-setup`**: the setup wizard; it runs only on the server itself. **First setup** seeds the
-  first server; **restore** rebuilds a server from a backup and the recovery code.
-- **Admin API**: the sysops' endpoint on each server, on its own port.
-- **Sysop role**: the default role that runs the board. **#1 Sysop**: the main Sysop, the #1 account,
-  who owns the board. **sysop**, lower case: anyone holding the Sysop role.
-- **alert every sysop**: a message that reaches every sysop directly. Not a log entry.
-- **log**: an entry in both the server's local log and the central audit system, unless a line
-  names one.
-- **NOTIFY**: PostgreSQL's NOTIFY, a nudge that carries no key. Not an alert.
-- **session password**: the password two FidoNet-technology nodes share for a link.
