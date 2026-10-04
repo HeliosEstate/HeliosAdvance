@@ -22,10 +22,11 @@ fi
 # 3. The paths in developer-owned-paths are not touched by a bot-authored commit. .github/ is
 # the CI that judges the loop's work: a session may not change it. The loop's edit lock reads
 # the same file, so the commit lock and the edit lock cannot disagree.
+# Gates 3 and 4a judge a branch's commits before it merges; --mutation's range is already merged.
 [ -f developer-owned-paths ] || fail "developer-owned-paths is missing"
 mapfile -t owned < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' developer-owned-paths | grep . || true)
 [ "${#owned[@]}" -gt 0 ] || fail "developer-owned-paths names no path"
-if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
+if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
   bot=$(git log --format='%h %ae' "$BASE..HEAD" -- "${owned[@]}" | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
@@ -38,7 +39,7 @@ if [ -n "$qa" ]; then
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
 # file already on the base is locked for every branch: only a QA commit may change or delete it.
-if git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
+if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
   for f in $(git diff --name-only --diff-filter=MD "$BASE...HEAD" -- '*_test.go'); do
     nonqa=$(for c in $(git log --format=%H "$BASE..HEAD" -- "$f"); do
       git log -1 --format=%B "$c" | grep -q '^Helios-Role: qa$' || echo "$c"; done)
