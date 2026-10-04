@@ -67,7 +67,9 @@ if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >
 fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
-# CI sets SKIP_GO for a change set of Markdown and workflows other than check.yml alone.
+# CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
+# when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
+# than check.yml.
 if [ "${SKIP_GO:-}" = 1 ]; then echo "no Go in the change set; Go gates skipped"; echo green; exit 0; fi
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ]; then
