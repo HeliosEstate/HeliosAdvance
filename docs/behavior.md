@@ -213,8 +213,8 @@ Each term below has one meaning in these lines.
 - **the registry**: the list of all registry entries.
 - **storage subsystem**: the part of the engine that reaches storages and does the broad checks.
 - **server**: one computer, physical or virtual, running the board.
-- **local vault**: one per server; it only unlocks that server's bootstrap file at startup (the
-  bootstrap holds the database connection details and settings such as pool size).
+- **bootstrap key subsystem**: one per server; it only unlocks that server's bootstrap file at
+  startup (the bootstrap holds the database connection details and settings such as pool size).
 - **shared vault**: in the database; it holds every credential the servers share (network node
   credentials, registry entries' credentials). The storage subsystem uses only the shared vault.
 
