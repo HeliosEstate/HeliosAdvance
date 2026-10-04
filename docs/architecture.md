@@ -2,9 +2,10 @@
 
 The one page a session reads before it reads a contract. Each unit below is a Go package
 under `internal/` whose `contract.go` is the developer's, locked, and transliterated from
-the Pascal unit of the same name in HeliosDesign `records/skeleton/`. The brief behind the
-cluster units is `features/ADV-001` in HeliosDesign, as amended 2026-09-30. Where this page
-and a contract disagree, the contract is right and this page is fixed.
+the developer's Pascal unit of the same name. These units were designed before the current
+process, and each will come back through it. What each outcome of the board must do is in
+`docs/behavior.md`. Where this page and a contract disagree, the contract is right and this
+page is fixed.
 
 ## Units and what each owns
 
