@@ -80,7 +80,10 @@
 //	receiving.key                bytes: the receiving key pair's private half
 //	signing.key                  bytes: the signing key pair's private half
 //
-// A record with any other name is kept unchanged, in its place, when the file is rewritten.
+// A vault key's version is written in decimal with no leading zero, from 1 to 4,294,967,295,
+// so each version has one name; a name that begins with vault.key. and is spelled any other
+// way is a malformed field, never an unknown record. A record with any other name is kept
+// unchanged, in its place, when the file is rewritten.
 //
 // On Windows, bootstrap-key.sealed is the bootstrap key encrypted with RSA-OAEP under the
 // machine key pair (RSA 2048, SHA-256 with MGF1 SHA-256, no label): 256 bytes, nothing
@@ -119,6 +122,9 @@
 //     bootstrap package shall refuse the bootstrap file with FileNotUnsealed.
 //   - If the bootstrap file holds no vault key or more than two, then the bootstrap package
 //     shall refuse it with FileNotUnsealed.
+//   - If a record's name begins with vault.key. and the rest is not a version in decimal from 1
+//     to 4,294,967,295 with no leading zero, then the bootstrap package shall refuse the
+//     bootstrap file with FileNotUnsealed.
 //   - When the bootstrap package rewrites the bootstrap file, it shall keep every record of an
 //     unknown name byte for byte, in the order it was read.
 //   - The bootstrap package shall put no key, no field's data and no field's length in a
