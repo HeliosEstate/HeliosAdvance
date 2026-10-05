@@ -1,0 +1,60 @@
+# Labels a pull request with the reviews it needs before the developer signs off, from what a
+# script can read (developer, 2026-10-05). needs-security-review: it touches a package in
+# security-paths, or adds an import of crypto, os/exec, net, unsafe or golang.org/x/sys outside a
+# test. needs-code-review: it touches a security path and its issue has a [read] line, which
+# only reading proves. A label comes off when its trigger no longer holds.
+#
+# pull_request, never pull_request_target: a stranger's pull request runs with a read-only
+# token and cannot use this workflow's rights; its labels are then the developer's to set. The
+# pull request's body and its issue are data: only the issue number is taken from the body.
+name: review-triggers
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [development, main]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  label:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: origin/${{ github.base_ref }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' security-paths | grep . || true)
+          touched=""
+          [ "${#paths[@]}" -gt 0 ] && touched=$(git diff --name-only "$BASE...HEAD" -- "${paths[@]}")
+          imports=$(git diff -U0 "$BASE...HEAD" -- '*.go' ':!*_test.go' |
+            grep -E '^\+[[:space:]]*(import[[:space:]]+)?([[:alnum:]_.]+[[:space:]]+)?"(crypto(/[^"]*)?|os/exec|net(/[^"]*)?|unsafe|golang\.org/x/sys(/[^"]*)?)"' || true)
+          issue=$(printf '%s\n' "$BODY" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          read_lines=""
+          [ -n "$issue" ] && read_lines=$(gh issue view "$issue" --json body -q .body | grep -F '[read]' || true)
+
+          set_label() { # label, wanted
+            if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
+          }
+          security=no; code=no
+          [ -n "$touched$imports" ] && security=yes
+          [ -n "$touched" ] && [ -n "$read_lines" ] && code=yes
+          {
+            echo "security paths touched: ${touched:-none}"
+            echo "imports added outside tests: ${imports:-none}"
+            echo "issue: ${issue:-none}; [read] lines: $(printf '%s' "$read_lines" | grep -c . || true)"
+            echo "needs-security-review: $security; needs-code-review: $code"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          set_label needs-security-review "$security"
+          set_label needs-code-review "$code"
