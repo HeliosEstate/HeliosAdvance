@@ -135,12 +135,13 @@
 //     and its format version before the GCM tag verifies. [read]
 //   - If a record's name or data runs past the end of the plaintext, then the bootstrap package
 //     shall refuse the bootstrap file with FileNotUnsealed.
-//   - If a record's name is empty or is not UTF-8, then the bootstrap package shall refuse the
-//     bootstrap file with FileNotUnsealed.
+//   - If a record's name is empty, longer than 255 bytes, or not UTF-8, then the bootstrap
+//     package shall refuse the bootstrap file with FileNotUnsealed.
 //   - If two records share a name, then the bootstrap package shall refuse the bootstrap file
 //     with FileNotUnsealed.
-//   - If a known field is absent or its data breaks the form the format gives it, then the
-//     bootstrap package shall refuse the bootstrap file with FileNotUnsealed.
+//   - If a known field is absent, its data breaks the form the format gives it, or it breaks a
+//     rule in the table on Fields, then the bootstrap package shall refuse the bootstrap file
+//     with FileNotUnsealed.
 //   - If the bootstrap file holds no vault key or more than two, then the bootstrap package
 //     shall refuse it with FileNotUnsealed.
 //   - If a record's name begins with vault.key. and the rest is not a version in decimal from 1

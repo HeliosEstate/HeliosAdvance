@@ -24,8 +24,8 @@ ignored.
 
 Exit status: 0 done; 1 usage, an unreadable path or a bad record list; 2 the file is not
 unsealed (too large, too short, wrong magic, version 0, tag fails); 3 unsealed, but the
-records break the format (framing, a name, a duplicate, a known field absent or malformed,
-a name under `vault.key.` that is not a version, not one or two vault keys); 4 the format
+records break the format (framing, a name, a duplicate, a known field absent or malformed
+or breaking its rule in the table on `Fields`, a name under `vault.key.` that is not a version, not one or two vault keys); 4 the format
 version is newer than 1. The reason is on standard error. On status 3 from a known-field
 problem the records are still printed; a framing problem prints nothing.
 
@@ -83,6 +83,8 @@ UTF-8 with no control character (C0, DEL or C1), and as `hex:` otherwise.
     (leave a known field out)                  a missing field
     record "server" hex:000001                 a known field in the wrong form, in place of
                                                the right one
+    record "server" hex:00000000               a known field that breaks its rule in the
+                                               table on Fields, in place of the right one
     (three vault.key.N records)                three vault keys
     version 0  /  version 2                    version 0, a newer format
     magic "HADVBOOX"                           a wrong magic

@@ -334,9 +334,17 @@ begin
     Name := NameText(Entry.Name);
     if (Name = 'server') and (Length(Entry.Data) <> 4) then
       Result.Add(Format('server is %d bytes, not 4', [Length(Entry.Data)]))
+    { The rules in the table on Fields hold on read too: a server ID of 0, an empty
+      connection or account name, an empty receiving or signing key. }
+    else if (Name = 'server') and (Entry.Data[0] or Entry.Data[1] or Entry.Data[2]
+      or Entry.Data[3] = 0) then
+      Result.Add('server is 0')
     else if ((Name = 'database.connection') or (Name = 'database.account.name'))
       and not IsValidUtf8(Entry.Data) then
       Result.Add(Format('%s is not UTF-8', [Name]))
+    else if ((Name = 'database.connection') or (Name = 'database.account.name')
+      or (Name = 'receiving.key') or (Name = 'signing.key')) and (Length(Entry.Data) = 0) then
+      Result.Add(Format('%s is empty', [Name]))
     else if IsVaultKeyName(Name) then
     begin
       Inc(VaultKeyCount);
