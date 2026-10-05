@@ -330,6 +330,7 @@ const (
 	RewriteFailed                         // the new file was not written or did not read back; the old one is kept
 	SourceRefused                         // a key source or mode this platform does not allow
 	FileExists                            // a bootstrap file is already there at first setup or joining
+	TPMLibrariesMissing                   // Linux: a TPM, but not the libraries systemd needs to use it (tpm2-tss)
 )
 
 // Refusal is the one refusal every operation returns, tested with errors.As. It carries no
@@ -491,6 +492,10 @@ type Bootstrap interface {
 	//     Build shall seal the bootstrap key as a system credential and return ModeSystemdAtStart.
 	//   - Where the server runs Linux and has a TPM, Build shall have systemd seal the bootstrap
 	//     key under both the TPM and the host key.
+	//   - Where the server runs Linux and has a TPM, Build shall ask systemd for the TPM and the
+	//     host key by name, never for systemd's default choice.
+	//   - If the server runs Linux and has a TPM without the libraries systemd needs to use it,
+	//     then Build shall refuse with TPMLibrariesMissing.
 	//   - Where the server runs Linux without a TPM, Build shall have systemd seal the bootstrap
 	//     key under the host key.
 	//   - Where the server runs Linux, Build shall name the credential heliosadvance-bootstrap-key
@@ -546,6 +551,8 @@ type Bootstrap interface {
 	//     KeyFileMalformed.
 	//   - If the OS credential store does not unseal the bootstrap key, then UnlockForSetup shall
 	//     refuse with KeyNotUnsealed.
+	//   - If the credential is sealed under the TPM and the libraries systemd needs to use it are
+	//     absent, then UnlockForSetup shall refuse with TPMLibrariesMissing.
 	//   - If the bootstrap file is absent, then UnlockForSetup shall refuse with FileNotFound.
 	//   - Where the server runs Linux with systemd, UnlockForSetup shall have systemd decrypt the
 	//     credential itself, in either mode.
@@ -620,6 +627,8 @@ type Bootstrap interface {
 	//     KeyFileMalformed.
 	//   - If the OS credential store does not unseal the bootstrap key, then UnlockForService
 	//     shall refuse with KeyNotUnsealed.
+	//   - If the credential is sealed under the TPM and the libraries systemd needs to use it are
+	//     absent, then UnlockForService shall refuse with TPMLibrariesMissing.
 	//   - If the bootstrap file is absent, then UnlockForService shall refuse with FileNotFound.
 	//   - Where the mode is ModeSystemdPerUse, UnlockForService shall have systemd decrypt the
 	//     credential for this unlock.
