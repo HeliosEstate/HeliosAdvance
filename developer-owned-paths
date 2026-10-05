@@ -14,3 +14,4 @@ check.sh
 .claude/*
 .codex/*
 developer-owned-paths
+security-paths
