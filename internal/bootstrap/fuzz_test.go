@@ -9,17 +9,26 @@ package bootstrap
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 var fuzzSamples = []string{sampleOneKey, sampleTwoKeys, sampleUnknown, sampleLargest}
 
-func FuzzOpenFile(f *testing.F) {
-	key := testKey(f)
-	for _, sample := range fuzzSamples {
-		f.Add(readSample(f, sample+".hadv"))
+func FuzzOpenFile(fuzz *testing.F) {
+	key, err := loadTestKey()
+	if err != nil {
+		fuzz.Fatal(err)
 	}
-	f.Fuzz(func(t *testing.T, data []byte) {
+	for _, sample := range fuzzSamples {
+		data, err := os.ReadFile(filepath.Join(samples, sample+".hadv"))
+		if err != nil {
+			fuzz.Fatal(err)
+		}
+		fuzz.Add(data)
+	}
+	fuzz.Fuzz(func(t *testing.T, data []byte) {
 		_, err := openSealed(data, key)
 		if err == nil {
 			return
@@ -30,11 +39,19 @@ func FuzzOpenFile(f *testing.F) {
 	})
 }
 
-func FuzzReadRecords(f *testing.F) {
+func FuzzReadRecords(fuzz *testing.F) {
 	for _, sample := range fuzzSamples {
-		f.Add(plaintextOf(parseRecords(f, sampleList(f, sample))))
+		list, err := os.ReadFile(filepath.Join(samples, sample+".records"))
+		if err != nil {
+			fuzz.Fatal(err)
+		}
+		records, err := parseRecordList(string(list))
+		if err != nil {
+			fuzz.Fatal(err)
+		}
+		fuzz.Add(plaintextOf(records))
 	}
-	f.Fuzz(func(t *testing.T, plaintext []byte) {
+	fuzz.Fuzz(func(t *testing.T, plaintext []byte) {
 		records, err := readRecords(plaintext)
 		if err != nil {
 			if refusal := refusalOf(err); refusal == nil || refusal.Cause != FileNotUnsealed {

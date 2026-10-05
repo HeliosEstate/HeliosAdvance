@@ -186,10 +186,10 @@ func TestOpenRefuses(t *testing.T) {
 	t.Parallel()
 	base := baseList(t)
 	otherKey := bytes.Repeat([]byte{0x11}, 32)
-	flip := func(at func(int) int) func([]byte) []byte {
+	flip := func(offset func(int) int) func([]byte) []byte {
 		return func(file []byte) []byte {
 			file = slices.Clone(file)
-			file[at(len(file))] ^= 1
+			file[offset(len(file))] ^= 1
 			return file
 		}
 	}
@@ -266,18 +266,18 @@ func TestOpenRefuses(t *testing.T) {
 		}},
 	}
 	lists := map[string]string{}
-	for g, group := range groups {
-		for f, file := range group.files {
-			lists[fmt.Sprintf("%02d-%02d", g, f)] = file.list
+	for groupIndex, group := range groups {
+		for fileIndex, file := range group.files {
+			lists[fmt.Sprintf("%02d-%02d", groupIndex, fileIndex)] = file.list
 		}
 	}
 	sealed := oracleWrite(t, lists)
 	key := testKey(t)
-	for g, group := range groups {
+	for groupIndex, group := range groups {
 		t.Run(group.line, func(t *testing.T) {
 			t.Parallel()
-			for f, file := range group.files {
-				data := sealed[fmt.Sprintf("%02d-%02d", g, f)]
+			for fileIndex, file := range group.files {
+				data := sealed[fmt.Sprintf("%02d-%02d", groupIndex, fileIndex)]
 				if file.edit != nil {
 					data = file.edit(data)
 				}
@@ -414,28 +414,41 @@ func wantRefusal(t *testing.T, err error, cause Cause) {
 	}
 }
 
-func testKey(tb testing.TB) []byte {
-	tb.Helper()
-	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(readSample(tb, "test.key"))))
-	if err != nil || len(key) != 32 {
-		tb.Fatalf("test.key is not 32 bytes as base64: %v", err)
+func testKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := loadTestKey()
+	if err != nil {
+		t.Fatal(err)
 	}
 	return key
 }
 
-func readSample(tb testing.TB, name string) []byte {
-	tb.Helper()
+// loadTestKey is testKey for a caller with no *testing.T: the fuzz targets' seeds.
+func loadTestKey() ([]byte, error) {
+	encoded, err := os.ReadFile(filepath.Join(samples, "test.key"))
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(encoded)))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("test.key is not 32 bytes as base64: %w", err)
+	}
+	return key, nil
+}
+
+func readSample(t *testing.T, name string) []byte {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join(samples, name))
 	if err != nil {
-		tb.Fatal(err)
+		t.Fatal(err)
 	}
 	return data
 }
 
 // sampleList is a sample's record list.
-func sampleList(tb testing.TB, sample string) string {
-	tb.Helper()
-	return string(readSample(tb, sample+".records"))
+func sampleList(t *testing.T, sample string) string {
+	t.Helper()
+	return string(readSample(t, sample+".records"))
 }
 
 func isKnownName(name string) bool {
@@ -447,8 +460,8 @@ func isKnownName(name string) bool {
 }
 
 // fieldsOf is the known fields a record list holds, as the format gives them.
-func fieldsOf(tb testing.TB, records []record) Fields {
-	tb.Helper()
+func fieldsOf(t *testing.T, records []record) Fields {
+	t.Helper()
 	var fields Fields
 	for _, rec := range records {
 		switch {
@@ -467,7 +480,7 @@ func fieldsOf(tb testing.TB, records []record) Fields {
 		case strings.HasPrefix(rec.name, FieldVaultKeyPrefix):
 			version, err := strconv.ParseUint(strings.TrimPrefix(rec.name, FieldVaultKeyPrefix), 10, 32)
 			if err != nil {
-				tb.Fatalf("%s: %v", rec.name, err)
+				t.Fatalf("%s: %v", rec.name, err)
 			}
 			fields.VaultKeys = append(fields.VaultKeys, VaultKey{Version: uint32(version), Key: rec.data})
 		}
@@ -492,20 +505,24 @@ func sameFields(t *testing.T, got, want Fields) {
 			t.Errorf("%s: got % x, want % x", pair.name, pair.got, pair.want)
 		}
 	}
-	byVersion := func(a, b VaultKey) int { return int(a.Version) - int(b.Version) }
+	byVersion := func(left, right VaultKey) int { return int(left.Version) - int(right.Version) }
 	gotKeys, wantKeys := slices.Clone(got.VaultKeys), slices.Clone(want.VaultKeys)
 	slices.SortFunc(gotKeys, byVersion)
 	slices.SortFunc(wantKeys, byVersion)
-	if !slices.EqualFunc(gotKeys, wantKeys, func(a, b VaultKey) bool { return a.Version == b.Version && bytes.Equal(a.Key, b.Key) }) {
+	if !slices.EqualFunc(gotKeys, wantKeys, func(left, right VaultKey) bool {
+		return left.Version == right.Version && bytes.Equal(left.Key, right.Key)
+	}) {
 		t.Errorf("vault keys: got %v, want %v", gotKeys, wantKeys)
 	}
 }
 
-func sameRecord(a, b record) bool { return a.name == b.name && bytes.Equal(a.data, b.data) }
+func sameRecord(left, right record) bool {
+	return left.name == right.name && bytes.Equal(left.data, right.data)
+}
 
 func sameRecordsAnyOrder(t *testing.T, what string, got, want []record) {
 	t.Helper()
-	byName := func(a, b record) int { return strings.Compare(a.name, b.name) }
+	byName := func(left, right record) int { return strings.Compare(left.name, right.name) }
 	got, want = slices.Clone(got), slices.Clone(want)
 	slices.SortFunc(got, byName)
 	slices.SortFunc(want, byName)
@@ -530,10 +547,10 @@ type recordList []string
 
 // baseList is every known field and one vault key: the one-vault-key sample without its
 // header.
-func baseList(tb testing.TB) recordList {
-	tb.Helper()
+func baseList(t *testing.T) recordList {
+	t.Helper()
 	var list recordList
-	for line := range strings.SplitSeq(sampleList(tb, sampleOneKey), "\n") {
+	for line := range strings.SplitSeq(sampleList(t, sampleOneKey), "\n") {
 		if strings.HasPrefix(line, "record ") {
 			list = append(list, line)
 		}
@@ -566,27 +583,41 @@ func (list recordList) replacing(name, value string) string {
 }
 
 // parseRecords reads the record lines of a record list in the oracle's form.
-func parseRecords(tb testing.TB, list string) []record {
-	tb.Helper()
+func parseRecords(t *testing.T, list string) []record {
+	t.Helper()
+	records, err := parseRecordList(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return records
+}
+
+// parseRecordList is parseRecords for a caller with no *testing.T: the fuzz targets' seeds.
+func parseRecordList(list string) ([]record, error) {
 	var records []record
 	for line := range strings.SplitSeq(list, "\n") {
 		rest, found := strings.CutPrefix(strings.TrimRight(line, "\r"), "record ")
 		if !found {
 			continue
 		}
-		name, rest := parseValue(tb, rest)
-		data, rest := parseValue(tb, strings.TrimPrefix(rest, " "))
+		name, rest, err := parseValue(rest)
+		if err != nil {
+			return nil, err
+		}
+		data, rest, err := parseValue(strings.TrimPrefix(rest, " "))
+		if err != nil {
+			return nil, err
+		}
 		if rest != "" {
-			tb.Fatalf("a record line with more than a name and data: %q", line)
+			return nil, fmt.Errorf("a record line with more than a name and data: %q", line)
 		}
 		records = append(records, record{name: string(name), data: data})
 	}
-	return records
+	return records, nil
 }
 
 // parseValue reads one quoted or hex: value and returns what follows it.
-func parseValue(tb testing.TB, text string) ([]byte, string) {
-	tb.Helper()
+func parseValue(text string) ([]byte, string, error) {
 	if hexDigits, found := strings.CutPrefix(text, "hex:"); found {
 		end := strings.IndexByte(hexDigits, ' ')
 		if end < 0 {
@@ -594,21 +625,21 @@ func parseValue(tb testing.TB, text string) ([]byte, string) {
 		}
 		value, err := hex.DecodeString(hexDigits[:end])
 		if err != nil {
-			tb.Fatalf("%q: %v", text, err)
+			return nil, "", fmt.Errorf("%q: %w", text, err)
 		}
-		return value, hexDigits[end:]
+		return value, hexDigits[end:], nil
 	}
 	if !strings.HasPrefix(text, `"`) {
-		tb.Fatalf("not a value: %q", text)
+		return nil, "", fmt.Errorf("not a value: %q", text)
 	}
 	value := []byte{}
 	for i := 1; i < len(text); i++ {
 		switch text[i] {
 		case '"':
-			return value, text[i+1:]
+			return value, text[i+1:], nil
 		case '\\':
 			if i+1 >= len(text) {
-				tb.Fatalf("an escape at the end: %q", text)
+				return nil, "", fmt.Errorf("an escape at the end: %q", text)
 			}
 			i++
 			switch text[i] {
@@ -620,13 +651,13 @@ func parseValue(tb testing.TB, text string) ([]byte, string) {
 				value = append(value, '\t')
 			case 'x':
 				if i+2 >= len(text) {
-					tb.Fatalf("a short \\x escape: %q", text)
+					return nil, "", fmt.Errorf("a short \\x escape: %q", text)
 				}
-				b, err := hex.DecodeString(text[i+1 : i+3])
+				decoded, err := hex.DecodeString(text[i+1 : i+3])
 				if err != nil {
-					tb.Fatalf("%q: %v", text, err)
+					return nil, "", fmt.Errorf("%q: %w", text, err)
 				}
-				value = append(value, b...)
+				value = append(value, decoded...)
 				i += 2
 			default:
 				value = append(value, text[i])
@@ -635,17 +666,16 @@ func parseValue(tb testing.TB, text string) ([]byte, string) {
 			value = append(value, text[i])
 		}
 	}
-	tb.Fatalf("an unclosed quote: %q", text)
-	return nil, ""
+	return nil, "", fmt.Errorf("an unclosed quote: %q", text)
 }
 
 // ---- the oracle ----
 
 // oracle runs one shell script in the oracle's image, with dir as /data.
-func oracle(tb testing.TB, dir, script string) {
-	tb.Helper()
+func oracle(t *testing.T, dir, script string) {
+	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
-		tb.Fatal("docker is required: the oracle is in a container, and a skipped oracle is a vacuous pass")
+		t.Fatal("docker is required: the oracle is in a container, and a skipped oracle is a vacuous pass")
 	}
 	args := []string{"run", "--rm", "-v", dir + ":/data"}
 	if uid := os.Getuid(); uid >= 0 {
@@ -653,35 +683,35 @@ func oracle(tb testing.TB, dir, script string) {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, os.Getgid()))
 	}
 	args = append(args, oracleImage, "sh", "-c", script)
-	out, err := exec.CommandContext(tb.Context(), "docker", args...).CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), "docker", args...).CombinedOutput()
 	if err != nil {
-		tb.Fatalf("the oracle: %v\n%s", err, out)
+		t.Fatalf("the oracle: %v\n%s", err, out)
 	}
 }
 
 // oracleDir is a temporary folder holding the test key.
-func oracleDir(tb testing.TB) string {
-	tb.Helper()
-	dir := tb.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "test.key"), readSample(tb, "test.key"), 0o600); err != nil {
-		tb.Fatal(err)
+func oracleDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "test.key"), readSample(t, "test.key"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	return dir
 }
 
 // oracleWrite seals each record list with the oracle's write under the test key, in one run.
-func oracleWrite(tb testing.TB, lists map[string]string) map[string][]byte {
-	tb.Helper()
-	dir := oracleDir(tb)
+func oracleWrite(t *testing.T, lists map[string]string) map[string][]byte {
+	t.Helper()
+	dir := oracleDir(t)
 	for name, list := range lists {
 		if err := os.WriteFile(filepath.Join(dir, name+".records"), []byte(list), 0o600); err != nil {
-			tb.Fatal(err)
+			t.Fatal(err)
 		}
 	}
-	oracle(tb, dir, `for f in /data/*.records; do bootstrap-file write /data/test.key "$f" "${f%.records}.hadv" || exit 1; done`)
+	oracle(t, dir, `for f in /data/*.records; do bootstrap-file write /data/test.key "$f" "${f%.records}.hadv" || exit 1; done`)
 	sealed := map[string][]byte{}
 	for name := range lists {
-		sealed[name] = readFileIn(tb, dir, name+".hadv")
+		sealed[name] = readFileIn(t, dir, name+".hadv")
 	}
 	return sealed
 }
@@ -694,35 +724,35 @@ type verdict struct {
 }
 
 // oracleRead has the oracle read each file under the test key, in one run.
-func oracleRead(tb testing.TB, files map[string][]byte) map[string]verdict {
-	tb.Helper()
-	dir := oracleDir(tb)
+func oracleRead(t *testing.T, files map[string][]byte) map[string]verdict {
+	t.Helper()
+	dir := oracleDir(t)
 	for name, data := range files {
 		if err := os.WriteFile(filepath.Join(dir, name+".hadv"), data, 0o600); err != nil {
-			tb.Fatal(err)
+			t.Fatal(err)
 		}
 	}
-	oracle(tb, dir, `for f in /data/*.hadv; do b="${f%.hadv}"; bootstrap-file read /data/test.key "$f" >"$b.out" 2>"$b.err"; echo $? >"$b.status"; done`)
+	oracle(t, dir, `for f in /data/*.hadv; do b="${f%.hadv}"; bootstrap-file read /data/test.key "$f" >"$b.out" 2>"$b.err"; echo $? >"$b.status"; done`)
 	verdicts := map[string]verdict{}
 	for name := range files {
-		status, err := strconv.Atoi(strings.TrimSpace(string(readFileIn(tb, dir, name+".status"))))
+		status, err := strconv.Atoi(strings.TrimSpace(string(readFileIn(t, dir, name+".status"))))
 		if err != nil {
-			tb.Fatal(err)
+			t.Fatal(err)
 		}
 		verdicts[name] = verdict{
 			status:  status,
-			records: string(readFileIn(tb, dir, name+".out")),
-			stderr:  string(readFileIn(tb, dir, name+".err")),
+			records: string(readFileIn(t, dir, name+".out")),
+			stderr:  string(readFileIn(t, dir, name+".err")),
 		}
 	}
 	return verdicts
 }
 
-func readFileIn(tb testing.TB, dir, name string) []byte {
-	tb.Helper()
+func readFileIn(t *testing.T, dir, name string) []byte {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
-		tb.Fatal(err)
+		t.Fatal(err)
 	}
 	return data
 }
