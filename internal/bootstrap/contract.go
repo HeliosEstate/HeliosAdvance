@@ -44,6 +44,27 @@
 // Linux. Every file in the bootstrap folder other than the key file takes the bootstrap
 // file's permission rule.
 //
+// The folder rules. The bootstrap folder is refused when:
+//
+//	NotAbsolute    its path is not absolute
+//	NetworkShare   it is on a network share
+//	Removable      the OS reports it on a removable drive
+//	FolderLink     it is a symbolic link or, on Windows, a junction
+//	FileSystem     its file system is not NTFS or ReFS on Windows, or ext2, ext3, ext4,
+//	               XFS, Btrfs or ZFS on Linux
+//
+// The permission table, each item's rule for the service account:
+//
+//	Item                Linux and a container           Windows
+//	ItemFolder          owned by it, mode 0700          it, SYSTEM and Administrators only,
+//	                                                    with no inherited access
+//	ItemFile            owned by it, mode 0600          the same as ItemFolder
+//	ItemOtherFile       ItemFile's rule                 ItemFile's rule
+//	ItemKeyFile         owned by it, mode 0400          none: no key file on Windows
+//	ItemSwarmSecret     owned by it, mode 0400          none
+//	ItemMachineKeyPair  none                            usable only by it, SYSTEM and
+//	                                                    Administrators
+//
 // On Linux the bootstrap key is unsealed one of two ways, chosen by hadv-setup at build and
 // recorded in the service registration. On systemd 256 and later the credential is
 // user-scoped and this package decrypts it at each use. Below 256, systemd decrypts it when
