@@ -37,8 +37,9 @@
 //	bootstrap-key.cred     Linux: the bootstrap key as a systemd credential
 //	bootstrap.key          the key file, made by the sysop
 //
-// A Swarm secret is /run/secrets/heliosadvance-bootstrap-key. The bootstrap folder defaults
-// to %ProgramData%\HeliosAdvance on Windows and /var/lib/heliosadvance on Linux; in a
+// A Swarm secret is /run/secrets/heliosadvance-bootstrap-key, and on Windows the machine key
+// pair is named heliosadvance-bootstrap-key in the CNG key store. The bootstrap folder
+// defaults to %ProgramData%\HeliosAdvance on Windows and /var/lib/heliosadvance on Linux; in a
 // container it is always /var/lib/heliosadvance, a volume. The service account is the
 // virtual account NT SERVICE\HeliosAdvance on Windows and the system user heliosadvance on
 // Linux. Every file in the bootstrap folder other than the key file takes the bootstrap
@@ -64,6 +65,10 @@
 //	ItemSwarmSecret     owned by it, mode 0400          none
 //	ItemMachineKeyPair  none                            usable only by it, SYSTEM and
 //	                                                    Administrators
+//
+// On Windows the owner of every item is the service account, SYSTEM or Administrators, since
+// an owner can rewrite the access list whatever it says; an item set to its rule is owned by
+// Administrators.
 //
 // On Linux the bootstrap key is unsealed one of two ways, chosen by hadv-setup at build and
 // recorded in the service registration. On systemd 256 and later the credential is
@@ -198,6 +203,7 @@ package bootstrap
 
 import (
 	"context"
+	"io/fs"
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/board"
@@ -373,12 +379,20 @@ type Refusal struct {
 	OwnVersion  uint16     // NewerFormat
 }
 
+// Permissions is who owns an item and who can reach it, as data: hadv-setup writes the words.
+type Permissions struct {
+	Owner     string      // the account that owns it
+	Mode      fs.FileMode // Linux and a container: its permission bits
+	Accounts  []string    // Windows: every account its access list grants anything
+	Inherited bool        // Windows: its access list inherits from the folder above
+}
+
 // Finding is one item set looser than its rule: what hadv-setup shows before it asks.
 type Finding struct {
 	Item  Item
 	Path  string
-	Found string // the account that owns it and its mode, or its access list, as found
-	Rule  string // what SetToRule sets
+	Found Permissions // as found
+	Rule  Permissions // what SetToRule sets
 }
 
 // RewriteFailure is the last rewrite that failed, for the detailed health report. Failed is
@@ -472,9 +486,9 @@ type ServiceHandle interface {
 	RemoveVaultKey(ctx context.Context, version uint32) error
 }
 
-// Bootstrap is the contract. The folder is the bootstrap folder from the service
-// registration: empty means the platform's default, and in a container it is ignored for the
-// fixed path. The account is the service account. Every operation that reaches the OS
+// Bootstrap is the contract, and New returns it. The folder is the bootstrap folder from the
+// service registration: empty means the platform's default, and in a container it is ignored
+// for the fixed path. The account is the service account. Every operation that reaches the OS
 // credential store carries a context with a deadline. Every refusal is a *Refusal, never a
 // default.
 type Bootstrap interface {
