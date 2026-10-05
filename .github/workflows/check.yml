@@ -49,7 +49,9 @@ jobs:
   # gate with the race detector and the oracles. Windows runs build, vet, lint, namecheck
   # and compiles every test: its runners cannot run Linux containers, so the oracle rows
   # cannot run there, and the race detector would need a C compiler installed every run.
-  # Database tests will be Linux-only for the same reason (developer, 2026-10-02).
+  # Database tests will be Linux-only for the same reason (developer, 2026-10-02). Windows
+  # does run TestWindowsElevated, the rows that need an administrator's elevated process,
+  # which GitHub's runner is and no loop's machine is (developer, 2026-10-05).
   run:
     needs: changes
     if: needs.changes.outputs.skip == '0'
@@ -84,11 +86,19 @@ jobs:
       - name: Build the oracles
         if: runner.os == 'Linux'
         run: for d in oracle/*/; do [ -d "$d" ] && docker build -q -t "heliosestate/$(basename "$d")-oracle:0.1" "$d"; done; true
+      # The elevated rows skip in a process that is not elevated, so a runner that stopped
+      # being elevated would pass them unseen: it fails here instead.
+      - name: The runner is elevated
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $principal = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'the Windows runner is not elevated: TestWindowsElevated would skip' }
       - name: check.sh
         env:
           RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
           COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
-          TESTRUN: ${{ runner.os == 'Windows' && '^$' || '' }}
+          TESTRUN: ${{ runner.os == 'Windows' && '^TestWindowsElevated$' || '' }}
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
