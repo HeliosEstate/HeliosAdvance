@@ -1,0 +1,5 @@
+# Free Pascal build output, when built beside the source.
+*.o
+*.ppu
+/bootstrap-file
+/bootstrap-file.exe

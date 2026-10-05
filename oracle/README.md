@@ -1,16 +1,22 @@
 # Oracles
 
-Reference implementations the tests speak to. None of this code is ours; each image holds a
-program the model did not write and cannot edit, which is the point.
+Reference implementations the tests speak to. Each image holds a program written apart from
+the engine, which a loop session cannot edit, which is the point: the transfer programs are
+other people's, and `bootstrap-file` was written by a Claude session from the format's
+description alone, never from the engine's code, checked by a Codex session and read by the
+developer.
 
 | Image | Built from | Used by |
 |---|---|---|
 | `heliosestate/lrzsz-oracle:0.1` | `oracle/lrzsz/Dockerfile` | the ZMODEM tests (proof run one) |
 | `heliosestate/sexyz-oracle:0.1` | `oracle/sexyz/Dockerfile` | the sexyz rows of every transfer test (#15) |
+| `heliosestate/bootstrap-file-oracle:0.1` | `oracle/bootstrap-file/Dockerfile` | the bootstrap file's format lines; see its README |
 
-Build: `docker build -t heliosestate/lrzsz-oracle:0.1 oracle/lrzsz` and
-`docker build -t heliosestate/sexyz-oracle:0.1 oracle/sexyz`.
-Remove when no longer needed: `docker rmi heliosestate/lrzsz-oracle:0.1 heliosestate/sexyz-oracle:0.1`.
+Build: `docker build -t heliosestate/lrzsz-oracle:0.1 oracle/lrzsz`,
+`docker build -t heliosestate/sexyz-oracle:0.1 oracle/sexyz` and
+`docker build -t heliosestate/bootstrap-file-oracle:0.1 oracle/bootstrap-file`.
+Remove when no longer needed: `docker rmi heliosestate/lrzsz-oracle:0.1
+heliosestate/sexyz-oracle:0.1 heliosestate/bootstrap-file-oracle:0.1`.
 Every image this project creates is listed here; one not listed is not ours to keep.
 
 ## How a test speaks to it
