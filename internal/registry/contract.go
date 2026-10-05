@@ -4,7 +4,7 @@
 // Package registry is the set of servers that make up one board: who each is, whether it
 // is admitted, and the board's minimum engine version. It owns admission at start,
 // removal, renaming, and the audit of each. It owns nothing about leases, node ranges,
-// per-server settings, join or the bootstrap record. Every operation goes to the
+// per-server settings, join or the bootstrap file. Every operation goes to the
 // database; nothing is cached, because the board has no degraded mode. A database failure
 // is returned as database.ErrUnavailable and never turned into a default.
 //

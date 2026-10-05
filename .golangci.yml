@@ -129,7 +129,7 @@ linters:
         - pattern: ^io\.ReadAll$
           msg: bound the read (io.LimitReader) before draining it
         - pattern: ^os\.(Getenv|LookupEnv)$
-          msg: secrets and settings come through internal/secrets and the settings store
+          msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
     gosec:
