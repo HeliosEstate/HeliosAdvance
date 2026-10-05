@@ -2,7 +2,8 @@
 
 A second reader and writer of the bootstrap file, format 1. A Claude session wrote it from
 the format description in `internal/bootstrap/contract.go`'s package comment and nothing
-else, never from the engine's code; a Codex session checked it, and the developer read it.
+else, never from the engine's code. A Codex session (GPT Luna 6, medium effort) and a
+DeepSeek-V4-Pro session (high effort) checked it, and the developer read it.
 The engine's code is written separately from the same description. When the two disagree
 about a file, one of them misread the description. Free Pascal, with its own AES-256 and
 GCM (FIPS-197, SP 800-38D), so the oracle and the engine share no code at all.
@@ -22,18 +23,22 @@ characters, the engine's key-file form, or as 64 hex digits; whitespace around i
 ignored.
 
 Exit status: 0 done; 1 usage, an unreadable path or a bad record list; 2 the file is not
-unsealed (too large, too short, wrong magic, version 0 or newer than 1, tag fails);
-3 unsealed, but the records break the format (framing, a name, a duplicate, a known field
-absent or malformed, not one or two vault keys). The reason is on standard error. On
-status 3 from a known-field problem the records are still printed; a framing problem
-prints nothing.
+unsealed (too large, too short, wrong magic, version 0, tag fails); 3 unsealed, but the
+records break the format (framing, a name, a duplicate, a known field absent or malformed,
+a name under `vault.key.` that is not a version, not one or two vault keys); 4 the format
+version is newer than 1. The reason is on standard error. On status 3 from a known-field
+problem the records are still printed; a framing problem prints nothing.
+
+The engine's causes for the same files: statuses 2 and 3 are both `FileNotUnsealed`, split
+here by where the file fails; status 4 is `NewerFormat`.
 
 `read` prints exactly what `write` takes, header included, so feeding a read back into
 write with the same key reproduces the file byte for byte.
 
 ## The record list
 
-One directive a line; `#` starts a comment outside a quoted value; blank lines are
+One directive a line; `#` starts a comment where a token would start (at the start of a
+line or after a space), so `"x"#` is refused, not read as a comment; blank lines are
 ignored. Without `magic`, `version` or `nonce`, write uses `HADVBOOT`, 1 and a fresh
 random nonce. Write judges nothing: whatever the list says is what is sealed, under the
 real header as the additional data, so the file passes the integrity check and reaches
@@ -64,7 +69,7 @@ A NAME or DATA value is one of:
 | `random:N` | N random bytes |
 
 `zeros:` and `random:` stop at 262,144 bytes. `read` prints a value quoted when it is
-UTF-8 with no control character, and as `hex:` otherwise.
+UTF-8 with no control character (C0, DEL or C1), and as `hex:` otherwise.
 
 ## The wrong files the unit lines need
 
@@ -84,12 +89,9 @@ UTF-8 with no control character, and as `hex:` otherwise.
     record "pad" zeros:70000                   larger than 65,536 bytes
     truncate 37                                shorter than header and tag
     flip 30                                    a tag that does not verify
-
-## What the description leaves open
-
-`read` takes a name `vault.key.` followed by anything but decimal digits as an unknown
-record, not a malformed vault key, and accepts a version with leading zeros. The
-description names neither case; until it does, no test should rest on them.
+    record "vault.key.01" zeros:32             a version with a leading zero
+    record "vault.key.4294967296" zeros:32     a version past 4,294,967,295
+    record "vault.key.x" zeros:32              a name under the prefix that is no version
 
 ## Build and run
 

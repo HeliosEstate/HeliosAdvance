@@ -183,6 +183,10 @@ begin
   for Index := 0 to High(Value) do
     if (Value[Index] < $20) or (Value[Index] = $7F) then
       Printable := False;
+  { The C1 controls, U+0080 to U+009F: in valid UTF-8 a $C2 is always a lead byte. }
+  for Index := 0 to High(Value) - 1 do
+    if (Value[Index] = $C2) and (Value[Index + 1] in [$80..$9F]) then
+      Printable := False;
   if Printable then
   begin
     Result := '"';

@@ -18,8 +18,11 @@ const
   KeyFileLimit = 1024;
 
   ExitUsage = 1;
+  { The engine's causes: 2 and 3 are both FileNotUnsealed, split here by where the file
+    fails; 4 is NewerFormat. }
   ExitNotUnsealed = 2;
   ExitRecordsRefused = 3;
+  ExitNewerFormat = 4;
 
   VaultKeyPrefix = 'vault.key.';
 
@@ -274,19 +277,33 @@ begin
   end;
 end;
 
-{ A vault key's name is the prefix and its version in decimal; anything else after the
-  prefix is not a vault key and so is an unknown record. }
+{ The prefix is reserved: every name under it is a vault key or a malformed field, never an
+  unknown record. }
+function HasVaultKeyPrefix(const Name: string): Boolean;
+begin
+  Result := Copy(Name, 1, Length(VaultKeyPrefix)) = VaultKeyPrefix;
+end;
+
+{ A version has one spelling: decimal, no leading zero, 1 to 4,294,967,295, so no two names
+  hold one version. }
 function IsVaultKeyName(const Name: string): Boolean;
 var
+  Digits: string;
   Index: Integer;
+  Version: QWord;
 begin
-  if (Length(Name) <= Length(VaultKeyPrefix))
-    or (Copy(Name, 1, Length(VaultKeyPrefix)) <> VaultKeyPrefix) then
+  Digits := Copy(Name, Length(VaultKeyPrefix) + 1, MaxInt);
+  if not HasVaultKeyPrefix(Name) or (Digits = '') or (Length(Digits) > 10)
+    or (Digits[1] = '0') then
     Exit(False);
-  for Index := Length(VaultKeyPrefix) + 1 to Length(Name) do
-    if not (Name[Index] in ['0'..'9']) then
+  Version := 0;
+  for Index := 1 to Length(Digits) do
+  begin
+    if not (Digits[Index] in ['0'..'9']) then
       Exit(False);
-  Result := True;
+    Version := Version * 10 + QWord(Ord(Digits[Index]) - Ord('0'));
+  end;
+  Result := Version <= High(LongWord);
 end;
 
 { Every problem with the known fields, not only the first: a test reading the oracle's
@@ -325,7 +342,10 @@ begin
       Inc(VaultKeyCount);
       if Length(Entry.Data) <> KeyLength then
         Result.Add(Format('%s is %d bytes, not 32', [Name, Length(Entry.Data)]));
-    end;
+    end
+    else if HasVaultKeyPrefix(Name) then
+      Result.Add(Format('%s is under %s but not a version in decimal from 1 to ' +
+        '4,294,967,295 with no leading zero', [FormatValue(Entry.Name), VaultKeyPrefix]));
   end;
   if (VaultKeyCount < 1) or (VaultKeyCount > 2) then
     Result.Add(Format('%d vault keys; a file holds one or two', [VaultKeyCount]));
@@ -356,7 +376,7 @@ begin
   if Version = 0 then
     raise ERefusal.CreateRefusal(ExitNotUnsealed, 'the format version is 0');
   if Version > 1 then
-    raise ERefusal.CreateRefusal(ExitNotUnsealed, Format(
+    raise ERefusal.CreateRefusal(ExitNewerFormat, Format(
       'the format version is %d; this oracle reads version 1', [Version]));
   Header := Copy(Whole, 0, HeaderLength);
   Move(Whole[MagicLength + 2], Nonce, NonceLength);

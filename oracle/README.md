@@ -3,8 +3,8 @@
 Reference implementations the tests speak to. Each image holds a program written apart from
 the engine, which a loop session cannot edit, which is the point: the transfer programs are
 other people's, and `bootstrap-file` was written by a Claude session from the format's
-description alone, never from the engine's code, checked by a Codex session and read by the
-developer.
+description alone, never from the engine's code, checked by a Codex session (GPT Luna 6,
+medium effort) and a DeepSeek-V4-Pro session (high effort), and read by the developer.
 
 | Image | Built from | Used by |
 |---|---|---|
