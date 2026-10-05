@@ -111,7 +111,7 @@
 //   - If the GCM tag does not verify, then the bootstrap package shall refuse the bootstrap
 //     file with FileNotUnsealed.
 //   - The bootstrap package shall act on no part of the bootstrap file but its size, its magic
-//     and its format version before the GCM tag verifies.
+//     and its format version before the GCM tag verifies. [read]
 //   - If a record's name or data runs past the end of the plaintext, then the bootstrap package
 //     shall refuse the bootstrap file with FileNotUnsealed.
 //   - If a record's name is empty or is not UTF-8, then the bootstrap package shall refuse the
@@ -128,7 +128,7 @@
 //   - When the bootstrap package rewrites the bootstrap file, it shall keep every record of an
 //     unknown name byte for byte, in the order it was read.
 //   - The bootstrap package shall put no key, no field's data and no field's length in a
-//     Refusal.
+//     Refusal. [read]
 //
 // # A rewrite
 //
@@ -142,22 +142,22 @@
 //     credential store, or read from the key file or the Swarm secret.
 //   - Where the mode is ModeSystemdAtStart, AddVaultKey and RemoveVaultKey shall read the
 //     bootstrap key again from the credential folder systemd gives the service for each
-//     rewrite.
+//     rewrite. [run]
 //   - If the bootstrap key is absent at a rewrite, then the rewrite shall refuse with
 //     KeyNotFound.
 //   - If the OS credential store does not unseal the bootstrap key at a rewrite, then the
 //     rewrite shall refuse with KeyNotUnsealed.
-//   - A rewrite shall create bootstrap.hadv.new exclusively, already set to its rule.
+//   - A rewrite shall create bootstrap.hadv.new exclusively, already set to its rule. [read]
 //   - A rewrite shall write bootstrap.hadv.new, flush it, check that it reads back, and then
-//     rename it over bootstrap.hadv through the folder's handle.
-//   - Where the server runs Linux, a rewrite shall flush the folder after the rename.
+//     rename it over bootstrap.hadv through the folder's handle. [read]
+//   - Where the server runs Linux, a rewrite shall flush the folder after the rename. [read]
 //   - If bootstrap.hadv.new does not read back, then the rewrite shall delete it, keep the old
-//     bootstrap file, and refuse with RewriteFailed.
+//     bootstrap file, and refuse with RewriteFailed. [read]
 //   - If writing bootstrap.hadv.new fails, then the rewrite shall delete what it wrote, keep
 //     the old bootstrap file, and refuse with RewriteFailed.
 //   - If a rewrite fails, then the handle shall keep the fields it held before the rewrite.
 //   - If a rewrite fails, then the handle shall record the failure for RewriteFailure.
-//   - A rewrite shall overwrite the bootstrap key in its memory before it returns.
+//   - A rewrite shall overwrite the bootstrap key in its memory before it returns. [read]
 //
 // # Untrusted input and oracles
 //
@@ -398,7 +398,7 @@ type Handle interface {
 	// Close overwrites every secret the handle holds and releases the lock.
 	//
 	//   - Close shall overwrite with zeros every secret the handle holds and every unknown record
-	//     it keeps.
+	//     it keeps. [read]
 	//   - Close shall release the lock.
 	//   - If Close is called a second time, then Close shall do nothing.
 	Close()
@@ -422,7 +422,7 @@ type SetupHandle interface {
 // writes follow the lines for every rewrite in the package comment.
 //
 //   - The ServiceHandle shall offer no operation that changes any field other than the
-//     vault-key fields.
+//     vault-key fields. [read]
 type ServiceHandle interface {
 	Handle
 
@@ -475,11 +475,11 @@ type Bootstrap interface {
 	//   - If the source is FromOSStore where the server runs Linux without systemd 250 or later,
 	//     then Build shall refuse with NoCredentialStore.
 	//   - When the source is FromOSStore, Build shall make the bootstrap key from 256 bits read
-	//     from the operating system's random source.
+	//     from the operating system's random source. [read]
 	//   - Where the server runs Windows, when the source is FromOSStore, Build shall make a
 	//     2048-bit RSA machine key pair that is not exportable.
 	//   - Where the server runs Windows and has a TPM, Build shall make the machine key pair in
-	//     the Microsoft Platform Crypto Provider.
+	//     the Microsoft Platform Crypto Provider. [run]
 	//   - Where the server runs Windows without a TPM, Build shall make the machine key pair in
 	//     the Microsoft Software Key Storage Provider.
 	//   - Where the server runs Windows, Build shall give the machine key pair an access list
@@ -493,15 +493,15 @@ type Bootstrap interface {
 	//     it.
 	//   - Where the server runs Linux with systemd 256 or later, when the source is FromOSStore,
 	//     Build shall seal the bootstrap key as a credential scoped to the account and return
-	//     ModeSystemdPerUse.
+	//     ModeSystemdPerUse. [run]
 	//   - Where the server runs Linux with systemd 250 to 255, when the source is FromOSStore,
 	//     Build shall seal the bootstrap key as a system credential and return ModeSystemdAtStart.
 	//   - Where the server runs Linux and has a TPM, Build shall have systemd seal the bootstrap
-	//     key under both the TPM and the host key.
+	//     key under both the TPM and the host key. [run]
 	//   - Where the server runs Linux and has a TPM, Build shall ask systemd for the TPM and the
-	//     host key by name, never for systemd's default choice.
+	//     host key by name, never for systemd's default choice. [read]
 	//   - If the server runs Linux and has a TPM without the libraries systemd needs to use it,
-	//     then Build shall refuse with TPMLibrariesMissing.
+	//     then Build shall refuse with TPMLibrariesMissing. [run]
 	//   - Where the server runs Linux without a TPM, Build shall have systemd seal the bootstrap
 	//     key under the host key.
 	//   - Where the server runs Linux, Build shall name the credential heliosadvance-bootstrap-key
@@ -521,16 +521,16 @@ type Bootstrap interface {
 	//     KeyFileMalformed.
 	//   - When the source is FromKeyFile or FromContainer, Build shall make no bootstrap key and
 	//     no machine key pair.
-	//   - Build shall set the folder to its rule before it writes any file in it.
+	//   - Build shall set the folder to its rule before it writes any file in it. [read]
 	//   - Build shall create every file it writes already set to its rule, owned by or listed for
-	//     the account.
+	//     the account. [read]
 	//   - Build shall write the bootstrap file beside any old one, flush it, check that it reads
-	//     back, and then swap it in.
+	//     back, and then swap it in. [read]
 	//   - If the new bootstrap file does not read back, then Build shall refuse with RewriteFailed
-	//     and delete it.
+	//     and delete it. [read]
 	//   - If Build fails after it makes a machine key pair or a credential, then Build shall
-	//     delete that machine key pair or credential.
-	//   - Build shall overwrite the bootstrap key in its memory before it returns.
+	//     delete that machine key pair or credential. [read]
+	//   - Build shall overwrite the bootstrap key in its memory before it returns. [read]
 	Build(ctx context.Context, folder string, fields Fields, path BuildPath, account string, source KeySource) (KeyMode, error)
 
 	// UnlockForSetup is called by hadv-setup, elevated. It unlocks and takes the lock.
@@ -558,11 +558,12 @@ type Bootstrap interface {
 	//   - If the OS credential store does not unseal the bootstrap key, then UnlockForSetup shall
 	//     refuse with KeyNotUnsealed.
 	//   - If the credential is sealed under the TPM and the libraries systemd needs to use it are
-	//     absent, then UnlockForSetup shall refuse with TPMLibrariesMissing.
+	//     absent, then UnlockForSetup shall refuse with TPMLibrariesMissing. [run]
 	//   - If the bootstrap file is absent, then UnlockForSetup shall refuse with FileNotFound.
 	//   - Where the server runs Linux with systemd, UnlockForSetup shall have systemd decrypt the
 	//     credential itself, in either mode.
 	//   - UnlockForSetup shall overwrite the bootstrap key in its memory before it returns.
+	//     [read]
 	//   - When UnlockForSetup unlocks the bootstrap file, it shall return a handle that holds the
 	//     lock until Close.
 	UnlockForSetup(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error)
@@ -578,7 +579,7 @@ type Bootstrap interface {
 	//   - If every item holds to its rule, then Check shall return no finding.
 	//   - Check shall judge which account owns each item, and each access list, against the
 	//     account it is given.
-	//   - Check shall change nothing.
+	//   - Check shall change nothing. [read]
 	//   - Check shall run without the lock.
 	Check(folder string, mode KeyMode, account string) ([]Finding, error)
 
@@ -591,6 +592,7 @@ type Bootstrap interface {
 	//   - SetToRule shall set the finding's item to its rule for the account it is given, and
 	//     change nothing else.
 	//   - SetToRule shall set the item through the handle it opened, never by name alone.
+	//     [read]
 	//   - If the finding's item is a symbolic link or a junction, then SetToRule shall refuse with
 	//     Link.
 	//   - If the finding's item is ItemSwarmSecret, then SetToRule shall refuse with
@@ -618,7 +620,8 @@ type Bootstrap interface {
 	//   - If the bootstrap file is not writable by the service account, then UnlockForService
 	//     shall refuse with NotWritable.
 	//   - UnlockForService shall make every check on the handle it opened, never on a name alone.
-	//   - UnlockForService shall change no permission.
+	//     [read]
+	//   - UnlockForService shall change no permission. [read]
 	//   - If bootstrap.hadv.new is in the folder, then UnlockForService shall delete it.
 	//   - If the mode is not one of this platform's, then UnlockForService shall refuse with
 	//     SourceRefused.
@@ -634,12 +637,12 @@ type Bootstrap interface {
 	//   - If the OS credential store does not unseal the bootstrap key, then UnlockForService
 	//     shall refuse with KeyNotUnsealed.
 	//   - If the credential is sealed under the TPM and the libraries systemd needs to use it are
-	//     absent, then UnlockForService shall refuse with TPMLibrariesMissing.
+	//     absent, then UnlockForService shall refuse with TPMLibrariesMissing. [run]
 	//   - If the bootstrap file is absent, then UnlockForService shall refuse with FileNotFound.
 	//   - Where the mode is ModeSystemdPerUse, UnlockForService shall have systemd decrypt the
-	//     credential for this unlock.
+	//     credential for this unlock. [run]
 	//   - Where the mode is ModeSystemdAtStart, UnlockForService shall read the bootstrap key from
-	//     the credential folder systemd gives the service.
+	//     the credential folder systemd gives the service. [run]
 	//   - Where the server runs Windows, UnlockForService shall report HeldInTPM when the machine
 	//     key pair is in the Microsoft Platform Crypto Provider, and HeldInSoftwareKeyStore
 	//     otherwise.
@@ -648,6 +651,7 @@ type Bootstrap interface {
 	//   - UnlockForService shall report HeldAsSwarmSecret for a Swarm secret and HeldInKeyFile for
 	//     a key file.
 	//   - UnlockForService shall overwrite the bootstrap key in its memory before it returns.
+	//     [read]
 	//   - When UnlockForService unlocks the bootstrap file, it shall return a handle that holds
 	//     the lock until Close.
 	UnlockForService(ctx context.Context, folder string, mode KeyMode) (ServiceHandle, error)
