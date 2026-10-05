@@ -2,8 +2,9 @@
 
 Reference implementations the tests speak to. Each image holds a program written apart from
 the engine, which a loop session cannot edit, which is the point: the transfer programs are
-other people's, and `bootstrap-file` is the developer's own, written from the format's
-description and never from the engine's code.
+other people's, and `bootstrap-file` was written by a Claude session from the format's
+description alone, never from the engine's code, checked by a Codex session and read by the
+developer.
 
 | Image | Built from | Used by |
 |---|---|---|

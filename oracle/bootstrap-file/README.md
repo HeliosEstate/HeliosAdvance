@@ -1,8 +1,9 @@
 # The bootstrap file oracle
 
-A second reader and writer of the bootstrap file, format 1. It was written from the format
-description in `internal/bootstrap/contract.go`'s package comment and nothing else; the
-engine's code was written separately from the same description. When the two disagree
+A second reader and writer of the bootstrap file, format 1. A Claude session wrote it from
+the format description in `internal/bootstrap/contract.go`'s package comment and nothing
+else, never from the engine's code; a Codex session checked it, and the developer read it.
+The engine's code is written separately from the same description. When the two disagree
 about a file, one of them misread the description. Free Pascal, with its own AES-256 and
 GCM (FIPS-197, SP 800-38D), so the oracle and the engine share no code at all.
 

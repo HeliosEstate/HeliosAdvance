@@ -519,6 +519,9 @@ begin
 end;
 
 begin
+  { On Windows the RTL converts Output to the console's code page, which would rewrite a
+    quoted value's UTF-8 bytes and break read's promise that write takes its output back. }
+  SetTextCodePage(Output, DefaultSystemCodePage);
   try
     if (ParamCount = 4) and (ParamStr(1) = 'write') then
       RunWrite(ParamStr(2), ParamStr(3), ParamStr(4))
