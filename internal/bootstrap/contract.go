@@ -380,6 +380,8 @@ type Refusal struct {
 }
 
 // Permissions is who owns an item and who can reach it, as data: hadv-setup writes the words.
+// An account is named as the OS resolves it: DOMAIN\name on Windows (NT AUTHORITY\SYSTEM,
+// BUILTIN\Administrators), the user name on Linux.
 type Permissions struct {
 	Owner     string      // the account that owns it
 	Mode      fs.FileMode // Linux and a container: its permission bits
@@ -390,7 +392,7 @@ type Permissions struct {
 // Finding is one item set looser than its rule: what hadv-setup shows before it asks.
 type Finding struct {
 	Item  Item
-	Path  string
+	Path  string      // for ItemMachineKeyPair, the key pair's name
 	Found Permissions // as found
 	Rule  Permissions // what SetToRule sets
 }
