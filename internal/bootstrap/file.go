@@ -66,6 +66,7 @@ func openFile(source io.Reader, size int64, key []byte) (*bootstrapFile, error) 
 	if err != nil {
 		return nil, &Refusal{Cause: FileNotUnsealed}
 	}
+	defer clear(plaintext) // the records are copies; the plaintext holds every secret in the file
 	records, err := readRecords(plaintext)
 	if err != nil {
 		return nil, err
@@ -237,15 +238,20 @@ func (file *bootstrapFile) writeTo(destination io.Writer, key []byte) error {
 	if err != nil {
 		return err
 	}
-	var plaintext []byte
+	size := 0
+	for _, rec := range file.records {
+		size += 2 + len(rec.name) + 4 + len(rec.data)
+	}
+	if size > MaxSize {
+		return &Refusal{Cause: RewriteFailed}
+	}
+	plaintext := make([]byte, 0, size) // sized first so append never reallocates and leaves partly filled copies
+	defer clear(plaintext[:size])
 	for _, rec := range file.records {
 		plaintext = binary.BigEndian.AppendUint16(plaintext, uint16(len(rec.name))) //nolint:gosec // a name read or set here is at most 255 bytes
 		plaintext = append(plaintext, rec.name...)
-		plaintext = binary.BigEndian.AppendUint32(plaintext, uint32(len(rec.data))) //nolint:gosec // bounded by MaxSize below
+		plaintext = binary.BigEndian.AppendUint32(plaintext, uint32(len(rec.data))) //nolint:gosec // bounded by MaxSize above
 		plaintext = append(plaintext, rec.data...)
-		if len(plaintext) > MaxSize {
-			return &Refusal{Cause: RewriteFailed}
-		}
 	}
 	header := make([]byte, headerSize)
 	copy(header, Magic)
