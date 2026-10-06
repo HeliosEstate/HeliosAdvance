@@ -3,6 +3,13 @@
 
 package bootstrap
 
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+)
+
 // The names the permission table covers, as the package comment gives them.
 const (
 	bootstrapFileName  = "bootstrap.hadv"
@@ -23,4 +30,17 @@ func itemOf(name string) Item {
 		return ItemKeyFile
 	}
 	return ItemOtherFile
+}
+
+// readNames is the names in the bootstrap folder. A folder past the bound is an error: judging
+// part of it would let the rest hide an item from Check.
+func readNames(directory *os.File) ([]string, error) {
+	names, err := directory.Readdirnames(maxFolderEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("bootstrap: reading the folder: %w", err)
+	}
+	if len(names) > maxFolderEntries {
+		return nil, fmt.Errorf("bootstrap: the folder holds more than %d names, so hadv-setup did not make it", maxFolderEntries)
+	}
+	return names, nil
 }

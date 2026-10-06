@@ -6,7 +6,6 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/user"
@@ -66,9 +65,9 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // nothing to flush on a read-only handle
 
-	names, err := directory.Readdirnames(maxFolderEntries)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("bootstrap: reading the folder: %w", err)
+	names, err := readNames(directory)
+	if err != nil {
+		return nil, err
 	}
 	items := map[string]Item{folder: ItemFolder}
 	for _, name := range names {
@@ -87,13 +86,11 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: reading %s: %w", path, err)
 		}
-		// ponytail: a symbolic link or a directory in the folder is skipped; unlocking refuses a link.
-		if item != ItemFolder && stat.Mode&unix.S_IFMT != unix.S_IFREG {
-			continue
-		}
+		// A link or a directory where a file should be is looser than the rule, whatever its mode.
+		displaced := item != ItemFolder && stat.Mode&unix.S_IFMT != unix.S_IFREG
 		found := Permissions{Owner: ownerName(stat.Uid), Mode: fs.FileMode(stat.Mode & 0o777)}
 		rule := Permissions{Owner: account, Mode: modeOfRule(item)}
-		if stat.Uid != accountID || found.Mode&^rule.Mode != 0 {
+		if displaced || stat.Uid != accountID || found.Mode&^rule.Mode != 0 {
 			findings = append(findings, Finding{Item: item, Path: path, Found: found, Rule: rule})
 		}
 	}
@@ -216,12 +213,9 @@ func setToRule(finding Finding, account string) error {
 	if err != nil {
 		return err
 	}
-	descriptor, err := unix.Open(finding.Path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if errors.Is(err, unix.ELOOP) {
-		return &Refusal{Cause: Link, Path: finding.Path}
-	}
+	descriptor, err := openFinding(finding)
 	if err != nil {
-		return fmt.Errorf("bootstrap: opening %s: %w", finding.Path, err)
+		return err
 	}
 	defer func() { _ = unix.Close(descriptor) }() //nolint:errcheck // nothing to flush on a read-only handle
 	// The owner first: a change of owner clears the set-user-ID bits that the mode then sets.
@@ -232,4 +226,45 @@ func setToRule(finding Finding, account string) error {
 		return fmt.Errorf("bootstrap: setting the mode of %s: %w", finding.Path, err)
 	}
 	return nil
+}
+
+// openFinding opens the item the finding names and checks the handle is that kind of item: a
+// file through the descriptor of the folder it is in, on that folder's device and held by no
+// other name. The open does not block, so a FIFO put there is refused, not waited on.
+func openFinding(finding Finding) (int, error) {
+	flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
+	var descriptor int
+	var err error
+	var parent unix.Stat_t
+	wantType, wantLinks := uint32(unix.S_IFDIR), uint64(0)
+	if finding.Item == ItemFolder {
+		descriptor, err = unix.Open(finding.Path, flags, 0)
+	} else {
+		var folder int
+		if folder, err = unix.Open(filepath.Dir(finding.Path), flags|unix.O_DIRECTORY, 0); err != nil {
+			return -1, fmt.Errorf("bootstrap: opening the folder of %s: %w", finding.Path, err)
+		}
+		defer func() { _ = unix.Close(folder) }() //nolint:errcheck // nothing to flush on a read-only handle
+		if err = unix.Fstat(folder, &parent); err != nil {
+			return -1, fmt.Errorf("bootstrap: reading the folder of %s: %w", finding.Path, err)
+		}
+		descriptor, err = unix.Openat(folder, filepath.Base(finding.Path), flags, 0)
+		wantType, wantLinks = unix.S_IFREG, 1
+	}
+	if errors.Is(err, unix.ELOOP) {
+		return -1, &Refusal{Cause: Link, Path: finding.Path}
+	}
+	if err != nil {
+		return -1, fmt.Errorf("bootstrap: opening %s: %w", finding.Path, err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(descriptor, &stat); err != nil {
+		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
+		return -1, fmt.Errorf("bootstrap: reading %s: %w", finding.Path, err)
+	}
+	if stat.Mode&unix.S_IFMT != wantType || (wantLinks != 0 && (uint64(stat.Nlink) != wantLinks || stat.Dev != parent.Dev)) {
+		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
+		return -1, fmt.Errorf("bootstrap: %s is not the item that was checked: its type, its folder's device or its link count differs", finding.Path)
+	}
+	return descriptor, nil
 }
