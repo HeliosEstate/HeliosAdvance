@@ -9,7 +9,7 @@
 // is set: a change is seen on the next read on every server, with no cache and no
 // notification. A setting that needs a restart is read once at start by its feature, and
 // Set says so to the tool that set it. A Set and its audit entry are one transaction. The
-// package owns nothing on disk (the bootstrap record is the setup tool's) and no theme or
+// package owns nothing on disk (the bootstrap file is the bootstrap package's) and no theme or
 // language file. A Get that cannot reach the database returns database.ErrUnavailable and
 // never the default; the caller decides, and the allocator refuses the caller.
 //
