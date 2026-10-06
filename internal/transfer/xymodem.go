@@ -473,7 +473,8 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 
 // receiveOneYMODEMFile reads header's name, size and modification time, then the file's
 // data as XMODEM blocks, and stores it trimmed to size: unlike XMODEM, YMODEM carries
-// the size, so the last block's padding is not part of the stored file.
+// the size, so the last block's padding is not part of the stored file. A block 0 without
+// a length leaves every byte that arrived.
 func (conversation *xysession) receiveOneYMODEMFile(dir string, open byte, header []byte) (Received, error) {
 	name, size, mtime := decodeFileInfo(header)
 	base := filepath.Base(name)
@@ -500,7 +501,7 @@ func (conversation *xysession) receiveOneYMODEMFile(dir string, open byte, heade
 	if err := file.Close(); err != nil {
 		return Received{}, err
 	}
-	if size >= 0 && size < written {
+	if hasFileLength(header) && size >= 0 && size < written {
 		if err := os.Truncate(dest, size); err != nil {
 			return Received{}, err
 		}

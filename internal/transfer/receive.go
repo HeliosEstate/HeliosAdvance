@@ -25,6 +25,21 @@ func (conversation *session) receive(dir string) ([]Received, error) {
 		if err != nil {
 			return out, mapErr(err)
 		}
+		// The sender waits on our ZACK, so a retried ZSINIT (our ZACK lost) is answered by the
+		// same await, and the next header answers that ZACK rather than a fresh ZRINIT.
+		for head.typ == zsinit {
+			//nolint:errcheck // the attention string is unused; a damaged one is caught by the sender's retry
+			_, _, _, _ = readSubpacket(conversation.ctx, conversation.src, conversation.timeout, maxSubpacket, crc32mode)
+			if head.data[3]&escctl != 0 {
+				conversation.writer.full = true
+			}
+			head, crc32mode, err = conversation.await(func() error {
+				return writeHex(conversation.writer, posHeader(zack, 0))
+			}, maxRetries)
+			if err != nil {
+				return out, mapErr(err)
+			}
+		}
 		switch head.typ {
 		case zfile:
 			rec, err := conversation.receiveFile(dir, crc32mode)

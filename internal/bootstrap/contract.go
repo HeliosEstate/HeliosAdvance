@@ -350,7 +350,7 @@ const (
 	FolderRefused                         // Rule names which
 	LooserThanRule                        // Item names what
 	NotWritable                           // the bootstrap file, for the service account
-	Link                                  // the bootstrap file or the key file is a symbolic link or junction
+	Link                                  // an item is a symbolic link, a junction, or a file with more than one name
 	WrongAccount                          // not the account that owns the bootstrap folder
 	NotElevated                           // a hadv-setup operation without administrator or root rights
 	KeyFileMalformed                      // not 32 bytes as base64 in 44 characters, at most one trailing newline
@@ -372,7 +372,7 @@ const (
 type Refusal struct {
 	Cause       Cause
 	Path        string
-	Item        Item       // LooserThanRule
+	Item        Item       // LooserThanRule; Link from Check
 	Rule        FolderRule // FolderRefused
 	Field       string     // FieldMalformed: the field's name
 	FileVersion uint16     // NewerFormat
@@ -612,6 +612,8 @@ type Bootstrap interface {
 	//   - If the process is neither elevated nor root, then Check shall refuse with NotElevated.
 	//   - If the folder breaks a folder rule, then Check shall refuse with FolderRefused, naming
 	//     the rule.
+	//   - If an item in the folder is a file with more than one name, then Check shall refuse with
+	//     Link, naming the item.
 	//   - Check shall return one finding for each item set looser than its rule, with its path,
 	//     what it found and its rule.
 	//   - If every item holds to its rule, then Check shall return no finding.
@@ -631,8 +633,8 @@ type Bootstrap interface {
 	//     change nothing else.
 	//   - SetToRule shall set the item through the handle it opened, never by name alone.
 	//     [read]
-	//   - If the finding's item is a symbolic link or a junction, then SetToRule shall refuse with
-	//     Link.
+	//   - If the finding's item is a symbolic link, a junction, or a file with more than one name,
+	//     then SetToRule shall refuse with Link.
 	//   - If the finding's item is ItemSwarmSecret, then SetToRule shall refuse with
 	//     LooserThanRule and change nothing.
 	SetToRule(finding Finding, account string) error
