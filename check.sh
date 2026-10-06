@@ -27,7 +27,14 @@ fi
 mapfile -t owned < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' developer-owned-paths | grep . || true)
 [ "${#owned[@]}" -gt 0 ] || fail "developer-owned-paths names no path"
 if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- "${owned[@]}" | grep '\[bot\]@' || true)
+  # On a pull request CI checks out GitHub's merge of the branch into the base, which GitHub
+  # authors as whoever opened the PR, and which a branch behind the base shows as touching
+  # owned paths: judge the branch's own commits, up to its head, the merge's second parent.
+  tip=HEAD
+  if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+    tip=$(git rev-parse -q --verify 'HEAD^2') || fail "a pull request's checkout is not GitHub's merge"
+  fi
+  bot=$(git log --format='%h %ae' "$BASE..$tip" -- "${owned[@]}" | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
@@ -80,6 +87,10 @@ if [ -n "$pkgs" ]; then
   go build ./...
   go vet ./...
   golangci-lint run ./...
+  # Files built for one platform are linted only when GOOS names it, and the loop runs this
+  # on Windows: lint the other platform too, so a Linux-only file's faults show before CI.
+  other=linux; [ "$(go env GOOS)" = linux ] && other=windows
+  GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
   go test ${RACE:-} ${COVER:-} ${TESTRUN:+-run "$TESTRUN"} -count=1 ./...
   govulncheck ./...
