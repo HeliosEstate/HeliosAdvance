@@ -13,7 +13,6 @@
 package bootstrap
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,30 +92,15 @@ exit $status`
 	}
 }
 
-// refusalOf returns err as a *Refusal, failing the row when it is not one.
-func refusalOf(t *testing.T, err error) *Refusal {
-	t.Helper()
-	var refusal *Refusal
-	if !errors.As(err, &refusal) {
-		t.Fatalf("got %v, want a *Refusal", err)
-	}
-	return refusal
-}
-
-// wantRefusal fails the row unless err is a *Refusal with the cause given.
-func wantRefusal(t *testing.T, err error, cause Cause) {
-	t.Helper()
-	if refusal := refusalOf(t, err); refusal.Cause != cause {
-		t.Fatalf("refused with cause %d, want %d", refusal.Cause, cause)
-	}
-}
+// refusalOf and wantRefusal are the file format's tests' own, in file_test.go: one package,
+// one copy.
 
 // wantFolderRefused fails the row unless err is a FolderRefused naming the rule given.
 func wantFolderRefused(t *testing.T, err error, rule FolderRule) {
 	t.Helper()
-	refusal := refusalOf(t, err)
-	if refusal.Cause != FolderRefused {
-		t.Fatalf("refused with cause %d, want FolderRefused (%d)", refusal.Cause, FolderRefused)
+	refusal := refusalOf(err)
+	if refusal == nil || refusal.Cause != FolderRefused {
+		t.Fatalf("got %v, want a FolderRefused refusal", err)
 	}
 	if refusal.Rule != rule {
 		t.Errorf("named rule %d, want %d", refusal.Rule, rule)
