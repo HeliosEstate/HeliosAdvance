@@ -475,6 +475,43 @@ func TestWindowsElevated(t *testing.T) {
 				sameExceptWindows(t, before, readItems(t, folder, ""), "")
 			})
 		}
+		t.Run("the bootstrap file granting Users, with a second name outside the folder", func(t *testing.T) {
+			folder := newWindowsFolder(t)
+			file, second := filepath.Join(folder.path, nameFile), filepath.Join(t.TempDir(), "second")
+			before := setUp(t, folder, serviceAccountSID,
+				"$file = '"+file+"'\nInvoke-Icacls $file /grant '*S-1-5-32-545:(R)'\nNew-Item -ItemType HardLink -Path '"+second+"' -Target $file | Out-Null")
+			wantRefusal(t, New().SetToRule(Finding{Item: ItemFile, Path: file}, serviceAccount), Link)
+			sameExceptWindows(t, before, readItems(t, folder, ""), "")
+		})
+	})
+
+	t.Run(lineCheckLink, func(t *testing.T) {
+		for _, row := range []struct {
+			name string
+			file string
+			item Item
+		}{
+			{"the bootstrap file, with a second name outside the folder", nameFile, ItemFile},
+			{"the lock file, with a second name outside the folder", nameLock, ItemOtherFile},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				folder := newWindowsFolder(t)
+				file := filepath.Join(folder.path, row.file)
+				setUp(t, folder, serviceAccountSID,
+					"New-Item -ItemType HardLink -Path '"+filepath.Join(t.TempDir(), "second")+"' -Target '"+file+"' | Out-Null")
+				_, err := New().Check(folder.path, ModeMachineKeyPair, serviceAccount)
+				wantLinkNaming(t, err, row.item, file)
+			})
+		}
+		t.Run("let through: every file with one name", func(t *testing.T) {
+			folder := newWindowsFolder(t)
+			setUp(t, folder, serviceAccountSID, "")
+			findings, err := New().Check(folder.path, ModeMachineKeyPair, serviceAccount)
+			if err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			sameFindings(t, findings, nil)
+		})
 	})
 
 	t.Run(lineSetToRuleSwarm, func(t *testing.T) {
