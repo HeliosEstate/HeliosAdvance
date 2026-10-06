@@ -44,6 +44,10 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance
+            # The Go team's own system-call module, the one the standard library vendors: the
+            # access lists, owners and handles the bootstrap unit judges and sets, and the CNG
+            # key store through DLLs loaded only from System32. Cost-benefit in its PR.
+            - golang.org/x/sys
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -113,6 +117,7 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance/internal/board
+            - golang.org/x/sys
         transfer:
           files: ["**/internal/transfer/**"]
           list-mode: strict
@@ -129,7 +134,7 @@ linters:
         - pattern: ^io\.ReadAll$
           msg: bound the read (io.LimitReader) before draining it
         - pattern: ^os\.(Getenv|LookupEnv)$
-          msg: secrets and settings come through internal/secrets and the settings store
+          msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
     gosec:

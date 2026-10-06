@@ -47,7 +47,7 @@ const (
 type Lease interface {
 	// Acquire is called after admission. It creates or replaces the row with a new
 	// generation and returns it. It always succeeds: a live lease for the same ID is
-	// superseded, so a second process started with the same bootstrap record evicts the
+	// superseded, so a second process started with the same bootstrap file evicts the
 	// first, which learns at its next renewal. A misconfiguration is contained to that
 	// server and never blocks a restart.
 	Acquire(ctx context.Context, id board.ServerID) (Generation, error)
