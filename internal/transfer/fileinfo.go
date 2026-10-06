@@ -36,7 +36,9 @@ func decodeFileInfo(data []byte) (name string, size int64, mtime time.Time) {
 	}
 	if len(fields) > 1 {
 		if parsed, err := strconv.ParseInt(fields[1], 8, 64); err == nil {
-			mtime = time.Unix(parsed, 0).UTC()
+			if parsed != 0 {
+				mtime = time.Unix(parsed, 0).UTC()
+			}
 		}
 	}
 	return name, size, mtime
