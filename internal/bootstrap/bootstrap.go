@@ -8,12 +8,23 @@ import (
 	"errors"
 )
 
-// errNotBuilt is what every operation returns until the unit is built, so that every
-// approved test fails rather than stops the run.
+// errNotBuilt is what every operation not yet built returns, so that every approved test
+// fails rather than stops the run.
 var errNotBuilt = errors.New("bootstrap: not built")
 
 // New returns the Bootstrap.
-func New() Bootstrap { return unbuilt{} }
+func New() Bootstrap { return checker{} }
+
+// checker has the permission checks built, and refuses the rest until they are.
+type checker struct{ unbuilt }
+
+func (checker) Check(folder string, mode KeyMode, account string) ([]Finding, error) {
+	return checkPermissions(folder, mode, account)
+}
+
+func (checker) SetToRule(finding Finding, account string) error {
+	return setToRule(finding, account)
+}
 
 // unbuilt refuses every operation.
 type unbuilt struct{}
