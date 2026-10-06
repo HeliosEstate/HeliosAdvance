@@ -17,6 +17,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const systemdCredentialFileName = "bootstrap-key.cred" //nolint:gosec // fixed credential filename, not secret data
+
 func buildOnPlatform(ctx context.Context, folder string, fields Fields, path BuildPath, account string, source KeySource) (KeyMode, error) {
 	if !isElevated() {
 		return 0, &Refusal{Cause: NotElevated}
@@ -101,7 +103,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 		credentialMade = true
 		defer func() {
 			if credentialMade {
-				_ = unix.Unlinkat(int(directory.Fd()), nameSystemdKey, 0)
+				_ = unix.Unlinkat(int(directory.Fd()), systemdCredentialFileName, 0) //nolint:errcheck // a failed build must not leave a credential
 			}
 		}()
 		if err := sealSystemdCredential(ctx, folder, accountID, version >= 256, key); err != nil {
@@ -169,41 +171,41 @@ func sealSystemdCredential(ctx context.Context, folder string, accountID uint32,
 		return fmt.Errorf("bootstrap: creating the temporary key: %w", err)
 	}
 	plainPath := plain.Name()
-	defer func() { _ = os.Remove(plainPath) }()
+	defer func() { _ = os.Remove(plainPath) }() //nolint:errcheck // remove the temporary plaintext key
 	if err := plain.Chmod(0o600); err != nil {
-		_ = plain.Close()
+		_ = plain.Close() //nolint:errcheck // return the chmod error
 		return err
 	}
 	if _, err := plain.Write(key); err != nil {
-		_ = plain.Close()
+		_ = plain.Close() //nolint:errcheck // return the write error
 		return err
 	}
 	if err := plain.Close(); err != nil {
 		return err
 	}
-	sealedPath := filepath.Join(folder, nameSystemdKey+".new")
+	sealedPath := filepath.Join(folder, systemdCredentialFileName+".new")
 	args := []string{"encrypt", "--name=" + machineKeyPairName, "--with-key=host", plainPath, sealedPath}
 	if perUse {
 		args = append([]string{"--user", "--uid=" + strconv.FormatUint(uint64(accountID), 10)}, args...)
 	}
-	command := exec.CommandContext(ctx, "systemd-creds", args...)
+	command := exec.CommandContext(ctx, "systemd-creds", args...) //nolint:gosec // fixed tool and arguments built from validated numeric data
 	if output, err := command.CombinedOutput(); err != nil {
-		_ = os.Remove(sealedPath)
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return fmt.Errorf("bootstrap: sealing the credential: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	if err := os.Chmod(sealedPath, 0o600); err != nil {
-		_ = os.Remove(sealedPath)
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		return err
 	}
 	if err := os.Chown(sealedPath, int(accountID), -1); err != nil {
-		_ = os.Remove(sealedPath)
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		return err
 	}
-	if err := os.Rename(sealedPath, filepath.Join(folder, nameSystemdKey)); err != nil {
-		_ = os.Remove(sealedPath)
+	if err := os.Rename(sealedPath, filepath.Join(folder, systemdCredentialFileName)); err != nil {
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		return err
 	}
 	return nil
