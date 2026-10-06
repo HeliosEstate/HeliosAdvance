@@ -107,7 +107,8 @@ jobs:
             # its statement count and how often it ran. Averaging -func's per-function figures
             # weighted a two-line function like a two-hundred-line one and read high.
             awk 'NR>1{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); t[d]+=$2; if($3>0) c[d]+=$2} END{for(k in t) printf "| %s | %.1f%% (%d of %d) |\n", k, (t[k] ? 100*c[k]/t[k] : 0), c[k], t[k]}' coverage.out | sort
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > coverage.md
+          cat coverage.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux'
         with:
@@ -115,8 +116,45 @@ jobs:
           path: |
             coverage.out
             coverage.html
+            coverage.md
           if-no-files-found: ignore
           retention-days: 14
+
+  # The coverage table on the pull request itself, as one comment updated on every run. The
+  # only job that can write to the pull request, and it runs nothing from the branch: it reads
+  # the run job's tables and posts them. It never fails the run, since the loop reads any red
+  # check as a red PR; a fork's pull request, whose token cannot write, is skipped.
+  coverage:
+    needs: run
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.run.result != 'skipped'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+      - name: Post the coverage comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            echo '<!-- coverage -->'
+            echo "Coverage at ${SHA:0:7}, statements per package. A report, never a gate."
+            echo
+            for f in coverage-*/coverage.md; do [ -f "$f" ] && { cat "$f"; echo; }; done
+          } | head -c 60000 > body.md
+          grep -q '^## Coverage' body.md || echo "No coverage table: the tests did not run." >> body.md
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- coverage -->"))) | .id' | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@body.md > /dev/null
+          fi
 
   # The ruleset requires this one job. It passes when the cheap gates passed and the matrix
   # either passed or was skipped for a docs-only change set; a skipped matrix on any other
