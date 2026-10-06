@@ -103,7 +103,10 @@ jobs:
             echo
             echo '| Package | Statements covered |'
             echo '|---|---|'
-            go tool cover -func=coverage.out | awk '$1!="total:"{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); p=$NF; sub(/%/,"",p); n[d]++; s[d]+=p} END{for(k in n) printf "| %s | %.1f%% |\n", k, s[k]/n[k]}' | sort
+            # Statements, counted from the profile itself: each line after the mode is a block,
+            # its statement count and how often it ran. Averaging -func's per-function figures
+            # weighted a two-line function like a two-hundred-line one and read high.
+            awk 'NR>1{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); t[d]+=$2; if($3>0) c[d]+=$2} END{for(k in t) printf "| %s | %.1f%% (%d of %d) |\n", k, (t[k] ? 100*c[k]/t[k] : 0), c[k], t[k]}' coverage.out | sort
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always() && runner.os == 'Linux'
