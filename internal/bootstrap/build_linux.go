@@ -98,6 +98,10 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err != nil && !errors.Is(err, unix.ENOENT) {
 		return 0, fmt.Errorf("bootstrap: checking the old bootstrap file: %w", err)
 	}
+	tpmDevice, err := linuxTPMDevice(ctx)
+	if err != nil {
+		return 0, err
+	}
 	credentialMade := false
 	if source == FromOSStore {
 		credentialMade = true
@@ -106,7 +110,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 				_ = unix.Unlinkat(int(directory.Fd()), systemdCredentialFileName, 0) //nolint:errcheck // a failed build must not leave a credential
 			}
 		}()
-		if err := sealSystemdCredential(ctx, folder, accountID, version >= 256, key); err != nil {
+		if err := sealSystemdCredential(ctx, folder, accountID, version >= 256, tpmDevice, key); err != nil {
 			return 0, err
 		}
 	}
@@ -165,7 +169,30 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	return mode, nil
 }
 
-func sealSystemdCredential(ctx context.Context, folder string, accountID uint32, perUse bool, key []byte) error {
+func linuxTPMDevice(ctx context.Context) (string, error) {
+	for _, device := range []string{"/dev/tpmrm0", "/dev/tpm0"} {
+		if _, err := os.Stat(device); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("bootstrap: checking %s: %w", device, err)
+		}
+		command := exec.CommandContext(ctx, "systemd-creds", "--tpm2-device="+device, "--quiet", "has-tpm2") //nolint:gosec // device is selected from fixed /dev paths
+		if err := command.Run(); err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) && exitError.ExitCode()&4 != 0 {
+				return "", &Refusal{Cause: TPMLibrariesMissing}
+			}
+			return "", fmt.Errorf("bootstrap: checking TPM support: %w", err)
+		}
+		return device, nil
+	}
+	return "", nil
+}
+
+func sealSystemdCredential(ctx context.Context, folder string, accountID uint32, perUse bool, tpmDevice string, key []byte) error {
 	plain, err := os.CreateTemp("", "heliosadvance-key-")
 	if err != nil {
 		return fmt.Errorf("bootstrap: creating the temporary key: %w", err)
@@ -184,11 +211,17 @@ func sealSystemdCredential(ctx context.Context, folder string, accountID uint32,
 		return err
 	}
 	sealedPath := filepath.Join(folder, systemdCredentialFileName+".new")
-	args := []string{"encrypt", "--name=" + machineKeyPairName, "--with-key=host", plainPath, sealedPath}
+	args := []string{"encrypt", "--name=" + machineKeyPairName}
+	if tpmDevice != "" {
+		args = append(args, "--with-key=host+tpm2", "--tpm2-device="+tpmDevice, "--tpm2-pcrs=")
+	} else {
+		args = append(args, "--with-key=host")
+	}
+	args = append(args, plainPath, sealedPath)
 	if perUse {
 		args = append([]string{"--user", "--uid=" + strconv.FormatUint(uint64(accountID), 10)}, args...)
 	}
-	command := exec.CommandContext(ctx, "systemd-creds", args...) //nolint:gosec // fixed tool and arguments built from validated numeric data
+	command := exec.CommandContext(ctx, "systemd-creds", args...)
 	if output, err := command.CombinedOutput(); err != nil {
 		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		if ctx.Err() != nil {
