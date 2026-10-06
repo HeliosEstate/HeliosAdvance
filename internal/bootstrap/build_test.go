@@ -178,12 +178,13 @@ func bootSystemd(t *testing.T, image, dir string) string {
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "rm", "-f", "-v", container).Run() //nolint:noctx // removal must run after the test's context has ended
 	})
-	// systemctl's --wait waits for a starting manager, not for one not yet started: asked
-	// first, it says the system was not booted with systemd. So the wait is first for
-	// /run/systemd/system, systemd's own sign that it runs, for up to a minute. Degraded is a
-	// booted systemd too: a unit the container cannot start fails, and the manager runs
-	// regardless.
-	wait := `i=0; until [ -d /run/systemd/system ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done; systemctl is-system-running --wait`
+	// systemctl's --wait waits for a starting manager, not for one it cannot reach yet: asked
+	// too early it says the system was not booted with systemd, and a little later that it
+	// cannot connect to the bus, before systemd opens its socket. So the wait is first for
+	// any state at all from systemd, for up to a minute, then for it to finish starting.
+	// Degraded is a booted systemd too: a unit the container cannot start fails, and the
+	// manager runs regardless.
+	wait := `i=0; until state=$(systemctl is-system-running 2>/dev/null); [ -n "$state" ] && [ "$state" != offline ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done; systemctl is-system-running --wait`
 	state, _ := exec.CommandContext(t.Context(), "docker", "exec", container, "sh", "-c", wait).CombinedOutput() //nolint:errcheck // degraded exits non-zero; the state is judged below
 	lines := strings.Split(strings.TrimSpace(string(state)), "\n")
 	if got := lines[len(lines)-1]; got != "running" && got != "degraded" {
