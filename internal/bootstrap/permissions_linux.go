@@ -177,9 +177,11 @@ func isRemovable(device uint64) bool {
 // removableAt is whether the block device at a sysfs directory, or a device it is built on, is
 // removable. A device-mapper or md device reports no flag of its own, so its slaves/ are walked.
 func removableAt(directory string, depth int) bool {
-	// A partition has no flag of its own: its disk's is in the directory above.
+	// A partition has no flag of its own: its disk's is in the directory above. The directory is a
+	// symbolic link in sysfs, so the path is joined as text: filepath.Join would clean ".." away
+	// before the kernel could follow the link.
 	for _, name := range []string{"removable", "../removable"} {
-		file, err := os.Open(filepath.Join(directory, name)) //nolint:gosec // a path built from two numbers and names the kernel lists
+		file, err := os.Open(directory + "/" + name) //nolint:gosec // a path built from two numbers and names the kernel lists
 		if err != nil {
 			continue
 		}
