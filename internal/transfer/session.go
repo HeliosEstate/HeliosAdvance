@@ -11,10 +11,18 @@ import (
 	"time"
 )
 
-// maxRetries bounds how many times a session resends a frame while awaiting a reply
+// maxRetries bounds how many times a ZMODEM sender resends a frame while awaiting a reply
 // before giving up. Each attempt waits up to the session's timeout, so a caller's
 // Options.Timeout still bounds how long a hung exchange takes to fail.
 const maxRetries = 3
+
+// zrinitTries is how many ZRINITs the ZMODEM receiver sends, one per timeout, before giving
+// up: the reference's 40 seconds at the default 10-second timeout.
+const zrinitTries = 4
+
+// xyRetries is how many times an XMODEM or YMODEM side tries a block, an opening byte or an
+// end of file before giving up: the reference's ten.
+const xyRetries = 10
 
 // maxSubpacket is a safety bound on a decoded subpacket's size: larger than any
 // SubpacketSize this package offers (1024 or 8192), so it never rejects a good packet.

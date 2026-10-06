@@ -94,7 +94,7 @@ func (conversation *xysession) nextByte() (byte, error) {
 // openByte is a sender's wait for the receiver's opening byte (NAK, C or G), which also
 // says which checksum, if any, the receiver wants.
 func (conversation *xysession) openByte() (byte, error) {
-	for range maxRetries {
+	for range xyRetries {
 		value, err := conversation.src.readByte(conversation.ctx, conversation.timeout)
 		switch {
 		case err == nil:
@@ -200,7 +200,7 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 	control := open
 	send := func() error { return conversation.putByte(control) }
 
-	lead, err := conversation.awaitByte(send, maxRetries)
+	lead, err := conversation.awaitByte(send, xyRetries)
 	if err != nil {
 		return mapErr(err)
 	}
@@ -225,7 +225,7 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 					lead, err = conversation.nextByte()
 				} else {
 					control = xack
-					lead, err = conversation.awaitByte(send, maxRetries)
+					lead, err = conversation.awaitByte(send, xyRetries)
 				}
 			case streaming:
 				conversation.cancelPeer()
@@ -235,7 +235,7 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 				// retried as a bad block; the oracle never drops a byte, only flips one,
 				// so this path only ever fires on genuine corruption in practice.
 				control = xnak
-				lead, err = conversation.awaitByte(send, maxRetries)
+				lead, err = conversation.awaitByte(send, xyRetries)
 			}
 		default:
 			if streaming {
@@ -243,7 +243,7 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 				return ErrProtocol
 			}
 			control = xnak
-			lead, err = conversation.awaitByte(send, maxRetries)
+			lead, err = conversation.awaitByte(send, xyRetries)
 		}
 		if err != nil {
 			return mapErr(err)
@@ -350,7 +350,7 @@ func (conversation *xysession) sendBlocks(file *os.File, useCRC, streaming bool)
 }
 
 func (conversation *xysession) sendOneBlock(blk byte, data []byte, useCRC bool) error {
-	for range maxRetries {
+	for range xyRetries {
 		if err := xywriteBlock(conversation.raw, blk, data, useCRC); err != nil {
 			return err
 		}
@@ -374,7 +374,7 @@ func (conversation *xysession) sendOneBlock(blk byte, data []byte, useCRC bool) 
 }
 
 func (conversation *xysession) sendEOT() error {
-	for range maxRetries {
+	for range xyRetries {
 		if err := conversation.putByte(xeot); err != nil {
 			return err
 		}
@@ -429,7 +429,7 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 	useCRC := open != xnak
 	control := open
 	send := func() error { return conversation.putByte(control) }
-	lead, err := conversation.awaitByte(send, maxRetries)
+	lead, err := conversation.awaitByte(send, xyRetries)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +446,7 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 			}
 			if rerr != nil || !ok {
 				control = xnak
-				lead, err = conversation.awaitByte(send, maxRetries)
+				lead, err = conversation.awaitByte(send, xyRetries)
 				break
 			}
 			if ackErr := conversation.putByte(xack); ackErr != nil {
@@ -463,7 +463,7 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 			return data, nil
 		default:
 			control = xnak
-			lead, err = conversation.awaitByte(send, maxRetries)
+			lead, err = conversation.awaitByte(send, xyRetries)
 		}
 		if err != nil {
 			return nil, err
@@ -591,7 +591,7 @@ func (conversation *xysession) sendHeaderBlock(info []byte, useCRC bool) (byte, 
 	}
 	data := make([]byte, blockSize)
 	copy(data, info)
-	for range maxRetries {
+	for range xyRetries {
 		if err := xywriteBlock(conversation.raw, 0, data, useCRC); err != nil {
 			return 0, err
 		}

@@ -21,7 +21,7 @@ func (conversation *session) receive(dir string) ([]Received, error) {
 	for {
 		head, crc32mode, err := conversation.await(func() error {
 			return writeHex(conversation.writer, header{typ: zrinit, data: [4]byte{0, 0, 0, flags}})
-		}, maxRetries)
+		}, zrinitTries)
 		if err != nil {
 			return out, mapErr(err)
 		}
