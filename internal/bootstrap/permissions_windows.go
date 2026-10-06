@@ -278,7 +278,10 @@ func readHeld(handle windows.Handle, path string, item Item) (held, error) {
 		return held{}, fmt.Errorf("bootstrap: reading %s: %w", path, err)
 	}
 	isDirectory := information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
-	if !link && (isDirectory != (item == ItemFolder) || (!isDirectory && information.NumberOfLinks != 1)) {
+	if !link && !isDirectory && information.NumberOfLinks != 1 {
+		return held{}, &Refusal{Cause: Link, Path: path, Item: item}
+	}
+	if !link && isDirectory != (item == ItemFolder) {
 		return held{}, fmt.Errorf("bootstrap: %s is not the kind of item it is named for, or has a second name, so hadv-setup did not make this folder", path)
 	}
 	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, ownerAndDACL)
@@ -581,7 +584,11 @@ func openFinding(finding Finding) (windows.Handle, error) {
 		information, err = informationOf(handle)
 	}
 	isDirectory := information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
-	if err != nil || isDirectory != (finding.Item == ItemFolder) || (!isDirectory && information.NumberOfLinks != 1) {
+	if err == nil && !isDirectory && information.NumberOfLinks != 1 {
+		_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
+		return 0, &Refusal{Cause: Link, Path: finding.Path}
+	}
+	if err != nil || isDirectory != (finding.Item == ItemFolder) {
 		_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
 		if err == nil {
 			err = errors.New("its type or its link count differs from the item that was checked")
