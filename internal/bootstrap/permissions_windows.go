@@ -293,8 +293,16 @@ func readHeld(handle windows.Handle, path string, item Item) (held, error) {
 // isLink is whether the handle is a symbolic link or a junction. Another kind of reparse point,
 // such as a deduplicated or cloud file, is an ordinary item.
 func isLink(handle windows.Handle) (bool, error) {
+	// FAT has no reparse points and refuses the tag query, so the plain attributes are asked first.
+	plain, err := informationOf(handle)
+	if err != nil {
+		return false, err
+	}
+	if plain.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+		return false, nil
+	}
 	var information struct{ FileAttributes, ReparseTag uint32 }
-	err := windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&information)), uint32(unsafe.Sizeof(information))) //nolint:gosec // the call fills a struct of two fields
+	err = windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&information)), uint32(unsafe.Sizeof(information))) //nolint:gosec // the call fills a struct of two fields
 	if err != nil {
 		return false, err
 	}
