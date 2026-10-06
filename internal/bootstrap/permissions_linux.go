@@ -182,12 +182,14 @@ func isRemovable(device uint64) bool {
 	return false
 }
 
+// lookupAccount is the account's user ID, parsed to 31 bits: Fchown takes an int, which is 32 bits
+// on some targets, and -1 means "leave the owner" to it.
 func lookupAccount(account string) (uint32, error) {
 	found, err := user.Lookup(account)
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
-	userID, err := strconv.ParseUint(found.Uid, 10, 32)
+	userID, err := strconv.ParseUint(found.Uid, 10, 31)
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
