@@ -56,6 +56,13 @@ function Invoke-Icacls { & icacls @args | Out-Null; if ($LASTEXITCODE) { throw "
 function Set-Rule($path, $sid, $isFolder) {
     $flags = if ($isFolder) { '(OI)(CI)' } else { '' }
     Invoke-Icacls $path /inheritance:r /grant:r "*${sid}:${flags}F" "*S-1-5-18:${flags}F" "*S-1-5-32-544:${flags}F"
+    # icacls can keep the running account's own entry when it removes inheritance (it does on
+    # GitHub's Windows runner), so any account the rule does not name is removed after it.
+    $named = $sid, 'S-1-5-18', 'S-1-5-32-544'
+    foreach ($entry in (Get-Acl -LiteralPath $path).Access) {
+        $other = $entry.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        if ($named -notcontains $other) { Invoke-Icacls $path /remove:g "*$other" }
+    }
     Invoke-Icacls $path /setowner '*S-1-5-32-544'
 }
 function Set-KeyPair($sddl) {
@@ -483,7 +490,8 @@ func TestWindowsElevated(t *testing.T) {
 }
 
 // fatFolder makes a bootstrap folder on a FAT32 volume: a VHDX made, formatted and attached
-// by diskpart, detached when the row ends.
+// by diskpart, detached by Dismount-DiskImage when the row ends. Not by diskpart: given the
+// temp folder's short name, which GitHub's runner has, it answers "already detached".
 func fatFolder(t *testing.T) string {
 	t.Helper()
 	vhd := filepath.Join(t.TempDir(), "fat32.vhdx")
@@ -498,12 +506,9 @@ foreach ($name in 'bootstrap.hadv', 'bootstrap.lock', 'bootstrap-key.sealed') { 
 [Console]::Out.WriteLine($folder)
 `
 	t.Cleanup(func() {
-		steps := filepath.Join(filepath.Dir(vhd), "detach.txt")
-		if err := os.WriteFile(steps, []byte("select vdisk file=\""+vhd+"\"\r\ndetach vdisk\r\n"), 0o600); err != nil {
-			t.Error(err)
-			return
-		}
-		if out, err := exec.Command("diskpart", "/s", steps).CombinedOutput(); err != nil { //nolint:noctx // a cleanup runs after the test's context has ended
+		command := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; Dismount-DiskImage -ImagePath '"+vhd+"' | Out-Null") //nolint:noctx // a cleanup runs after the test's context has ended
+		command.Env = windowsPowerShellEnvironment()
+		if out, err := command.CombinedOutput(); err != nil {
 			t.Errorf("detaching the VHDX: %v\n%s", err, out)
 		}
 	})
