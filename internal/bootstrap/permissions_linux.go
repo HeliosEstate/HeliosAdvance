@@ -89,6 +89,9 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		// A link where a file should be is looser than the rule, whatever its mode. Any other
 		// thing in its place, or a second name for the file, means hadv-setup did not make the folder.
 		displaced := item != ItemFolder && stat.Mode&unix.S_IFMT == unix.S_IFLNK
+		if item != ItemFolder && stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Nlink != 1 {
+			return nil, &Refusal{Cause: Link, Path: path, Item: item}
+		}
 		if item != ItemFolder && !displaced && (stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1) {
 			return nil, fmt.Errorf("bootstrap: %s is not a file with one name, so hadv-setup did not make this folder", path)
 		}
@@ -317,7 +320,11 @@ func verifyOpened(path string, descriptor int, openErr error, wantType uint32, f
 		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
 		return -1, fmt.Errorf("bootstrap: reading %s: %w", path, err)
 	}
-	if stat.Mode&unix.S_IFMT != wantType || (folder != nil && (stat.Nlink != 1 || stat.Dev != folder.Dev)) {
+	if wantType == unix.S_IFREG && stat.Mode&unix.S_IFMT == wantType && stat.Nlink != 1 {
+		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
+		return -1, &Refusal{Cause: Link, Path: path}
+	}
+	if stat.Mode&unix.S_IFMT != wantType || (folder != nil && stat.Dev != folder.Dev) {
 		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
 		return -1, fmt.Errorf("bootstrap: %s is not the item that was checked: its type, its folder's device or its link count differs", path)
 	}

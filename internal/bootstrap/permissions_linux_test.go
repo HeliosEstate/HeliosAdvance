@@ -466,6 +466,48 @@ func TestLinuxAsRoot(t *testing.T) {
 				sameExcept(t, before, takeSnapshot(t, folder.itemPaths()), "")
 			})
 		}
+		t.Run("the bootstrap file at 0644, with a second name outside the folder", func(t *testing.T) {
+			folder := makeFolder(t, volume, ModeKeyFile, serviceAccount, false)
+			file := filepath.Join(folder.path, nameFile)
+			if err := os.Chmod(file, 0o644); err != nil { //nolint:gosec // the row sets the file looser than its rule, so a SetToRule that went ahead would show
+				t.Fatal(err)
+			}
+			if err := os.Link(file, filepath.Join(volume, "second-"+filepath.Base(folder.path))); err != nil {
+				t.Fatal(err)
+			}
+			before := takeSnapshot(t, folder.itemPaths())
+			wantRefusal(t, New().SetToRule(Finding{Item: ItemFile, Path: file}, serviceAccount), Link)
+			sameExcept(t, before, takeSnapshot(t, folder.itemPaths()), "")
+		})
+	})
+
+	t.Run(lineCheckLink, func(t *testing.T) {
+		for _, row := range []struct {
+			name string
+			file string
+			item Item
+		}{
+			{"the bootstrap file, with a second name outside the folder", nameFile, ItemFile},
+			{"the lock file, with a second name outside the folder", nameLock, ItemOtherFile},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				folder := makeFolder(t, volume, ModeKeyFile, serviceAccount, false)
+				file := filepath.Join(folder.path, row.file)
+				if err := os.Link(file, filepath.Join(volume, "second-"+filepath.Base(folder.path))); err != nil {
+					t.Fatal(err)
+				}
+				_, err := New().Check(folder.path, ModeKeyFile, serviceAccount)
+				wantLinkNaming(t, err, row.item, file)
+			})
+		}
+		t.Run("let through: every file with one name", func(t *testing.T) {
+			folder := makeFolder(t, volume, ModeKeyFile, serviceAccount, false)
+			findings, err := New().Check(folder.path, ModeKeyFile, serviceAccount)
+			if err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			sameFindings(t, findings, nil)
+		})
 	})
 
 	t.Run(lineSetToRuleSwarm, func(t *testing.T) {

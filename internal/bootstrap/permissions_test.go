@@ -37,7 +37,8 @@ const (
 	lineCheckLock            = "Check shall run without the lock."
 	lineSetToRuleNotElevated = "If the process is neither elevated nor root, then SetToRule shall refuse with NotElevated."
 	lineSetToRuleSets        = "SetToRule shall set the finding's item to its rule for the account it is given, and change nothing else."
-	lineSetToRuleLink        = "If the finding's item is a symbolic link or a junction, then SetToRule shall refuse with Link."
+	lineSetToRuleLink        = "If the finding's item is a symbolic link, a junction, or a file with more than one name, then SetToRule shall refuse with Link."
+	lineCheckLink            = "If an item in the folder is a file with more than one name, then Check shall refuse with Link, naming the item."
 	lineSetToRuleSwarm       = "If the finding's item is ItemSwarmSecret, then SetToRule shall refuse with LooserThanRule and change nothing."
 )
 
@@ -112,6 +113,15 @@ func samePermissions(got, want Permissions) bool {
 	gotAccounts, wantAccounts := slices.Sorted(slices.Values(got.Accounts)), slices.Sorted(slices.Values(want.Accounts))
 	return got.Owner == want.Owner && got.Mode == want.Mode && got.Inherited == want.Inherited &&
 		slices.Equal(gotAccounts, wantAccounts)
+}
+
+// wantLinkNaming fails the row unless err refuses with Link, naming the item and its path.
+func wantLinkNaming(t *testing.T, err error, item Item, path string) {
+	t.Helper()
+	refusal := refusalOf(err)
+	if refusal == nil || refusal.Cause != Link || refusal.Item != item || refusal.Path != path {
+		t.Errorf("got %v (%+v), want a refusal with Link naming item %d at %s", err, refusal, item, path)
+	}
 }
 
 // sameFindings fails the row unless got holds exactly the findings in want, in any order.
