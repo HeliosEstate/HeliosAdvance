@@ -12,7 +12,8 @@ import (
 // Directory names under the fake sysfs devices/ tree.
 const (
 	diskName       = "disk"
-	partitionName  = "partition"
+	partitionName  = "sda1"
+	markerName     = "partition"
 	mdName         = "md"
 	mdPartition    = "mdpartition"
 	mapperName     = "mapper"
@@ -72,9 +73,9 @@ func TestRemovableAt(t *testing.T) {
 				}
 				files := map[string]string{
 					filepath.Join(devices, diskName, removableFile):                  row.removable + "\n",
-					filepath.Join(devices, diskName, partitionName, partitionName):   "1\n",
+					filepath.Join(devices, diskName, partitionName, markerName):      "1\n",
 					filepath.Join(devices, mdName, removableFile):                    "0\n",
-					filepath.Join(devices, mdName, mdPartition, partitionName):       "1\n",
+					filepath.Join(devices, mdName, mdPartition, markerName):          "1\n",
 					filepath.Join(devices, mapperName, removableFile):                "0\n",
 					filepath.Join(devices, mapperTopName, removableFile):             "0\n",
 					filepath.Join(devices, parentName, removableFile):                row.removable + "\n",
