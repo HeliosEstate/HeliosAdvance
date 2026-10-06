@@ -27,7 +27,14 @@ fi
 mapfile -t owned < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' developer-owned-paths | grep . || true)
 [ "${#owned[@]}" -gt 0 ] || fail "developer-owned-paths names no path"
 if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
-  bot=$(git log --format='%h %ae' "$BASE..HEAD" -- "${owned[@]}" | grep '\[bot\]@' || true)
+  # On a pull request CI checks out GitHub's merge of the branch into the base, which GitHub
+  # authors as whoever opened the PR, and which a branch behind the base shows as touching
+  # owned paths: judge the branch's own commits, up to its head, the merge's second parent.
+  tip=HEAD
+  if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+    tip=$(git rev-parse -q --verify 'HEAD^2') || fail "a pull request's checkout is not GitHub's merge"
+  fi
+  bot=$(git log --format='%h %ae' "$BASE..$tip" -- "${owned[@]}" | grep '\[bot\]@' || true)
   [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
 fi
 
