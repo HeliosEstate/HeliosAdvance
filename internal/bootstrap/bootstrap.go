@@ -8,38 +8,33 @@ import (
 	"errors"
 )
 
-// errNotBuilt is what every operation not yet built returns, so that every approved test
-// fails rather than stops the run.
+// errNotBuilt marks operations owned by later bootstrap issues.
 var errNotBuilt = errors.New("bootstrap: not built")
 
 // New returns the Bootstrap.
-func New() Bootstrap { return checker{} }
+func New() Bootstrap { return builder{} }
 
-// checker has the permission checks built, and refuses the rest until they are.
-type checker struct{ unbuilt }
+// builder holds the package operations already available.
+type builder struct{ unbuilt }
 
-func (checker) Check(folder string, mode KeyMode, account string) ([]Finding, error) {
+func (builder) Build(ctx context.Context, folder string, fields Fields, path BuildPath, account string, source KeySource) (KeyMode, error) {
+	return buildOnPlatform(ctx, folder, fields, path, account, source)
+}
+
+func (builder) Check(folder string, mode KeyMode, account string) ([]Finding, error) {
 	return checkPermissions(folder, mode, account)
 }
 
-func (checker) SetToRule(finding Finding, account string) error {
+func (builder) SetToRule(finding Finding, account string) error {
 	return setToRule(finding, account)
 }
 
-// unbuilt refuses every operation.
+// unbuilt retains the operations handled by later bootstrap work.
 type unbuilt struct{}
-
-func (unbuilt) Build(context.Context, string, Fields, BuildPath, string, KeySource) (KeyMode, error) {
-	return 0, errNotBuilt
-}
 
 func (unbuilt) UnlockForSetup(context.Context, string, KeyMode) (SetupHandle, error) {
 	return nil, errNotBuilt
 }
-
-func (unbuilt) Check(string, KeyMode, string) ([]Finding, error) { return nil, errNotBuilt }
-
-func (unbuilt) SetToRule(Finding, string) error { return errNotBuilt }
 
 func (unbuilt) UnlockForService(context.Context, string, KeyMode) (ServiceHandle, error) {
 	return nil, errNotBuilt
