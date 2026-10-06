@@ -178,11 +178,16 @@ func bootSystemd(t *testing.T, image, dir string) string {
 	t.Cleanup(func() {
 		_ = exec.Command("docker", "rm", "-f", "-v", container).Run() //nolint:noctx // removal must run after the test's context has ended
 	})
-	// Degraded is a booted systemd too: a unit the container cannot start fails, and the
-	// manager runs regardless.
-	state, _ := exec.CommandContext(t.Context(), "docker", "exec", container, "systemctl", "is-system-running", "--wait").Output() //nolint:errcheck // degraded exits non-zero; the state is judged below
-	if got := strings.TrimSpace(string(state)); got != "running" && got != "degraded" {
-		t.Fatalf("systemd in %s did not start: %q", image, got)
+	// systemctl's --wait waits for a starting manager, not for one not yet started: asked
+	// first, it says the system was not booted with systemd. So the wait is first for
+	// /run/systemd/system, systemd's own sign that it runs, for up to a minute. Degraded is a
+	// booted systemd too: a unit the container cannot start fails, and the manager runs
+	// regardless.
+	wait := `i=0; until [ -d /run/systemd/system ] || [ $i -ge 600 ]; do sleep 0.1; i=$((i+1)); done; systemctl is-system-running --wait`
+	state, _ := exec.CommandContext(t.Context(), "docker", "exec", container, "sh", "-c", wait).CombinedOutput() //nolint:errcheck // degraded exits non-zero; the state is judged below
+	lines := strings.Split(strings.TrimSpace(string(state)), "\n")
+	if got := lines[len(lines)-1]; got != "running" && got != "degraded" {
+		t.Fatalf("systemd in %s did not start:\n%s", image, state)
 	}
 	return container
 }
