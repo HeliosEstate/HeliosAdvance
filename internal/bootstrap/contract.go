@@ -43,7 +43,8 @@
 // container it is always /var/lib/heliosadvance, a volume. The service account is the
 // virtual account NT SERVICE\HeliosAdvance on Windows and the system user heliosadvance on
 // Linux. Every file in the bootstrap folder other than the key file takes the bootstrap
-// file's permission rule.
+// file's permission rule. A key file or Swarm secret is RFC 4648's standard base64 alphabet
+// with its padding, and each key has one spelling: the bits after its last byte are zero.
 //
 // The folder rules. The bootstrap folder is refused when:
 //
@@ -74,7 +75,9 @@
 // recorded in the service registration. On systemd 256 and later the credential is
 // user-scoped and this package decrypts it at each use. Below 256, systemd decrypts it when
 // the service starts, into the service's credential folder in memory that is never swapped,
-// and this package reads it from there at each use.
+// and this package reads it from there at each use. A server has systemd when systemd is its
+// running service manager, as systemd's own test for that reports, and its version is the
+// running manager's, not the installed program's.
 //
 // # The bootstrap file, format version 1
 //
@@ -243,8 +246,8 @@ type VaultKey struct {
 //
 //	Server                      it is 0
 //	Connection, AccountName     it is empty
-//	VaultKeys                   it holds none, more than two, two of one version, or a key
-//	                            that is not 32 bytes
+//	VaultKeys                   it holds none, more than two, two of one version, a key of
+//	                            version 0, or a key that is not 32 bytes
 //	ReceivingKey, SigningKey    it is empty
 type Fields struct {
 	Server          board.ServerID
@@ -374,7 +377,7 @@ type Refusal struct {
 	Path        string
 	Item        Item       // LooserThanRule; Link from Check
 	Rule        FolderRule // FolderRefused
-	Field       string     // FieldMalformed: the field's name
+	Field       string     // FieldMalformed: the field's name as the bootstrap file names it; vault.key. alone when the count of vault keys is wrong
 	FileVersion uint16     // NewerFormat
 	OwnVersion  uint16     // NewerFormat
 }
@@ -552,8 +555,10 @@ type Bootstrap interface {
 	//     then Build shall refuse with NoKeySource.
 	//   - If the source is FromContainer and both a Swarm secret and a key file are present, then
 	//     Build shall refuse with BothKeySources.
-	//   - If the source is FromKeyFile or FromContainer and the key file or Swarm secret is
-	//     absent, then Build shall refuse with KeyNotFound.
+	//   - If the source is FromKeyFile and the key file is absent, then Build shall refuse with
+	//     KeyNotFound.
+	//   - If the key file is a symbolic link or a file with more than one name, then Build shall
+	//     refuse with Link.
 	//   - If a key file or Swarm secret holds anything other than 32 bytes as base64 in 44
 	//     characters with at most one trailing newline, then Build shall refuse with
 	//     KeyFileMalformed.
