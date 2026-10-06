@@ -43,3 +43,18 @@ func decodeFileInfo(data []byte) (name string, size int64, mtime time.Time) {
 	}
 	return name, size, mtime
 }
+
+// hasFileLength reports whether data carries a parseable length field: YMODEM makes it
+// optional, and decodeFileInfo's zero for a missing length is indistinguishable from an empty file.
+func hasFileLength(data []byte) bool {
+	_, infoB, found := bytes.Cut(data, []byte{0})
+	if !found {
+		return false
+	}
+	fields := strings.Fields(strings.TrimRight(string(infoB), "\x00"))
+	if len(fields) == 0 {
+		return false
+	}
+	_, err := strconv.ParseInt(fields[0], 10, 64)
+	return err == nil
+}
