@@ -175,37 +175,48 @@ func isRemovable(device uint64) bool {
 }
 
 // removableAt is whether the block device at a sysfs directory, or a device it is built on, is
-// removable. A device-mapper or md device reports no flag of its own, so its slaves/ are walked.
+// removable. The directory is a symbolic link in sysfs, so it is resolved once and the walk works
+// on the real path. A partition has no removable file, so its disk is judged in full in its place:
+// the disk's flag and the disk's slaves/. A device-mapper or md device has a flag of its own,
+// reading 0, and still has its slaves/ walked, because that flag says nothing of the disks beneath.
 func removableAt(directory string, depth int) bool {
-	// A partition has no flag of its own: its disk's is in the directory above. The directory is a
-	// symbolic link in sysfs, so the path is joined as text: filepath.Join would clean ".." away
-	// before the kernel could follow the link.
-	for _, name := range []string{"removable", "../removable"} {
-		file, err := os.Open(directory + "/" + name) //nolint:gosec // a path built from two numbers and names the kernel lists
-		if err != nil {
-			continue
-		}
-		var flag [1]byte
-		count, _ := file.Read(flag[:]) //nolint:errcheck // a failed read is not a 1
-		_ = file.Close()               //nolint:errcheck // nothing to flush on a read-only handle
-		if count == 1 && flag[0] == '1' {
-			return true
-		}
-		break
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return false
+	}
+	flag, found := readRemovable(resolved)
+	if !found {
+		resolved = filepath.Dir(resolved)
+		flag, _ = readRemovable(resolved)
+	}
+	if flag == '1' {
+		return true
 	}
 	if depth == 0 {
 		return false
 	}
-	slaves, err := os.ReadDir(filepath.Join(directory, "slaves"))
+	slaves, err := os.ReadDir(filepath.Join(resolved, "slaves"))
 	if err != nil {
 		return false
 	}
 	for _, slave := range slaves {
-		if removableAt(filepath.Join(directory, "slaves", slave.Name()), depth-1) {
+		if removableAt(filepath.Join(resolved, "slaves", slave.Name()), depth-1) {
 			return true
 		}
 	}
 	return false
+}
+
+// readRemovable is the first byte of a device directory's removable file, and whether it has one.
+func readRemovable(directory string) (byte, bool) {
+	file, err := os.Open(filepath.Join(directory, "removable")) //nolint:gosec // a path built from names the kernel lists
+	if err != nil {
+		return 0, false
+	}
+	var flag [1]byte
+	count, _ := file.Read(flag[:]) //nolint:errcheck // a failed read is not a 1
+	_ = file.Close()               //nolint:errcheck // nothing to flush on a read-only handle
+	return flag[0], count == 1
 }
 
 // lookupAccount is the account's user ID, parsed to 31 bits: Fchown takes an int, which is 32 bits
