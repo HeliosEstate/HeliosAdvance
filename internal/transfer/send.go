@@ -160,6 +160,9 @@ func (conversation *session) sendFile(path string, rest []string) error {
 				if _, err := file.Seek(offset, io.SeekStart); err != nil {
 					return err
 				}
+				if err := conversation.resync(file, &offset, size); err != nil {
+					return err
+				}
 				continue
 			}
 		}
@@ -191,8 +194,57 @@ func (conversation *session) streamFrom(file *os.File, offset *int64, size int64
 		if !restart {
 			break
 		}
+		if err := conversation.resync(file, offset, size); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// resync answers a ZRPOS: one ZCRCW subpacket from *offset, then a wait for the far end's ZACK,
+// so the line is flushed before streaming resumes. The far end keeps repeating its ZRPOS while
+// we stream, and each queued copy would otherwise start another stream from a stale position.
+// A fresh ZRPOS while waiting restarts the step from the position it names.
+func (conversation *session) resync(file *os.File, offset *int64, size int64) error {
+	buf := make([]byte, max(conversation.opt.SubpacketSize, 1024))
+	for {
+		n, err := io.ReadFull(file, buf)
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		acked := *offset + int64(n)
+		head, _, err := conversation.await(func() error {
+			if err := conversation.writeHeader(posHeader(zdata, *offset), false); err != nil {
+				return err
+			}
+			return writeSubpacket(conversation.writer, buf[:n], zcrcw, conversation.useCRC32)
+		}, maxRetries)
+		for {
+			if err != nil {
+				return mapErr(err)
+			}
+			if head.typ == zcan {
+				return ErrCancelled
+			}
+			if head.typ == zack && int64(head.position()) == acked {
+				*offset = acked
+				return nil
+			}
+			position := head.position()
+			if head.typ == zrpos && position >= 0 && position <= size {
+				*offset = position
+				if _, err := file.Seek(position, io.SeekStart); err != nil {
+					return err
+				}
+				break
+			}
+			// Noise, or a ZACK for an earlier step: keep waiting for this step's answer.
+			head, _, err = conversation.awaitHeaderOnly(maxRetries)
+		}
+	}
 }
 
 // frameResult is one header the background watcher picked up while the main loop was
