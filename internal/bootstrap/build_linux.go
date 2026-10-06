@@ -139,12 +139,17 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 }
 
 func runningSystemdVersion(ctx context.Context) (int, bool, error) {
+	if _, err := os.Stat("/run/systemd/system"); errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	} else if err != nil {
+		return 0, false, fmt.Errorf("bootstrap: checking the running service manager: %w", err)
+	}
 	output, err := exec.CommandContext(ctx, "systemctl", "show", "--property=Version", "--value").Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, false, ctx.Err()
 		}
-		return 0, false, nil
+		return 0, false, fmt.Errorf("bootstrap: reading the running systemd version: %w", err)
 	}
 	text := strings.TrimSpace(string(output))
 	major, _, _ := strings.Cut(text, ".")
@@ -157,7 +162,7 @@ func runningSystemdVersion(ctx context.Context) (int, bool, error) {
 
 func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte, KeyMode, error) {
 	if source == FromOSStore {
-		return nil, 0, &Refusal{Cause: NoCredentialStore}
+		return nil, 0, errNotBuilt
 	}
 	if source == FromKeyFile {
 		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))

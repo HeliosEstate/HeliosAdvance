@@ -8,6 +8,7 @@ import (
 	"errors"
 )
 
+// errNotBuilt marks operations owned by later bootstrap issues.
 var errNotBuilt = errors.New("bootstrap: not built")
 
 // New returns the Bootstrap.

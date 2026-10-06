@@ -7,6 +7,7 @@ import (
 	"strconv"
 )
 
+// validateFields enforces the bootstrap file's required identity and key fields.
 func validateFields(fields Fields) error {
 	bad := func(field string) error { return &Refusal{Cause: FieldMalformed, Field: field} }
 	if fields.Server == 0 {
