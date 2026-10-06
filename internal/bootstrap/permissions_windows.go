@@ -180,7 +180,6 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 			return nil, err
 		}
 		if ok && found.looserThan(allowed) {
-			fmt.Fprintln(os.Stderr, "DIAG", path, found.descriptor.String())
 			findings = append(findings, Finding{Item: item, Path: path, Found: found.permissions(), Rule: ruleFor(account)})
 		}
 	}
