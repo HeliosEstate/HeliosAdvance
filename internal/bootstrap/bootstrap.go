@@ -6,7 +6,6 @@ package bootstrap
 import (
 	"context"
 	"errors"
-	"fmt"
 )
 
 // errNotBuilt is what every operation returns until the unit is built, so that every
@@ -33,9 +32,4 @@ func (unbuilt) SetToRule(Finding, string) error { return errNotBuilt }
 
 func (unbuilt) UnlockForService(context.Context, string, KeyMode) (ServiceHandle, error) {
 	return nil, errNotBuilt
-}
-
-// Error makes a *Refusal an error, which errors.As needs; the contract does not declare it.
-func (refusal *Refusal) Error() string {
-	return fmt.Sprintf("bootstrap: refused: cause %d, path %q", refusal.Cause, refusal.Path)
 }
