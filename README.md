@@ -5,3 +5,5 @@ Lua scripting layer, Free Pascal tools. AGPL-3.0-only with the Scripting API Exc
 `LICENSE.exception`.
 
 Nothing runs yet. `bash check.sh` is the only definition of green; see `CLAUDE.md`.
+
+Questions about the project, and about how AI is used in it: [docs/faq.md](docs/faq.md).
