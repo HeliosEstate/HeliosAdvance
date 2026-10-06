@@ -86,8 +86,12 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: reading %s: %w", path, err)
 		}
-		// A link or a directory where a file should be is looser than the rule, whatever its mode.
-		displaced := item != ItemFolder && stat.Mode&unix.S_IFMT != unix.S_IFREG
+		// A link where a file should be is looser than the rule, whatever its mode. Any other
+		// thing in its place, or a second name for the file, means hadv-setup did not make the folder.
+		displaced := item != ItemFolder && stat.Mode&unix.S_IFMT == unix.S_IFLNK
+		if item != ItemFolder && !displaced && (stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1) {
+			return nil, fmt.Errorf("bootstrap: %s is not a file with one name, so hadv-setup did not make this folder", path)
+		}
 		found := Permissions{Owner: ownerName(stat.Uid), Mode: fs.FileMode(stat.Mode & 0o777)}
 		rule := Permissions{Owner: account, Mode: modeOfRule(item)}
 		if displaced || stat.Uid != accountID || found.Mode&^rule.Mode != 0 {
@@ -162,19 +166,42 @@ func folderRuleBroken(filesystem uint32, device uint64) FolderRule {
 	return 0
 }
 
-// isRemovable is what the kernel reports for the device: its own removable flag, or its
-// disk's when it is a partition.
+// maxStackDepth bounds the walk down a stack of block devices (LVM over LUKS over md over a disk).
+const maxStackDepth = 8
+
+// isRemovable is what the kernel reports for the device, or for any disk beneath it.
 func isRemovable(device uint64) bool {
-	base := fmt.Sprintf("/sys/dev/block/%d:%d/", unix.Major(device), unix.Minor(device))
+	return removableAt(fmt.Sprintf("/sys/dev/block/%d:%d", unix.Major(device), unix.Minor(device)), maxStackDepth)
+}
+
+// removableAt is whether the block device at a sysfs directory, or a device it is built on, is
+// removable. A device-mapper or md device reports no flag of its own, so its slaves/ are walked.
+func removableAt(directory string, depth int) bool {
+	// A partition has no flag of its own: its disk's is in the directory above.
 	for _, name := range []string{"removable", "../removable"} {
-		file, err := os.Open(base + name) //nolint:gosec // a path built from two numbers
+		file, err := os.Open(filepath.Join(directory, name)) //nolint:gosec // a path built from two numbers and names the kernel lists
 		if err != nil {
 			continue
 		}
 		var flag [1]byte
 		count, _ := file.Read(flag[:]) //nolint:errcheck // a failed read is not a 1
 		_ = file.Close()               //nolint:errcheck // nothing to flush on a read-only handle
-		return count == 1 && flag[0] == '1'
+		if count == 1 && flag[0] == '1' {
+			return true
+		}
+		break
+	}
+	if depth == 0 {
+		return false
+	}
+	slaves, err := os.ReadDir(filepath.Join(directory, "slaves"))
+	if err != nil {
+		return false
+	}
+	for _, slave := range slaves {
+		if removableAt(filepath.Join(directory, "slaves", slave.Name()), depth-1) {
+			return true
+		}
 	}
 	return false
 }
@@ -233,38 +260,54 @@ func setToRule(finding Finding, account string) error {
 // other name. The open does not block, so a FIFO put there is refused, not waited on.
 func openFinding(finding Finding) (int, error) {
 	flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
-	var descriptor int
-	var err error
-	var parent unix.Stat_t
-	wantType, wantLinks := uint32(unix.S_IFDIR), uint64(0)
 	if finding.Item == ItemFolder {
-		descriptor, err = unix.Open(finding.Path, flags, 0)
-	} else {
-		var folder int
-		if folder, err = unix.Open(filepath.Dir(finding.Path), flags|unix.O_DIRECTORY, 0); err != nil {
-			return -1, fmt.Errorf("bootstrap: opening the folder of %s: %w", finding.Path, err)
-		}
-		defer func() { _ = unix.Close(folder) }() //nolint:errcheck // nothing to flush on a read-only handle
-		if err = unix.Fstat(folder, &parent); err != nil {
-			return -1, fmt.Errorf("bootstrap: reading the folder of %s: %w", finding.Path, err)
-		}
-		descriptor, err = unix.Openat(folder, filepath.Base(finding.Path), flags, 0)
-		wantType, wantLinks = unix.S_IFREG, 1
+		descriptor, err := unix.Open(finding.Path, flags, 0)
+		return verifyOpened(finding.Path, descriptor, err, unix.S_IFDIR, nil)
 	}
-	if errors.Is(err, unix.ELOOP) {
+	folderPath := filepath.Dir(finding.Path)
+	// No O_DIRECTORY: with O_NOFOLLOW it would answer a link with ENOTDIR instead of ELOOP.
+	folder, err := unix.Open(folderPath, flags, 0)
+	if _, err := verifyOpened(folderPath, folder, err, unix.S_IFDIR, nil); err != nil {
+		return -1, err
+	}
+	defer func() { _ = unix.Close(folder) }() //nolint:errcheck // nothing to flush on a read-only handle
+	var parent unix.Stat_t
+	if err := unix.Fstat(folder, &parent); err != nil {
+		return -1, fmt.Errorf("bootstrap: reading %s: %w", folderPath, err)
+	}
+	// The type is known before the open: opening a FIFO or a device can do something.
+	name := filepath.Base(finding.Path)
+	var entry unix.Stat_t
+	if err := unix.Fstatat(folder, name, &entry, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return -1, fmt.Errorf("bootstrap: reading %s: %w", finding.Path, err)
+	}
+	if entry.Mode&unix.S_IFMT == unix.S_IFLNK {
 		return -1, &Refusal{Cause: Link, Path: finding.Path}
 	}
-	if err != nil {
-		return -1, fmt.Errorf("bootstrap: opening %s: %w", finding.Path, err)
+	if entry.Mode&unix.S_IFMT != unix.S_IFREG {
+		return -1, fmt.Errorf("bootstrap: %s is not a regular file", finding.Path)
+	}
+	descriptor, err := unix.Openat(folder, name, flags, 0)
+	return verifyOpened(finding.Path, descriptor, err, unix.S_IFREG, &parent)
+}
+
+// verifyOpened judges a descriptor just opened: a link is Link, and anything but the wanted type
+// is an error. For a file, whose folder is given, it also needs one name and the folder's device.
+func verifyOpened(path string, descriptor int, openErr error, wantType uint32, folder *unix.Stat_t) (int, error) {
+	if errors.Is(openErr, unix.ELOOP) {
+		return -1, &Refusal{Cause: Link, Path: path}
+	}
+	if openErr != nil {
+		return -1, fmt.Errorf("bootstrap: opening %s: %w", path, openErr)
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(descriptor, &stat); err != nil {
 		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
-		return -1, fmt.Errorf("bootstrap: reading %s: %w", finding.Path, err)
+		return -1, fmt.Errorf("bootstrap: reading %s: %w", path, err)
 	}
-	if stat.Mode&unix.S_IFMT != wantType || (wantLinks != 0 && (uint64(stat.Nlink) != wantLinks || stat.Dev != parent.Dev)) {
+	if stat.Mode&unix.S_IFMT != wantType || (folder != nil && (stat.Nlink != 1 || stat.Dev != folder.Dev)) {
 		_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
-		return -1, fmt.Errorf("bootstrap: %s is not the item that was checked: its type, its folder's device or its link count differs", finding.Path)
+		return -1, fmt.Errorf("bootstrap: %s is not the item that was checked: its type, its folder's device or its link count differs", path)
 	}
 	return descriptor, nil
 }

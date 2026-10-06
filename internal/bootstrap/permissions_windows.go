@@ -59,7 +59,7 @@ type held struct {
 	owner      *windows.SID
 	grantees   []*windows.SID
 	inherited  bool
-	displaced  bool // a link, or a directory where a file belongs: looser than any rule
+	link       bool // a symbolic link or junction where the item belongs: looser than any rule
 }
 
 // The access control entry types of winnt.h that grant. A type neither list knows is treated as
@@ -103,7 +103,9 @@ func grantee(entry *windows.ACCESS_ALLOWED_ACE) (*windows.SID, error) {
 	return windows.CreateWellKnownSid(windows.WinWorldSid)
 }
 
-func readHeldDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) (held, error) {
+// readHeldDescriptor reads a descriptor. An inherit-only entry grants nothing on the object, so it
+// is skipped on a file; on the folder it is what every file later made there receives, so it counts.
+func readHeldDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, isFolder bool) (held, error) {
 	owner, _, err := descriptor.Owner()
 	if err != nil {
 		return held{}, err
@@ -131,16 +133,15 @@ func readHeldDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) (held, error) {
 		if err := windows.GetAce(dacl, index, &entry); err != nil {
 			return held{}, err
 		}
-		// An entry that only passes down to children grants nothing on the object itself.
-		if entry.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+		if !isFolder && entry.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
 			continue
 		}
-		sid, err := grantee(entry)
+		trustee, err := grantee(entry)
 		if err != nil {
 			return held{}, err
 		}
-		if sid != nil {
-			result.grantees = append(result.grantees, sid)
+		if trustee != nil {
+			result.grantees = append(result.grantees, trustee)
 		}
 	}
 	return result, nil
@@ -149,16 +150,16 @@ func readHeldDescriptor(descriptor *windows.SECURITY_DESCRIPTOR) (held, error) {
 // looserThan is whether the item is owned by, or grants anything to, an account other than
 // the three the rule names, or inherits.
 func (item held) looserThan(allowed []*windows.SID) bool {
-	holds := func(sid *windows.SID) bool {
-		return slices.ContainsFunc(allowed, func(candidate *windows.SID) bool { return windows.EqualSid(candidate, sid) })
+	holds := func(trustee *windows.SID) bool {
+		return slices.ContainsFunc(allowed, func(candidate *windows.SID) bool { return windows.EqualSid(candidate, trustee) })
 	}
-	return item.displaced || item.inherited || !holds(item.owner) || slices.ContainsFunc(item.grantees, func(sid *windows.SID) bool { return !holds(sid) })
+	return item.link || item.inherited || !holds(item.owner) || slices.ContainsFunc(item.grantees, func(trustee *windows.SID) bool { return !holds(trustee) })
 }
 
 func (item held) permissions() Permissions {
 	accounts := make([]string, 0, len(item.grantees))
-	for _, sid := range item.grantees {
-		if name := accountName(sid); !slices.Contains(accounts, name) {
+	for _, trustee := range item.grantees {
+		if name := accountName(trustee); !slices.Contains(accounts, name) {
 			accounts = append(accounts, name)
 		}
 	}
@@ -166,10 +167,10 @@ func (item held) permissions() Permissions {
 }
 
 // accountName is the account as Windows resolves the SID, DOMAIN\name, or the SID's own text.
-func accountName(sid *windows.SID) string {
-	name, domain, _, err := sid.LookupAccount("")
+func accountName(trustee *windows.SID) string {
+	name, domain, _, err := trustee.LookupAccount("")
 	if err != nil {
-		return sid.String()
+		return trustee.String()
 	}
 	if domain == "" {
 		return name
@@ -265,20 +266,40 @@ func judgeChild(folder windows.Handle, folderPath, name string, judge func(windo
 }
 
 // readHeld reads who owns an item and its access list through the handle it was opened by. A
-// link, or a directory where a file belongs, is read as the thing it is and marked displaced.
+// link is read as itself and marked. Anything else that is not the item, a directory where a file
+// belongs or a file held by a second name, is an error: hadv-setup did not make that folder.
 func readHeld(handle windows.Handle, path string, item Item) (held, error) {
 	information, err := informationOf(handle)
 	if err != nil {
 		return held{}, fmt.Errorf("bootstrap: reading %s: %w", path, err)
 	}
+	link, err := isLink(handle)
+	if err != nil {
+		return held{}, fmt.Errorf("bootstrap: reading %s: %w", path, err)
+	}
 	isDirectory := information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
+	if !link && (isDirectory != (item == ItemFolder) || (!isDirectory && information.NumberOfLinks != 1)) {
+		return held{}, fmt.Errorf("bootstrap: %s is not the kind of item it is named for, or has a second name, so hadv-setup did not make this folder", path)
+	}
 	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, ownerAndDACL)
 	if err != nil {
 		return held{}, fmt.Errorf("bootstrap: reading the access list of %s: %w", path, err)
 	}
-	result, err := readHeldDescriptor(descriptor)
-	result.displaced = information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || isDirectory != (item == ItemFolder)
+	result, err := readHeldDescriptor(descriptor, item == ItemFolder)
+	result.link = link
 	return result, err
+}
+
+// isLink is whether the handle is a symbolic link or a junction. Another kind of reparse point,
+// such as a deduplicated or cloud file, is an ordinary item.
+func isLink(handle windows.Handle) (bool, error) {
+	var information struct{ FileAttributes, ReparseTag uint32 }
+	err := windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&information)), uint32(unsafe.Sizeof(information))) //nolint:gosec // the call fills a struct of two fields
+	if err != nil {
+		return false, err
+	}
+	return information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 &&
+		(information.ReparseTag == windows.IO_REPARSE_TAG_SYMLINK || information.ReparseTag == windows.IO_REPARSE_TAG_MOUNT_POINT), nil
 }
 
 func informationOf(handle windows.Handle) (windows.ByHandleFileInformation, error) {
@@ -298,13 +319,14 @@ func openItem(path string, access uint32) (windows.Handle, error) {
 }
 
 // openChild opens a name inside a folder, relative to the folder's handle, so it is the folder
-// that was judged and not whatever the folder's path names by now. A link is opened as itself.
+// that was judged and not whatever the folder's path names by now. A link is opened as itself, and
+// the name is matched exactly as listed: in a case-sensitive folder a name of another case is another file.
 func openChild(folder windows.Handle, name string, access uint32) (windows.Handle, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return 0, err
 	}
-	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: folder, ObjectName: objectName, Attributes: windows.OBJ_CASE_INSENSITIVE}
+	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: folder, ObjectName: objectName, Attributes: 0}
 	attributes.Length = uint32(unsafe.Sizeof(attributes))
 	var handle windows.Handle
 	var status windows.IO_STATUS_BLOCK
@@ -333,14 +355,14 @@ func openFolder(folder string) (*os.File, error) {
 		_ = directory.Close() //nolint:errcheck // nothing to flush on a read-only handle
 		return nil, err
 	}
-	information, err := informationOf(handle)
+	link, err := isLink(handle)
 	if err != nil {
 		return fail(fmt.Errorf("bootstrap: reading %s: %w", folder, err))
 	}
-	if information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+	if link {
 		return fail(refuse(FolderLink))
 	}
-	switch driveType(folder) {
+	switch driveType(handle) {
 	case windows.DRIVE_REMOTE:
 		return fail(refuse(NetworkShare))
 	case windows.DRIVE_REMOVABLE, windows.DRIVE_CDROM:
@@ -367,17 +389,53 @@ func isNetworkPath(path string) bool {
 	return strings.HasPrefix(path, `\\`)
 }
 
-// driveType is what Windows reports for the volume the path is on.
-func driveType(path string) uint32 {
-	name, err := windows.UTF16PtrFromString(path)
-	if err != nil {
+// The volume namings GetFinalPathNameByHandle is asked for, from fileapi.h.
+const (
+	volumeNameDOS  = 0
+	volumeNameGUID = 1
+)
+
+// finalPath is the path the handle stands at, in the volume naming asked for.
+func finalPath(handle windows.Handle, flags uint32) (string, bool) {
+	size := uint32(1024)
+	for range 2 {
+		buffer := make([]uint16, size)
+		length, err := windows.GetFinalPathNameByHandle(handle, &buffer[0], size, flags)
+		switch {
+		case err != nil:
+			return "", false
+		case length >= size:
+			// The call says how long a buffer it needs, one more than the path for the terminator.
+			size = length + 1
+		default:
+			return windows.UTF16ToString(buffer[:length]), true
+		}
+	}
+	return "", false
+}
+
+// driveType is what Windows reports for the volume the handle is on, not the one its path names by now.
+func driveType(handle windows.Handle) uint32 {
+	root := ""
+	if path, ok := finalPath(handle, volumeNameGUID); ok {
+		// \\?\Volume{guid}\ is the volume's root.
+		if end := strings.Index(path, "}"); end >= 0 {
+			root = path[:end+1] + `\`
+		}
+	} else if path, ok := finalPath(handle, volumeNameDOS); ok {
+		// A remote volume has no GUID: it is a share's path or a mapped drive's.
+		if isNetworkPath(path) {
+			return windows.DRIVE_REMOTE
+		}
+		if letter, found := strings.CutPrefix(path, `\\?\`); found && len(letter) >= 2 && letter[1] == ':' {
+			root = letter[:2] + `\`
+		}
+	}
+	name, err := windows.UTF16PtrFromString(root)
+	if root == "" || err != nil {
 		return windows.DRIVE_UNKNOWN
 	}
-	var root [windows.MAX_PATH + 1]uint16
-	if err := windows.GetVolumePathName(name, &root[0], uint32(len(root))); err != nil {
-		return windows.DRIVE_UNKNOWN
-	}
-	return windows.GetDriveType(&root[0])
+	return windows.GetDriveType(name)
 }
 
 // The machine key pair, through the CNG key store.
@@ -436,7 +494,7 @@ func readKeyPairHeld() (held, bool, error) {
 	if status := call(procGetProperty, pair.key, uintptr(unsafe.Pointer(property)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&size)), ownerAndDACL); status != 0 { //nolint:gosec // the key store's calling convention
 		return held{}, false, fmt.Errorf("bootstrap: reading the machine key pair's access list: status %#x", status)
 	}
-	result, err := readHeldDescriptor((*windows.SECURITY_DESCRIPTOR)(unsafe.Pointer(&buffer[0]))) //nolint:gosec // the key store returns a self-relative security descriptor
+	result, err := readHeldDescriptor((*windows.SECURITY_DESCRIPTOR)(unsafe.Pointer(&buffer[0])), false) //nolint:gosec // the key store returns a self-relative security descriptor
 	return result, err == nil, err
 }
 
@@ -479,7 +537,7 @@ func setToRule(finding Finding, account string) error {
 
 // openFinding opens the item the finding names and checks the handle is that item: the folder
 // itself, not a link; a file through the handle of the folder it is in, which is also not a
-// link, and held by no other name. A link is refused as Link.
+// link, and held by no other name. A link is refused as Link, naming the item or its folder.
 func openFinding(finding Finding) (windows.Handle, error) {
 	access := uint32(windows.READ_CONTROL | windows.FILE_READ_ATTRIBUTES | windows.WRITE_DAC | windows.WRITE_OWNER)
 	var handle windows.Handle
@@ -487,27 +545,32 @@ func openFinding(finding Finding) (windows.Handle, error) {
 	if finding.Item == ItemFolder {
 		handle, err = openItem(finding.Path, access)
 	} else {
+		folderPath := filepath.Dir(finding.Path)
 		var folder windows.Handle
-		if folder, err = openItem(filepath.Dir(finding.Path), windows.FILE_LIST_DIRECTORY|windows.FILE_READ_ATTRIBUTES); err != nil {
+		if folder, err = openItem(folderPath, windows.FILE_LIST_DIRECTORY|windows.FILE_READ_ATTRIBUTES); err != nil {
 			return 0, fmt.Errorf("bootstrap: opening the folder of %s: %w", finding.Path, err)
 		}
 		defer func() { _ = windows.CloseHandle(folder) }() //nolint:errcheck // nothing to flush on a read-only handle
-		folderInformation, informationErr := informationOf(folder)
-		if informationErr != nil {
-			return 0, fmt.Errorf("bootstrap: reading the folder of %s: %w", finding.Path, informationErr)
+		folderIsLink, linkErr := isLink(folder)
+		if linkErr != nil {
+			return 0, fmt.Errorf("bootstrap: reading the folder of %s: %w", finding.Path, linkErr)
 		}
-		if folderInformation.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			return 0, &Refusal{Cause: Link, Path: finding.Path}
+		if folderIsLink {
+			return 0, &Refusal{Cause: Link, Path: folderPath}
 		}
 		handle, err = openChild(folder, filepath.Base(finding.Path), access)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: opening %s: %w", finding.Path, err)
 	}
-	information, err := informationOf(handle)
-	if err == nil && information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+	link, err := isLink(handle)
+	if err == nil && link {
 		_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
 		return 0, &Refusal{Cause: Link, Path: finding.Path}
+	}
+	var information windows.ByHandleFileInformation
+	if err == nil {
+		information, err = informationOf(handle)
 	}
 	isDirectory := information.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
 	if err != nil || isDirectory != (finding.Item == ItemFolder) || (!isDirectory && information.NumberOfLinks != 1) {
@@ -592,6 +655,8 @@ func enablePrivileges(names ...string) (restore func()) {
 
 // call makes a key store call and returns its status. The error a LazyProc returns is the
 // thread's last error, not the status, so it is not read.
+//
+//go:uintptrescapes
 func call(procedure *windows.LazyProc, arguments ...uintptr) uintptr {
 	status, _, _ := procedure.Call(arguments...) //nolint:errcheck // the error is the thread's last error, not the status
 	return status
