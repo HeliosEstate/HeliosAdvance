@@ -11,12 +11,17 @@ medium effort) and a DeepSeek-V4-Pro session (high effort), and read by the deve
 | `heliosestate/lrzsz-oracle:0.1` | `oracle/lrzsz/Dockerfile` | the ZMODEM tests (proof run one) |
 | `heliosestate/sexyz-oracle:0.1` | `oracle/sexyz/Dockerfile` | the sexyz rows of every transfer test (#15) |
 | `heliosestate/bootstrap-file-oracle:0.1` | `oracle/bootstrap-file/Dockerfile` | the bootstrap file's format lines; see its README |
+| `heliosestate/systemd-249-oracle:0.1` | `oracle/systemd-249/Dockerfile` | Build's rows under systemd below 250, booted in a privileged container |
+| `heliosestate/systemd-252-oracle:0.1` | `oracle/systemd-252/Dockerfile` | Build's rows under systemd 250 to 255, booted, and installed but not running |
 
 Build: `docker build -t heliosestate/lrzsz-oracle:0.1 oracle/lrzsz`,
-`docker build -t heliosestate/sexyz-oracle:0.1 oracle/sexyz` and
-`docker build -t heliosestate/bootstrap-file-oracle:0.1 oracle/bootstrap-file`.
+`docker build -t heliosestate/sexyz-oracle:0.1 oracle/sexyz`,
+`docker build -t heliosestate/bootstrap-file-oracle:0.1 oracle/bootstrap-file`,
+`docker build -t heliosestate/systemd-249-oracle:0.1 oracle/systemd-249` and
+`docker build -t heliosestate/systemd-252-oracle:0.1 oracle/systemd-252`.
 Remove when no longer needed: `docker rmi heliosestate/lrzsz-oracle:0.1
-heliosestate/sexyz-oracle:0.1 heliosestate/bootstrap-file-oracle:0.1`.
+heliosestate/sexyz-oracle:0.1 heliosestate/bootstrap-file-oracle:0.1
+heliosestate/systemd-249-oracle:0.1 heliosestate/systemd-252-oracle:0.1`.
 Every image this project creates is listed here; one not listed is not ours to keep.
 
 ## How a test speaks to it
