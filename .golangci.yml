@@ -44,6 +44,10 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance
+            # The Go team's own system-call module, the one the standard library vendors: the
+            # access lists, owners and handles the bootstrap unit judges and sets, and the CNG
+            # key store through DLLs loaded only from System32. Cost-benefit in its PR.
+            - golang.org/x/sys
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -113,6 +117,7 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance/internal/board
+            - golang.org/x/sys
         transfer:
           files: ["**/internal/transfer/**"]
           list-mode: strict
