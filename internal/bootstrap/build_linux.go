@@ -5,6 +5,7 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -45,6 +46,17 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 		return 0, &Refusal{Cause: NoCredentialStore}
 	}
 	key, mode, err := linuxBuildKey(directory, folder, source)
+	if source == FromOSStore {
+		key = make([]byte, 32)
+		if _, err = rand.Read(key); err != nil {
+			return 0, fmt.Errorf("bootstrap: making the bootstrap key: %w", err)
+		}
+		if version >= 256 {
+			mode = ModeSystemdPerUse
+		} else {
+			mode = ModeSystemdAtStart
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -83,6 +95,18 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	}
 	if err != nil && !errors.Is(err, unix.ENOENT) {
 		return 0, fmt.Errorf("bootstrap: checking the old bootstrap file: %w", err)
+	}
+	credentialMade := false
+	if source == FromOSStore {
+		credentialMade = true
+		defer func() {
+			if credentialMade {
+				_ = unix.Unlinkat(int(directory.Fd()), nameSystemdKey, 0)
+			}
+		}()
+		if err := sealSystemdCredential(ctx, folder, accountID, version >= 256, key); err != nil {
+			return 0, err
+		}
 	}
 	file := &bootstrapFile{}
 	file.setFields(fields)
@@ -135,7 +159,54 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err := directory.Sync(); err != nil {
 		return 0, &Refusal{Cause: RewriteFailed}
 	}
+	credentialMade = false
 	return mode, nil
+}
+
+func sealSystemdCredential(ctx context.Context, folder string, accountID uint32, perUse bool, key []byte) error {
+	plain, err := os.CreateTemp("", "heliosadvance-key-")
+	if err != nil {
+		return fmt.Errorf("bootstrap: creating the temporary key: %w", err)
+	}
+	plainPath := plain.Name()
+	defer func() { _ = os.Remove(plainPath) }()
+	if err := plain.Chmod(0o600); err != nil {
+		_ = plain.Close()
+		return err
+	}
+	if _, err := plain.Write(key); err != nil {
+		_ = plain.Close()
+		return err
+	}
+	if err := plain.Close(); err != nil {
+		return err
+	}
+	sealedPath := filepath.Join(folder, nameSystemdKey+".new")
+	args := []string{"encrypt", "--name=" + machineKeyPairName, "--with-key=host", plainPath, sealedPath}
+	if perUse {
+		args = append([]string{"--user", "--uid=" + strconv.FormatUint(uint64(accountID), 10)}, args...)
+	}
+	command := exec.CommandContext(ctx, "systemd-creds", args...)
+	if output, err := command.CombinedOutput(); err != nil {
+		_ = os.Remove(sealedPath)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("bootstrap: sealing the credential: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := os.Chmod(sealedPath, 0o600); err != nil {
+		_ = os.Remove(sealedPath)
+		return err
+	}
+	if err := os.Chown(sealedPath, int(accountID), -1); err != nil {
+		_ = os.Remove(sealedPath)
+		return err
+	}
+	if err := os.Rename(sealedPath, filepath.Join(folder, nameSystemdKey)); err != nil {
+		_ = os.Remove(sealedPath)
+		return err
+	}
+	return nil
 }
 
 func runningSystemdVersion(ctx context.Context) (int, bool, error) {
@@ -162,7 +233,7 @@ func runningSystemdVersion(ctx context.Context) (int, bool, error) {
 
 func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte, KeyMode, error) {
 	if source == FromOSStore {
-		return nil, 0, errNotBuilt
+		return nil, 0, nil
 	}
 	if source == FromKeyFile {
 		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
