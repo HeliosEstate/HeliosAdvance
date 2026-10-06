@@ -26,8 +26,8 @@ It is a mix of myself and AI coding agents: Anthropic's Claude and OpenAI's Code
 Go is a new language to me, and I'm learning it as I write it, so I'm going to make mistakes.
 The AI catches them. It also lets me put more development hours into the project than my life
 would otherwise allow, since it can code while I'm at work, asleep, or spending time with
-family. I still control the inputs and shapes. Every change it makes is reviewed before it
-merges, and it AI-reviews everything I write and helps with design decisions and bugs. It's a
+family. I still control the inputs and shapes. I also review everything it writes, and it
+AI-reviews everything I write and helps with design decisions and bugs. It's a
 collaborative endeavor.
 
 **Is this vibe coded?**
