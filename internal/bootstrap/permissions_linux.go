@@ -176,20 +176,19 @@ func isRemovable(device uint64) bool {
 
 // removableAt is whether the block device at a sysfs directory, or a device it is built on, is
 // removable. The directory is a symbolic link in sysfs, so it is resolved once and the walk works
-// on the real path. A partition has no removable file, so its disk is judged in full in its place:
-// the disk's flag and the disk's slaves/. A device-mapper or md device has a flag of its own,
-// reading 0, and still has its slaves/ walked, because that flag says nothing of the disks beneath.
+// on the real path. The kernel puts a partition file in every partition's directory, and a
+// partition's disk is judged in full in its place: the disk's flag and the disk's slaves/. A
+// device-mapper or md device has a flag of its own, reading 0, and still has its slaves/ walked,
+// because that flag says nothing of the disks beneath.
 func removableAt(directory string, depth int) bool {
 	resolved, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return false
 	}
-	flag, found := readRemovable(resolved)
-	if !found {
+	if _, err := os.Stat(filepath.Join(resolved, "partition")); err == nil {
 		resolved = filepath.Dir(resolved)
-		flag, _ = readRemovable(resolved)
 	}
-	if flag == '1' {
+	if readRemovable(resolved) == '1' {
 		return true
 	}
 	if depth == 0 {
@@ -207,16 +206,16 @@ func removableAt(directory string, depth int) bool {
 	return false
 }
 
-// readRemovable is the first byte of a device directory's removable file, and whether it has one.
-func readRemovable(directory string) (byte, bool) {
+// readRemovable is the first byte of a device directory's removable file, 0 if it cannot be read.
+func readRemovable(directory string) byte {
 	file, err := os.Open(filepath.Join(directory, "removable")) //nolint:gosec // a path built from names the kernel lists
 	if err != nil {
-		return 0, false
+		return 0
 	}
 	var flag [1]byte
-	count, _ := file.Read(flag[:]) //nolint:errcheck // a failed read is not a 1
-	_ = file.Close()               //nolint:errcheck // nothing to flush on a read-only handle
-	return flag[0], count == 1
+	_, _ = file.Read(flag[:]) //nolint:errcheck // a failed read leaves 0, which is not a 1
+	_ = file.Close()          //nolint:errcheck // nothing to flush on a read-only handle
+	return flag[0]
 }
 
 // lookupAccount is the account's user ID, parsed to 31 bits: Fchown takes an int, which is 32 bits
