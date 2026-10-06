@@ -532,9 +532,11 @@ type Bootstrap interface {
 	//   - Where the server runs Windows, Build shall write bootstrap-key.sealed as the bootstrap
 	//     key encrypted with RSA-OAEP under the machine key pair, as this package comment gives
 	//     it.
+	//   - Where the server runs Windows, when the source is FromOSStore, Build shall return
+	//     ModeMachineKeyPair.
 	//   - Where the server runs Linux with systemd 256 or later, when the source is FromOSStore,
 	//     Build shall seal the bootstrap key as a credential scoped to the account and return
-	//     ModeSystemdPerUse. [run]
+	//     ModeSystemdPerUse.
 	//   - Where the server runs Linux with systemd 250 to 255, when the source is FromOSStore,
 	//     Build shall seal the bootstrap key as a system credential and return ModeSystemdAtStart.
 	//   - Where the server runs Linux and has a TPM, Build shall have systemd seal the bootstrap
@@ -545,8 +547,9 @@ type Bootstrap interface {
 	//     then Build shall refuse with TPMLibrariesMissing. [run]
 	//   - Where the server runs Linux without a TPM, Build shall have systemd seal the bootstrap
 	//     key under the host key.
-	//   - Where the server runs Linux, Build shall name the credential heliosadvance-bootstrap-key
-	//     and bind it to no PCR.
+	//   - Where the server runs Linux, Build shall name the credential heliosadvance-bootstrap-key.
+	//   - Where the server runs Linux and has a TPM, Build shall bind the credential to no PCR.
+	//     [run]
 	//   - When the source is FromKeyFile, Build shall read the bootstrap key from bootstrap.key in
 	//     the folder and return ModeKeyFile.
 	//   - When the source is FromContainer, Build shall read the bootstrap key from the Swarm
