@@ -43,6 +43,14 @@ const (
 	modeKeyFile fs.FileMode = 0o400
 )
 
+// The Linux rows other lines share, by Check's and the unlocks' rows alike: one name for each
+// case, so the same case reads the same under every line.
+const (
+	rowFile0644            = "the bootstrap file at 0644"
+	rowLock0644            = "the lock at 0644"
+	rowMachineKeyPairLinux = "ModeMachineKeyPair on Linux"
+)
+
 // inContainer is set by TestLinuxRowsInContainer when it runs this package's tests inside
 // the container; the Linux rows skip without it, since they run as root there instead.
 var inContainer = flag.Bool("bootstrap.container", false, "run the Linux rows: set inside the test container")
@@ -315,7 +323,7 @@ func TestLinuxAsRoot(t *testing.T) {
 			{"the folder owned by root", ModeKeyFile, false, chownRow("root", "")},
 			{"the bootstrap file at 0640", ModeKeyFile, false, chmodRow(0o640, nameFile)},
 			{"the bootstrap file owned by root", ModeKeyFile, false, chownRow("root", nameFile)},
-			{"the lock at 0644", ModeKeyFile, false, chmodRow(0o644, nameLock)},
+			{rowLock0644, ModeKeyFile, false, chmodRow(0o644, nameLock)},
 			{"the credential file at 0644", ModeSystemdAtStart, false, chmodRow(0o644, nameSystemdKey)},
 			{"the key file at 0600", ModeKeyFile, false, chmodRow(0o600, nameKeyFile)},
 			{"the Swarm secret at 0444", ModeContainer, true, func(t *testing.T, _ linuxFolder) []string {
@@ -418,8 +426,8 @@ func TestLinuxAsRoot(t *testing.T) {
 			loosen func(t *testing.T, folder linuxFolder) []string
 		}{
 			{rowFolder0755, chmodRow(0o755, "")},
-			{"the bootstrap file at 0644", chmodRow(0o644, nameFile)},
-			{"the lock at 0644", chmodRow(0o644, nameLock)},
+			{rowFile0644, chmodRow(0o644, nameFile)},
+			{rowLock0644, chmodRow(0o644, nameLock)},
 			{"the key file at 0644", chmodRow(0o644, nameKeyFile)},
 			{"the bootstrap file owned by root", chownRow("root", nameFile)},
 		} {

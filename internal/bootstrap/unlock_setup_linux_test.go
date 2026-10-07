@@ -295,7 +295,7 @@ func TestUnlockSetupLinuxAsRoot(t *testing.T) {
 			loosen func(t *testing.T, folder string)
 		}{
 			{rowFolder0755, func(t *testing.T, folder string) { t.Helper(); chmodItem(t, folder, 0o755) }},
-			{"the bootstrap file at 0644", func(t *testing.T, folder string) { t.Helper(); chmodItem(t, filepath.Join(folder, nameFile), 0o644) }},
+			{rowFile0644, func(t *testing.T, folder string) { t.Helper(); chmodItem(t, filepath.Join(folder, nameFile), 0o644) }},
 			{"the key file at 0644", func(t *testing.T, folder string) { t.Helper(); chmodItem(t, filepath.Join(folder, nameKeyFile), 0o644) }},
 			{"the bootstrap file owned by daemon", func(t *testing.T, folder string) {
 				t.Helper()
@@ -327,7 +327,7 @@ func TestUnlockSetupLinuxAsRoot(t *testing.T) {
 			name string
 			mode KeyMode
 		}{
-			{"ModeMachineKeyPair on Linux", ModeMachineKeyPair},
+			{rowMachineKeyPairLinux, ModeMachineKeyPair},
 			{"ModeSystemdAtStart with no systemd", ModeSystemdAtStart},
 			{"ModeSystemdPerUse with no systemd", ModeSystemdPerUse},
 		} {
@@ -425,7 +425,7 @@ func TestUnlockSetupLinuxSystemd(t *testing.T) {
 				mode KeyMode
 			}{
 				{"ModeSystemdPerUse on systemd 252", ModeSystemdPerUse},
-				{"ModeMachineKeyPair on Linux", ModeMachineKeyPair},
+				{rowMachineKeyPairLinux, ModeMachineKeyPair},
 			} {
 				t.Run(row.name, func(t *testing.T) {
 					handle, err := unlockSetup(t, credentialFolder(t, credentialName, ""), row.mode)
