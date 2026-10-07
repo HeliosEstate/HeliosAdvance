@@ -19,8 +19,8 @@ Free Pascal tools. One developer; the design record is the private `HeliosEstate
   later test file that declares `TestMain`, `init` or a build tag.
 - The paths in `developer-owned-paths` are the developer's: a commit authored as a `[bot]` may
   not touch them. `docs/spec/` names no language, path or library.
-- A loop session (`HELIOS_LOOP=1`) is denied those edits by the loop's own hooks and is ended
-  after three red runs of `check.sh`, leaving `.helios-stop-red` for the loop.
+- A loop session (`HELIOS_LOOP=1`) is denied those edits by the loop's own hooks; only finishing
+  on a red `check.sh` counts, and the fourth time ends it, leaving `.helios-stop-red` for the loop.
 - A loop claims an issue with `claimed:<its name>`; two loops racing are settled by label
   event order, the earlier wins. Each loop is its own App and its own name.
 
