@@ -117,7 +117,8 @@ var ncryptDecrypt = ncrypt.NewProc("NCryptDecrypt")
 
 type oaepPaddingInfo struct {
 	Algorithm *uint16
-	Label     *uint16
+	Label     *byte
+	LabelSize uint32
 }
 
 func decryptWindowsKey(ctx context.Context, ciphertext []byte) ([]byte, Holding, error) {
