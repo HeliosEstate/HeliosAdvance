@@ -21,6 +21,13 @@ var hostCredentialIDs = [][16]byte{
 	{0x55, 0xb9, 0xed, 0x1d, 0x38, 0x59, 0x4d, 0x43, 0xa8, 0x31, 0x9d, 0x2e, 0xbb, 0x33, 0x2a, 0xc6},
 }
 
+// tpmCredentialIDs are systemd's identifiers for a credential sealed under the host key and the TPM:
+// the system form, then the form scoped to an account.
+var tpmCredentialIDs = [][16]byte{
+	{0x93, 0xa8, 0x94, 0x09, 0x48, 0x74, 0x44, 0x90, 0x90, 0xca, 0xf2, 0xfc, 0x93, 0xca, 0xb5, 0x53},
+	{0xef, 0x4a, 0xc1, 0x36, 0x79, 0xa9, 0x48, 0x0e, 0xa7, 0xdb, 0x68, 0x89, 0x7f, 0x9f, 0x16, 0x5d},
+}
+
 func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error) {
 	if !isElevated() {
 		return nil, &Refusal{Cause: NotElevated}
@@ -45,6 +52,16 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		return nil, fmt.Errorf("bootstrap: opening the lock: %w", err)
 	}
 	lock := os.NewFile(uintptr(lockFD), "bootstrap.lock")
+	// The lock's rule is the folder's owner; one this root process just created is root's.
+	var folderStat unix.Stat_t
+	if err := unix.Fstat(int(directory.Fd()), &folderStat); err != nil {
+		_ = lock.Close() //nolint:errcheck // returning the stat error
+		return nil, err
+	}
+	if err := unix.Fchown(lockFD, int(folderStat.Uid), -1); err != nil {
+		_ = lock.Close() //nolint:errcheck // returning the chown error
+		return nil, err
+	}
 	locked := false
 	defer func() {
 		if !locked {
@@ -96,7 +113,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 			break
 		}
 		defer func() { _ = credentialFile.Close() }() //nolint:errcheck // read-only credential
-		if credentialID == [16]byte{0x93, 0xa8, 0x94, 0x09, 0x48, 0x74, 0x44, 0x90, 0x90, 0xca, 0xf2, 0xfc, 0x93, 0xca, 0xb5, 0x53} {
+		if credentialID == tpmCredentialIDs[0] || credentialID == tpmCredentialIDs[1] {
 			holding = HeldInTPM
 			if _, err = linuxTPMDevice(ctx); err != nil {
 				break
