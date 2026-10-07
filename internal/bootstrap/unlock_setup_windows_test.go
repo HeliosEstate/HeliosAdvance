@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -85,7 +84,7 @@ func TestWindowsElevatedUnlockSetup(t *testing.T) {
 	t.Run(lineHandleHolding, func(t *testing.T) {
 		folder := sealedFolder(t)
 		want, name := HeldInSoftwareKeyStore, "HeldInSoftwareKeyStore"
-		if strings.EqualFold(strings.TrimSpace(string(powerShell(t, keyStoreFunctions+"Write-HasTpm\n"))), "true") {
+		if hasTPM(t) {
 			want, name = HeldInTPM, "HeldInTPM"
 		}
 		handle, err := unlockSetup(t, folder, ModeMachineKeyPair)

@@ -157,10 +157,10 @@ func TestBuildLinuxAsRoot(t *testing.T) {
 			folder string
 			rule   FolderRule
 		}{
-			{"a relative path", "bootstrap", NotAbsolute},
-			{"a symbolic link to a good folder", link, FolderLink},
-			{"a folder on tmpfs", buildFolder(t, tmpfsMount, keyText(rowKey(3))), FileSystem},
-			{"a folder on overlayfs", buildFolder(t, overlayRoot, keyText(rowKey(3))), FileSystem},
+			{rowRelativePath, relativeFolder, NotAbsolute},
+			{rowFolderLink, link, FolderLink},
+			{rowTmpfs, buildFolder(t, tmpfsMount, keyText(rowKey(3))), FileSystem},
+			{rowOverlayfs, buildFolder(t, overlayRoot, keyText(rowKey(3))), FileSystem},
 		} {
 			t.Run(row.name, func(t *testing.T) {
 				_, err := build(t, row.folder, rowFields(), FirstSetup, FromKeyFile)

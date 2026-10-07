@@ -285,10 +285,10 @@ func TestLinuxAsRoot(t *testing.T) {
 			folder string
 			rule   FolderRule
 		}{
-			{"a relative path", "bootstrap", NotAbsolute},
-			{"a symbolic link to a good folder", link, FolderLink},
-			{"a folder on tmpfs", makeFolder(t, tmpfsMount, ModeKeyFile, serviceAccount, false).path, FileSystem},
-			{"a folder on overlayfs", makeFolder(t, overlayRoot, ModeKeyFile, serviceAccount, false).path, FileSystem},
+			{rowRelativePath, relativeFolder, NotAbsolute},
+			{rowFolderLink, link, FolderLink},
+			{rowTmpfs, makeFolder(t, tmpfsMount, ModeKeyFile, serviceAccount, false).path, FileSystem},
+			{rowOverlayfs, makeFolder(t, overlayRoot, ModeKeyFile, serviceAccount, false).path, FileSystem},
 		} {
 			t.Run(row.name, func(t *testing.T) {
 				_, err := New().Check(row.folder, ModeKeyFile, serviceAccount)
@@ -311,7 +311,7 @@ func TestLinuxAsRoot(t *testing.T) {
 			secret bool
 			loosen func(t *testing.T, folder linuxFolder) []string // the items it loosened
 		}{
-			{"the folder at 0755", ModeKeyFile, false, chmodRow(0o755, "")},
+			{rowFolder0755, ModeKeyFile, false, chmodRow(0o755, "")},
 			{"the folder owned by root", ModeKeyFile, false, chownRow("root", "")},
 			{"the bootstrap file at 0640", ModeKeyFile, false, chmodRow(0o640, nameFile)},
 			{"the bootstrap file owned by root", ModeKeyFile, false, chownRow("root", nameFile)},
@@ -417,7 +417,7 @@ func TestLinuxAsRoot(t *testing.T) {
 			name   string
 			loosen func(t *testing.T, folder linuxFolder) []string
 		}{
-			{"the folder at 0755", chmodRow(0o755, "")},
+			{rowFolder0755, chmodRow(0o755, "")},
 			{"the bootstrap file at 0644", chmodRow(0o644, nameFile)},
 			{"the lock at 0644", chmodRow(0o644, nameLock)},
 			{"the key file at 0644", chmodRow(0o644, nameKeyFile)},

@@ -213,10 +213,10 @@ func TestUnlockSetupLinuxAsRoot(t *testing.T) {
 			folder string
 			rule   FolderRule
 		}{
-			{"a relative folder path", "relative-folder", NotAbsolute},
-			{"the folder a symbolic link to a good one", link, FolderLink},
-			{"the folder on tmpfs", keyFileFolder(t, tmpfsMount), FileSystem},
-			{"the folder on overlayfs", keyFileFolder(t, overlayRoot), FileSystem},
+			{rowRelativePath, relativeFolder, NotAbsolute},
+			{rowFolderLink, link, FolderLink},
+			{rowTmpfs, keyFileFolder(t, tmpfsMount), FileSystem},
+			{rowOverlayfs, keyFileFolder(t, overlayRoot), FileSystem},
 		} {
 			t.Run(row.name, func(t *testing.T) {
 				handle, err := unlockSetup(t, row.folder, ModeKeyFile)
@@ -273,7 +273,7 @@ func TestUnlockSetupLinuxAsRoot(t *testing.T) {
 			name   string
 			loosen func(t *testing.T, folder string)
 		}{
-			{"the folder made 0755", func(t *testing.T, folder string) { t.Helper(); chmodItem(t, folder, 0o755) }},
+			{rowFolder0755, func(t *testing.T, folder string) { t.Helper(); chmodItem(t, folder, 0o755) }},
 			{"the bootstrap file at 0644", func(t *testing.T, folder string) { t.Helper(); chmodItem(t, filepath.Join(folder, nameFile), 0o644) }},
 			{"the key file at 0644", func(t *testing.T, folder string) { t.Helper(); chmodItem(t, filepath.Join(folder, nameKeyFile), 0o644) }},
 			{"the bootstrap file owned by daemon", func(t *testing.T, folder string) {
