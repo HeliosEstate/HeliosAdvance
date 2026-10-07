@@ -35,6 +35,7 @@
 //	bootstrap.lock         locked exclusively while any handle is open
 //	bootstrap-key.sealed   Windows: the bootstrap key under the machine key pair
 //	bootstrap-key.cred     Linux: the bootstrap key as a systemd credential
+//	bootstrap-key.cred.new Linux: the credential being sealed, renamed over bootstrap-key.cred
 //	bootstrap.key          the key file, made by the sysop
 //
 // A Swarm secret is /run/secrets/heliosadvance-bootstrap-key, and on Windows the machine key
@@ -126,7 +127,8 @@
 //   - The bootstrap package shall open every file in the bootstrap folder relative to the
 //     folder's handle and without following a link, create every file it creates exclusively,
 //     and refuse with Link any item in the folder that is a symbolic link, a junction or a file
-//     with more than one name before it reads it, writes it or changes its owner or mode.
+//     with more than one name before it reads it, writes it, changes its owner or mode, or puts a
+//     file in its place.
 //
 // The lines for the file:
 //
