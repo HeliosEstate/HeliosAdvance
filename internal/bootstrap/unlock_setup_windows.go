@@ -46,7 +46,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 	}()
 	_ = os.Remove(filepath.Join(folder, bootstrapFileName+".new")) //nolint:errcheck // stale partial rewrite is disposable
 	bootstrapHandle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
-	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+	if windowsMissingItem(err) {
 		return nil, &Refusal{Cause: FileNotFound}
 	} else if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		return nil, err
 	}
 	sealedHandle, err := openChild(windows.Handle(directory.Fd()), sealedKeyFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
-	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+	if windowsMissingItem(err) {
 		return nil, &Refusal{Cause: KeyNotFound}
 	} else if err != nil {
 		return nil, err
@@ -96,6 +96,11 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 	}
 	locked = true
 	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
+}
+
+func windowsMissingItem(err error) bool {
+	return errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) ||
+		errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) || errors.Is(err, windows.STATUS_OBJECT_PATH_NOT_FOUND)
 }
 
 func checkWindowsHandle(handle windows.Handle, path string) error {
