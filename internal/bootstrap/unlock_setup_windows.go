@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -29,7 +30,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // no pending writes
 	lockPath := filepath.Join(folder, lockFileName)
-	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), account)
+	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), account, false)
 	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
 		return nil, &Refusal{Cause: InUse}
 	} else if err != nil {
@@ -45,47 +46,58 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 	if err := checkWindowsHandle(lockHandle, lockPath); err != nil {
 		return nil, err
 	}
+	opened, holding, err := unlockWindowsFile(ctx, directory, folder)
+	if err != nil {
+		return nil, err
+	}
+	locked = true
+	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
+}
+
+// unlockWindowsFile deletes the half-made file, unseals the bootstrap key and opens the bootstrap
+// file under it, all through the folder's handle.
+func unlockWindowsFile(ctx context.Context, directory *os.File, folder string) (*bootstrapFile, Holding, error) {
 	if err := deleteChild(windows.Handle(directory.Fd()), bootstrapFileName+".new"); err != nil {
-		return nil, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
+		return nil, 0, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
 	}
 	bootstrapHandle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
 	if windowsMissingItem(err) {
-		return nil, &Refusal{Cause: FileNotFound}
+		return nil, 0, &Refusal{Cause: FileNotFound}
 	} else if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	bootstrapInput := os.NewFile(uintptr(bootstrapHandle), bootstrapFileName)
 	defer func() { _ = bootstrapInput.Close() }() //nolint:errcheck // read-only handle
 	if err := checkWindowsHandle(bootstrapHandle, filepath.Join(folder, bootstrapFileName)); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	sealedHandle, err := openChild(windows.Handle(directory.Fd()), sealedKeyFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
 	if windowsMissingItem(err) {
-		return nil, &Refusal{Cause: KeyNotFound}
+		return nil, 0, &Refusal{Cause: KeyNotFound}
 	} else if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	sealedFile := os.NewFile(uintptr(sealedHandle), sealedKeyFileName)
 	defer func() { _ = sealedFile.Close() }() //nolint:errcheck // read-only handle
 	if err := checkWindowsHandle(sealedHandle, filepath.Join(folder, sealedKeyFileName)); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	sealedInfo, err := sealedFile.Stat()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if sealedInfo.Size() != 256 {
-		return nil, &Refusal{Cause: KeyNotUnsealed}
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
 	}
 	sealed := make([]byte, 256)
 	if _, err := sealedFile.ReadAt(sealed, 0); err != nil {
 		clear(sealed)
-		return nil, err
+		return nil, 0, err
 	}
 	defer clear(sealed)
 	key, holding, err := decryptWindowsKey(ctx, sealed)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer clear(key)
 	info, err := bootstrapInput.Stat()
@@ -94,17 +106,17 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 		opened, err = openFile(bootstrapInput, info.Size(), key)
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	locked = true
-	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
+	return opened, holding, nil
 }
 
 // openSetupLock opens the lock exclusively without following a link, relative to the checked
 // folder's handle. A lock that is absent is created already set to its rule for the account: the
 // account, SYSTEM and Administrators only, not inherited, owned by Administrators. The create runs
-// with SeRestorePrivilege so the owner can be given, and holds it for that call only.
-func openSetupLock(folder windows.Handle, account string) (windows.Handle, error) {
+// with SeRestorePrivilege so the owner can be given, and holds it for that call only. A process
+// without that privilege, the service, owns the lock itself: ownedByAccount.
+func openSetupLock(folder windows.Handle, account string, ownedByAccount bool) (windows.Handle, error) {
 	const access = windows.GENERIC_READ | windows.GENERIC_WRITE
 	handle, err := ntOpenChild(folder, lockFileName, access, 0, windows.FILE_OPEN, nil)
 	if !windowsMissingItem(err) {
@@ -114,12 +126,17 @@ func openSetupLock(folder windows.Handle, account string) (windows.Handle, error
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
-	rule, err := windows.SecurityDescriptorFromString(ruleSDDL(service, "", fileAllAccess))
+	description := ruleSDDL(service, "", fileAllAccess)
+	if ownedByAccount {
+		description = strings.Replace(description, "O:BA", "O:"+service.String(), 1)
+	} else {
+		restorePrivileges := enablePrivileges("SeRestorePrivilege")
+		defer restorePrivileges()
+	}
+	rule, err := windows.SecurityDescriptorFromString(description)
 	if err != nil {
 		return 0, err
 	}
-	restorePrivileges := enablePrivileges("SeRestorePrivilege")
-	defer restorePrivileges()
 	return ntOpenChild(folder, lockFileName, access, 0, windows.FILE_CREATE, rule)
 }
 

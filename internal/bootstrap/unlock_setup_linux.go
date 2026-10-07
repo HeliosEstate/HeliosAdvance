@@ -79,95 +79,127 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 			releaseSetupLock(lock)
 		}
 	}()
-	if err := unix.Unlinkat(int(directory.Fd()), bootstrapFileName+".new", 0); err != nil && !errors.Is(err, unix.ENOENT) {
-		return nil, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
-	}
-	input, err := openLinuxBootstrapFile(int(directory.Fd()), filepath.Join(folder, bootstrapFileName))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = input.Close() }() //nolint:errcheck // read-only descriptor
-	var key []byte
-	holding := HeldInKeyFile
-	switch mode {
-	case ModeKeyFile:
-		key, err = readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
-		if errors.Is(err, unix.ENOENT) {
-			err = &Refusal{Cause: KeyNotFound}
-		}
-	case ModeContainer:
-		var fromSecret bool
-		key, _, fromSecret, err = linuxBuildKey(directory, folder, FromContainer)
-		if fromSecret {
-			holding = HeldAsSwarmSecret
-		}
-	case ModeSystemdAtStart, ModeSystemdPerUse:
-		credentialPath := filepath.Join(folder, systemdCredentialFileName)
-		credential, credentialID, statErr := openLinuxCredential(int(directory.Fd()), credentialPath)
-		if errors.Is(statErr, os.ErrNotExist) {
-			err = &Refusal{Cause: KeyNotFound}
-			break
-		} else if statErr != nil {
-			err = statErr
-			break
-		}
-		// What was judged is what systemd decrypts: the service account owns the file and could
-		// rewrite it between two reads.
-		defer clear(credential)
-		if slices.Contains(tpmCredentialIDs, credentialID) {
-			holding = HeldInTPM
-			// Only the missing libraries are refused here; any other failure of the probe is left
-			// for systemd's own decrypt to decide.
-			var refusal *Refusal
-			if _, probeErr := linuxTPMDevice(ctx); ctx.Err() != nil {
-				err = ctx.Err()
-				break
-			} else if errors.As(probeErr, &refusal) && refusal.Cause == TPMLibrariesMissing {
-				err = probeErr
-				break
-			}
-		} else if slices.Contains(hostKeyCredentialIDs, credentialID) {
-			holding = HeldUnderHostKey
-		} else {
-			err = &Refusal{Cause: KeyNotUnsealed}
-			break
-		}
-		args := []string{"decrypt", "--name=" + machineKeyPairName, "-", "-"}
-		if mode == ModeSystemdPerUse {
-			args = []string{"--user", fmt.Sprintf("--uid=%d", accountID), "decrypt", "--name=" + machineKeyPairName, "-", "-"}
-		}
-		command := exec.CommandContext(ctx, "systemd-creds", args...)
-		command.Stdin = bytes.NewReader(credential)
-		key, err = command.Output()
-		if err != nil {
-			clear(key)
-			key = nil
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			} else {
-				err = &Refusal{Cause: KeyNotUnsealed}
-			}
-			break
-		}
-	}
-	if err != nil {
-		clear(key)
-		return nil, err
-	}
-	defer clear(key)
-	if len(key) != 32 {
-		return nil, &Refusal{Cause: KeyNotUnsealed}
-	}
-	info, err := input.Stat()
-	if err != nil {
-		return nil, err
-	}
-	opened, err := openFile(input, info.Size(), key)
+	opened, holding, err := unlockLinuxFile(ctx, directory, folder, mode, accountID, false)
 	if err != nil {
 		return nil, err
 	}
 	locked = true
 	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
+}
+
+// unlockLinuxFile deletes the half-made file, reads the bootstrap key from where the mode holds it
+// and opens the bootstrap file under it, all through the folder's handle. The service's
+// ModeSystemdAtStart reads the key from the credential folder systemd gives the service.
+func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool) (*bootstrapFile, Holding, error) {
+	if err := unix.Unlinkat(int(directory.Fd()), bootstrapFileName+".new", 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return nil, 0, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
+	}
+	input, err := openLinuxBootstrapFile(int(directory.Fd()), filepath.Join(folder, bootstrapFileName))
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = input.Close() }() //nolint:errcheck // read-only descriptor
+	key, holding, err := readLinuxKey(ctx, directory, folder, mode, accountID, service)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer clear(key)
+	if len(key) != 32 {
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
+	}
+	info, err := input.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	opened, err := openFile(input, info.Size(), key)
+	if err != nil {
+		return nil, 0, err
+	}
+	return opened, holding, nil
+}
+
+// readLinuxKey is the bootstrap key and how it is held; the caller clears the key.
+func readLinuxKey(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool) ([]byte, Holding, error) {
+	switch mode {
+	case ModeKeyFile:
+		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
+		if errors.Is(err, unix.ENOENT) {
+			err = &Refusal{Cause: KeyNotFound}
+		}
+		return key, HeldInKeyFile, err
+	case ModeContainer:
+		key, _, fromSecret, err := linuxBuildKey(directory, folder, FromContainer)
+		if fromSecret {
+			return key, HeldAsSwarmSecret, err
+		}
+		return key, HeldInKeyFile, err
+	}
+	credential, credentialID, err := openLinuxCredential(int(directory.Fd()), filepath.Join(folder, systemdCredentialFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, &Refusal{Cause: KeyNotFound}
+	} else if err != nil {
+		return nil, 0, err
+	}
+	// What was judged is what systemd decrypts: the service account owns the file and could
+	// rewrite it between two reads.
+	defer clear(credential)
+	var holding Holding
+	if slices.Contains(tpmCredentialIDs, credentialID) {
+		holding = HeldInTPM
+		// Only the missing libraries are refused here; any other failure of the probe is left
+		// for systemd's own decrypt to decide.
+		var refusal *Refusal
+		if _, probeErr := linuxTPMDevice(ctx); ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		} else if errors.As(probeErr, &refusal) && refusal.Cause == TPMLibrariesMissing {
+			return nil, 0, probeErr
+		}
+	} else if slices.Contains(hostKeyCredentialIDs, credentialID) {
+		holding = HeldUnderHostKey
+	} else {
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
+	}
+	if service && mode == ModeSystemdAtStart {
+		key, err := readCredentialsDirectoryKey()
+		return key, holding, err
+	}
+	args := []string{"decrypt", "--name=" + machineKeyPairName, "-", "-"}
+	if mode == ModeSystemdPerUse {
+		args = []string{"--user", fmt.Sprintf("--uid=%d", accountID), "decrypt", "--name=" + machineKeyPairName, "-", "-"}
+	}
+	command := exec.CommandContext(ctx, "systemd-creds", args...)
+	command.Stdin = bytes.NewReader(credential)
+	key, err := command.Output()
+	if err != nil {
+		clear(key)
+		if ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		}
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
+	}
+	return key, holding, nil
+}
+
+// readCredentialsDirectoryKey reads the key systemd decrypted into the service's credential
+// folder. The key is 32 bytes, so a larger file is not one.
+func readCredentialsDirectoryKey() ([]byte, error) {
+	directory := os.Getenv("CREDENTIALS_DIRECTORY") //nolint:forbidigo // systemd gives a service its credential folder only through the environment
+	if directory == "" {
+		return nil, &Refusal{Cause: KeyNotFound}
+	}
+	file, err := os.Open(filepath.Join(directory, machineKeyPairName)) //nolint:gosec // the folder systemd gives the service
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, &Refusal{Cause: KeyNotFound}
+	} else if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()              //nolint:errcheck // read-only descriptor
+	key, err := io.ReadAll(io.LimitReader(file, 33)) //nolint:forbidigo // bounded by the LimitReader
+	if err != nil {
+		clear(key)
+		return nil, err
+	}
+	return key, nil
 }
 
 // openLinuxBootstrapFile opens the bootstrap file once, without following a link, and judges that

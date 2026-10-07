@@ -192,6 +192,11 @@ func allowedFor(account string) ([]*windows.SID, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
+	return allowedForSID(service)
+}
+
+// allowedForSID is the SIDs the rule names for the service account's SID.
+func allowedForSID(service *windows.SID) ([]*windows.SID, error) {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
 		return nil, err
@@ -219,6 +224,12 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // nothing to flush on a read-only handle
+	return findLooserItems(directory, folder, mode, account, allowed)
+}
+
+// findLooserItems is the findings for the folder, what is in it and, for the machine key pair,
+// the key pair.
+func findLooserItems(directory *os.File, folder string, mode KeyMode, account string, allowed []*windows.SID) ([]Finding, error) {
 	names, err := readNames(directory)
 	if err != nil {
 		return nil, err
@@ -357,6 +368,19 @@ func ntOpenChild(folder windows.Handle, name string, access, share, disposition 
 // openFolder opens the bootstrap folder, judges the folder rules on the handle, and returns it
 // for the reads that follow.
 func openFolder(folder string) (*os.File, error) {
+	directory, err := openFolderHandle(folder)
+	if err != nil {
+		return nil, err
+	}
+	if err := judgeFolder(directory, folder); err != nil {
+		_ = directory.Close() //nolint:errcheck // nothing to flush on a read-only handle
+		return nil, err
+	}
+	return directory, nil
+}
+
+// openFolderHandle opens the bootstrap folder without judging the volume it is on.
+func openFolderHandle(folder string) (*os.File, error) {
 	refuse := func(rule FolderRule) error { return &Refusal{Cause: FolderRefused, Path: folder, Rule: rule} }
 	if !filepath.IsAbs(folder) {
 		return nil, refuse(NotAbsolute)
@@ -380,20 +404,27 @@ func openFolder(folder string) (*os.File, error) {
 	if link {
 		return fail(refuse(FolderLink))
 	}
+	return directory, nil
+}
+
+// judgeFolder refuses a folder on a network, removable or unsupported volume, judged on the handle.
+func judgeFolder(directory *os.File, folder string) error {
+	handle := windows.Handle(directory.Fd())
+	refuse := func(rule FolderRule) error { return &Refusal{Cause: FolderRefused, Path: folder, Rule: rule} }
 	switch driveType(handle) {
 	case windows.DRIVE_REMOTE:
-		return fail(refuse(NetworkShare))
+		return refuse(NetworkShare)
 	case windows.DRIVE_REMOVABLE, windows.DRIVE_CDROM:
-		return fail(refuse(Removable))
+		return refuse(Removable)
 	}
 	var filesystem [windows.MAX_PATH + 1]uint16
 	if err := windows.GetVolumeInformationByHandle(handle, nil, 0, nil, nil, nil, &filesystem[0], uint32(len(filesystem))); err != nil {
-		return fail(fmt.Errorf("bootstrap: reading the file system of %s: %w", folder, err))
+		return fmt.Errorf("bootstrap: reading the file system of %s: %w", folder, err)
 	}
 	if name := windows.UTF16ToString(filesystem[:]); !strings.EqualFold(name, "NTFS") && !strings.EqualFold(name, "ReFS") {
-		return fail(refuse(FileSystem))
+		return refuse(FileSystem)
 	}
-	return directory, nil
+	return nil
 }
 
 // isNetworkPath is whether the path names a UNC share, in either of the two spellings.

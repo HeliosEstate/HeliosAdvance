@@ -64,7 +64,11 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // nothing to flush on a read-only handle
+	return findLooserItems(directory, folder, mode, account, accountID)
+}
 
+// findLooserItems is the findings for the items in the folder and, in a container, the Swarm secret.
+func findLooserItems(directory *os.File, folder string, mode KeyMode, account string, accountID uint32) ([]Finding, error) {
 	names, err := readNames(directory)
 	if err != nil {
 		return nil, err
@@ -126,6 +130,19 @@ func statItem(directory *os.File, path string, item Item) (unix.Stat_t, error) {
 
 // openFolder opens the bootstrap folder and judges the folder rules on the handle.
 func openFolder(folder string) (*os.File, error) {
+	directory, err := openFolderHandle(folder)
+	if err != nil {
+		return nil, err
+	}
+	if err := judgeFolder(directory, folder); err != nil {
+		_ = directory.Close() //nolint:errcheck // nothing to flush on a read-only handle
+		return nil, err
+	}
+	return directory, nil
+}
+
+// openFolderHandle opens the bootstrap folder without judging the file system it is on.
+func openFolderHandle(folder string) (*os.File, error) {
 	if !filepath.IsAbs(folder) {
 		return nil, &Refusal{Cause: FolderRefused, Path: folder, Rule: NotAbsolute}
 	}
@@ -136,22 +153,23 @@ func openFolder(folder string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: opening %s: %w", folder, err)
 	}
-	directory := os.NewFile(uintptr(descriptor), folder)
+	return os.NewFile(uintptr(descriptor), folder), nil
+}
+
+// judgeFolder refuses a folder that breaks a folder rule, judged on the handle.
+func judgeFolder(directory *os.File, folder string) error {
 	var system unix.Statfs_t
 	var stat unix.Stat_t
-	if err := unix.Fstatfs(descriptor, &system); err != nil {
-		_ = directory.Close() //nolint:errcheck // nothing to flush on a read-only handle
-		return nil, fmt.Errorf("bootstrap: reading the file system of %s: %w", folder, err)
+	if err := unix.Fstatfs(int(directory.Fd()), &system); err != nil {
+		return fmt.Errorf("bootstrap: reading the file system of %s: %w", folder, err)
 	}
-	if err := unix.Fstat(descriptor, &stat); err != nil {
-		_ = directory.Close() //nolint:errcheck // nothing to flush on a read-only handle
-		return nil, fmt.Errorf("bootstrap: reading %s: %w", folder, err)
+	if err := unix.Fstat(int(directory.Fd()), &stat); err != nil {
+		return fmt.Errorf("bootstrap: reading %s: %w", folder, err)
 	}
 	if rule := folderRuleBroken(uint32(system.Type), uint64(stat.Dev)); rule != 0 { //nolint:gosec // the magic numbers fit 32 bits
-		_ = directory.Close() //nolint:errcheck // nothing to flush on a read-only handle
-		return nil, &Refusal{Cause: FolderRefused, Path: folder, Rule: rule}
+		return &Refusal{Cause: FolderRefused, Path: folder, Rule: rule}
 	}
-	return directory, nil
+	return nil
 }
 
 // folderRuleBroken is the folder rule the file system type or the device breaks, or zero.
