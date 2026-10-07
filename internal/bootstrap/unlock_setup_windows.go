@@ -45,7 +45,9 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 	if err := checkWindowsHandle(lockHandle, lockPath); err != nil {
 		return nil, err
 	}
-	_ = os.Remove(filepath.Join(folder, bootstrapFileName+".new")) //nolint:errcheck // stale partial rewrite is disposable
+	if err := deleteChild(windows.Handle(directory.Fd()), bootstrapFileName+".new"); err != nil {
+		return nil, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
+	}
 	bootstrapHandle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
 	if windowsMissingItem(err) {
 		return nil, &Refusal{Cause: FileNotFound}
@@ -82,9 +84,8 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 	}
 	defer clear(sealed)
 	key, holding, err := decryptWindowsKey(ctx, sealed)
-	if err != nil || len(key) != 32 {
-		clear(key)
-		return nil, &Refusal{Cause: KeyNotUnsealed}
+	if err != nil {
+		return nil, err
 	}
 	defer clear(key)
 	info, err := bootstrapInput.Stat()
@@ -120,6 +121,20 @@ func openSetupLock(folder windows.Handle, account string) (windows.Handle, error
 	restorePrivileges := enablePrivileges("SeRestorePrivilege")
 	defer restorePrivileges()
 	return ntOpenChild(folder, lockFileName, access, 0, windows.FILE_CREATE, rule)
+}
+
+// deleteChild deletes a name inside the folder, relative to the folder's handle; a link is deleted
+// as itself. A name that is absent is not an error.
+func deleteChild(folder windows.Handle, name string) error {
+	handle, err := ntOpenChild(folder, name, windows.DELETE|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, nil)
+	if windowsMissingItem(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a handle opened for deletion
+	disposition := struct{ DeleteFile byte }{1}
+	return windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, (*byte)(unsafe.Pointer(&disposition)), uint32(unsafe.Sizeof(disposition))) //nolint:gosec // the call reads one BOOLEAN
 }
 
 func windowsMissingItem(err error) bool {
@@ -162,7 +177,7 @@ func decryptWindowsKey(ctx context.Context, ciphertext []byte) ([]byte, Holding,
 		return nil, 0, err
 	}
 	if !found {
-		return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
 	}
 	defer pair.close()
 	holding := HeldInSoftwareKeyStore
@@ -176,14 +191,14 @@ func decryptWindowsKey(ctx context.Context, ciphertext []byte) ([]byte, Holding,
 	padding := oaepPaddingInfo{Algorithm: algorithm}
 	var size uint32
 	if status := call(ncryptDecrypt, pair.key, uintptr(unsafe.Pointer(&ciphertext[0])), uintptr(len(ciphertext)), uintptr(unsafe.Pointer(&padding)), 0, 0, uintptr(unsafe.Pointer(&size)), 4); status != 0 || size == 0 || size > maxDecryptedSize { //nolint:gosec // the key store's calling convention
-		return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
 	}
 	// A key held in the TPM reports the key's length here, not the plaintext's; only the second
 	// call's length says how much of the buffer is the key.
 	plain := make([]byte, size)
 	defer clear(plain)
 	if status := call(ncryptDecrypt, pair.key, uintptr(unsafe.Pointer(&ciphertext[0])), uintptr(len(ciphertext)), uintptr(unsafe.Pointer(&padding)), uintptr(unsafe.Pointer(&plain[0])), uintptr(len(plain)), uintptr(unsafe.Pointer(&size)), 4); status != 0 || size != 32 { //nolint:gosec // the key store's calling convention
-		return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
 	}
 	return append([]byte(nil), plain[:size]...), holding, nil
 }

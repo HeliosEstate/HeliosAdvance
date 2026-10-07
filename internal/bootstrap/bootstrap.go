@@ -25,16 +25,16 @@ func (builder) Check(folder string, mode KeyMode, account string) ([]Finding, er
 	return checkPermissions(folder, mode, account)
 }
 
+func (builder) UnlockForSetup(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error) {
+	return unlockSetupOnPlatform(ctx, folder, mode, account)
+}
+
 func (builder) SetToRule(finding Finding, account string) error {
 	return setToRule(finding, account)
 }
 
 // unbuilt retains the operations handled by later bootstrap work.
 type unbuilt struct{}
-
-func (unbuilt) UnlockForSetup(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error) {
-	return unlockSetupOnPlatform(ctx, folder, mode, account)
-}
 
 func (unbuilt) UnlockForService(context.Context, string, KeyMode) (ServiceHandle, error) {
 	return nil, errNotBuilt
