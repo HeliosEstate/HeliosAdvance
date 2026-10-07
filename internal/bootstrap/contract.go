@@ -278,6 +278,16 @@ type KeyMode uint8
 
 // Key modes. In a container the shipped image's command line passes ModeContainer, decided at
 // each unlock by which of the Swarm secret and the key file is present.
+//
+// A platform's modes, the ones an unlock accepts on it:
+//
+//	Windows                        ModeMachineKeyPair
+//	Linux without systemd          ModeKeyFile, ModeContainer
+//	Linux, systemd below 250       ModeKeyFile
+//	Linux, systemd 250 to 255      ModeSystemdAtStart, ModeKeyFile
+//	Linux, systemd 256 or later    ModeSystemdPerUse, ModeSystemdAtStart, ModeKeyFile
+//
+// A server whose systemd was upgraded after Build keeps the mode Build gave it.
 const (
 	ModeMachineKeyPair KeyMode = iota + 1
 	ModeSystemdPerUse
@@ -586,8 +596,8 @@ type Bootstrap interface {
 	//   - If another handle holds the lock, then UnlockForSetup shall refuse with InUse.
 	//   - If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused,
 	//     naming the rule.
-	//   - If the bootstrap file or the key file is a symbolic link or a junction, then
-	//     UnlockForSetup shall refuse with Link.
+	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
+	//     more than one name, then UnlockForSetup shall refuse with Link.
 	//   - UnlockForSetup shall not refuse an item set looser than its rule.
 	//   - If bootstrap.hadv.new is in the folder, then UnlockForSetup shall delete it.
 	//   - If the mode is not one of this platform's, then UnlockForSetup shall refuse with
@@ -596,8 +606,8 @@ type Bootstrap interface {
 	//     UnlockForSetup shall refuse with NoKeySource.
 	//   - If the mode is ModeContainer and both a Swarm secret and a key file are present, then
 	//     UnlockForSetup shall refuse with BothKeySources.
-	//   - If the sealed-key file, the credential, the Swarm secret or the key file is absent, then
-	//     UnlockForSetup shall refuse with KeyNotFound.
+	//   - If the mode is not ModeContainer and the sealed-key file, the credential or the key file
+	//     is absent, then UnlockForSetup shall refuse with KeyNotFound.
 	//   - If a key file or Swarm secret holds anything other than 32 bytes as base64 in 44
 	//     characters with at most one trailing newline, then UnlockForSetup shall refuse with
 	//     KeyFileMalformed.
@@ -661,8 +671,8 @@ type Bootstrap interface {
 	//   - If another handle holds the lock, then UnlockForService shall refuse with InUse.
 	//   - If the folder breaks a folder rule, then UnlockForService shall refuse with
 	//     FolderRefused, naming the rule.
-	//   - If the bootstrap file or the key file is a symbolic link or a junction, then
-	//     UnlockForService shall refuse with Link.
+	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
+	//     more than one name, then UnlockForService shall refuse with Link.
 	//   - If an item in the permission table is set looser than its rule, then UnlockForService
 	//     shall refuse with LooserThanRule, naming the item and its path.
 	//   - If the bootstrap file is not writable by the service account, then UnlockForService
@@ -677,8 +687,8 @@ type Bootstrap interface {
 	//     UnlockForService shall refuse with NoKeySource.
 	//   - If the mode is ModeContainer and both a Swarm secret and a key file are present, then
 	//     UnlockForService shall refuse with BothKeySources.
-	//   - If the sealed-key file, the credential, the Swarm secret or the key file is absent, then
-	//     UnlockForService shall refuse with KeyNotFound.
+	//   - If the mode is not ModeContainer and the sealed-key file, the credential or the key file
+	//     is absent, then UnlockForService shall refuse with KeyNotFound.
 	//   - If a key file or Swarm secret holds anything other than 32 bytes as base64 in 44
 	//     characters with at most one trailing newline, then UnlockForService shall refuse with
 	//     KeyFileMalformed.
