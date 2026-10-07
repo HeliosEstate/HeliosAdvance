@@ -155,7 +155,9 @@ $keyName = 'heliosadvance-bootstrap-key'
 $providers = 'Microsoft Software Key Storage Provider', 'Microsoft Platform Crypto Provider'
 foreach ($name in $providers) {
     $provider = New-Object Security.Cryptography.CngProvider $name
-    if ([Security.Cryptography.CngKey]::Exists($keyName, $provider, [Security.Cryptography.CngKeyOpenOptions]::MachineKey)) {
+    $exists = $false
+    try { $exists = [Security.Cryptography.CngKey]::Exists($keyName, $provider, [Security.Cryptography.CngKeyOpenOptions]::MachineKey) } catch { }
+    if ($exists) {
         $old = [Security.Cryptography.CngKey]::Open($keyName, $provider, [Security.Cryptography.CngKeyOpenOptions]::MachineKey)
         if ($env:HELIOS_ACTION -eq 'remove') { $old.Delete(); continue }
         throw 'machine key pair already exists'
