@@ -58,6 +58,13 @@ function Open-Sealed($path) {
 function Write-HasTpm { [Console]::Out.WriteLine((Get-Tpm).TpmPresent) }
 `
 
+// hasTPM reports whether this machine has a TPM, which decides the provider a machine key
+// pair is made in.
+func hasTPM(t *testing.T) bool {
+	t.Helper()
+	return saysTrue(powerShell(t, keyStoreFunctions+"Write-HasTpm\n"))
+}
+
 // storedKeyPair is one machine key pair of the package's name, as the key store reports it.
 type storedKeyPair struct {
 	Provider     string   `json:"provider"`
@@ -156,7 +163,7 @@ func TestWindowsElevatedBuildStore(t *testing.T) {
 	})
 
 	t.Run(lineStoreSoftware, func(t *testing.T) {
-		if strings.TrimSpace(string(powerShell(t, keyStoreFunctions+"Write-HasTpm\n"))) == "True" {
+		if hasTPM(t) {
 			t.Skip("this machine has a TPM: the row runs on GitHub's Windows runner, which has none")
 		}
 		if _, _, err := buildWindowsStore(t, FirstSetup, false); err != nil {

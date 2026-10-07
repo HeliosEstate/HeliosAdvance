@@ -42,8 +42,11 @@ func windowsRule(account string) Permissions {
 func elevated(t *testing.T) bool {
 	t.Helper()
 	out := powerShell(t, "[Console]::Out.WriteLine((New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))")
-	return strings.TrimSpace(string(out)) == "True"
+	return saysTrue(out)
 }
+
+// saysTrue reports whether Windows PowerShell printed True: how it writes a boolean.
+func saysTrue(out []byte) bool { return strings.TrimSpace(string(out)) == "True" }
 
 // oracleFunctions is the PowerShell the rows set up and read items with. Read-Item reports
 // an item as the contract's Permissions holds it: the owner and every account an allow
@@ -294,9 +297,9 @@ func TestWindowsElevated(t *testing.T) {
 			folder string
 			rule   FolderRule
 		}{
-			{"a relative path", "bootstrap", NotAbsolute},
+			{rowRelativePath, relativeFolder, NotAbsolute},
 			{"a junction to a good folder", junction, FolderLink},
-			{"a symbolic link to a good folder", symlink, FolderLink},
+			{rowFolderLink, symlink, FolderLink},
 			{"a folder on FAT32", fat, FileSystem},
 			{"the good folder through the administrative share", share, NetworkShare},
 		} {

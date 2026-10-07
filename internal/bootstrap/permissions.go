@@ -14,6 +14,7 @@ import (
 const (
 	bootstrapFileName  = "bootstrap.hadv"
 	keyFileName        = "bootstrap.key"
+	lockFileName       = "bootstrap.lock"
 	machineKeyPairName = "heliosadvance-bootstrap-key"
 )
 

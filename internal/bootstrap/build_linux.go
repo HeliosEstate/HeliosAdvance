@@ -48,7 +48,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if source == FromOSStore && version < 250 {
 		return 0, &Refusal{Cause: NoCredentialStore}
 	}
-	key, mode, err := linuxBuildKey(directory, folder, source)
+	key, mode, _, err := linuxBuildKey(directory, folder, source)
 	if source == FromOSStore {
 		key = make([]byte, 32)
 		if _, err = rand.Read(key); err != nil {
@@ -74,23 +74,11 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err := unix.Fchmod(int(directory.Fd()), 0o700); err != nil {
 		return 0, fmt.Errorf("bootstrap: setting the mode of %s: %w", folder, err)
 	}
-	lock, err := unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	lock, err := openLinuxLock(int(directory.Fd()), filepath.Join(folder, lockFileName), accountID, true)
 	if err != nil {
-		return 0, fmt.Errorf("bootstrap: opening the lock: %w", err)
+		return 0, err
 	}
-	defer func() { _ = unix.Close(lock) }() //nolint:errcheck // nothing is buffered on this descriptor
-	if err := unix.Fchown(lock, int(accountID), -1); err != nil {
-		return 0, fmt.Errorf("bootstrap: setting the lock owner: %w", err)
-	}
-	if err := unix.Fchmod(lock, 0o600); err != nil {
-		return 0, fmt.Errorf("bootstrap: setting the lock mode: %w", err)
-	}
-	if err := unix.Flock(lock, unix.LOCK_EX|unix.LOCK_NB); errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-		return 0, &Refusal{Cause: InUse}
-	} else if err != nil {
-		return 0, fmt.Errorf("bootstrap: locking the folder: %w", err)
-	}
-	defer func() { _ = unix.Flock(lock, unix.LOCK_UN) }() //nolint:errcheck // close also releases the lock
+	defer releaseSetupLock(lock)
 	var existing unix.Stat_t
 	err = unix.Fstatat(int(directory.Fd()), bootstrapFileName, &existing, unix.AT_SYMLINK_NOFOLLOW)
 	if err == nil && (path == FirstSetup || path == Joining) {
@@ -249,10 +237,8 @@ func sealSystemdCredential(ctx context.Context, folder string, accountID uint32,
 }
 
 func runningSystemdVersion(ctx context.Context) (int, bool, error) {
-	if _, err := os.Stat("/run/systemd/system"); errors.Is(err, os.ErrNotExist) {
-		return 0, false, nil
-	} else if err != nil {
-		return 0, false, fmt.Errorf("bootstrap: checking the running service manager: %w", err)
+	if running, err := systemdRunning(); !running || err != nil {
+		return 0, false, err
 	}
 	output, err := exec.CommandContext(ctx, "systemctl", "show", "--property=Version", "--value").Output()
 	if err != nil {
@@ -270,38 +256,39 @@ func runningSystemdVersion(ctx context.Context) (int, bool, error) {
 	return version, true, nil
 }
 
-func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte, KeyMode, error) {
+// linuxBuildKey also says whether the key came from the Swarm secret rather than the key file.
+func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte, KeyMode, bool, error) {
 	if source == FromOSStore {
-		return nil, 0, nil
+		return nil, 0, false, nil
 	}
 	if source == FromKeyFile {
 		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
 		if errors.Is(err, unix.ENOENT) {
-			return nil, 0, &Refusal{Cause: KeyNotFound}
+			return nil, 0, false, &Refusal{Cause: KeyNotFound}
 		}
-		return key, ModeKeyFile, err
+		return key, ModeKeyFile, false, err
 	}
 	keyFile, keyFileErr := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
 	if keyFileErr != nil && !errors.Is(keyFileErr, unix.ENOENT) {
-		return nil, 0, keyFileErr
+		return nil, 0, false, keyFileErr
 	}
 	secret, secretErr := readBootstrapKey(unix.AT_FDCWD, swarmSecretPath, swarmSecretPath)
 	if secretErr != nil && !errors.Is(secretErr, unix.ENOENT) {
 		clear(keyFile)
-		return nil, 0, secretErr
+		return nil, 0, false, secretErr
 	}
 	if keyFileErr == nil && secretErr == nil {
 		clear(keyFile)
 		clear(secret)
-		return nil, 0, &Refusal{Cause: BothKeySources}
+		return nil, 0, false, &Refusal{Cause: BothKeySources}
 	}
 	if keyFileErr != nil && secretErr != nil {
-		return nil, 0, &Refusal{Cause: NoKeySource}
+		return nil, 0, false, &Refusal{Cause: NoKeySource}
 	}
 	if secretErr == nil {
-		return secret, ModeContainer, nil
+		return secret, ModeContainer, true, nil
 	}
-	return keyFile, ModeContainer, nil
+	return keyFile, ModeContainer, false, nil
 }
 
 func readBootstrapKey(directory int, name, path string) ([]byte, error) {
@@ -338,4 +325,71 @@ func readBootstrapKey(directory int, name, path string) ([]byte, error) {
 		return nil, readErr
 	}
 	return key, closeErr
+}
+
+// openLinuxLock opens bootstrap.lock in the folder and takes it exclusively, refusing with InUse
+// when another handle holds it. A lock this call creates is given to the owner at 0600 and removed
+// again if that fails; one already there must be a file with one name, and is left as found unless
+// reset is set, as Build does.
+func openLinuxLock(directory int, path string, owner uint32, reset bool) (*os.File, error) {
+	const flags = unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	descriptor, err := unix.Openat(directory, lockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+	created := err == nil
+	if errors.Is(err, unix.EEXIST) {
+		descriptor, err = unix.Openat(directory, lockFileName, flags, 0)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: opening the lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(descriptor), lockFileName)
+	fail := func(err error) (*os.File, error) {
+		if created {
+			_ = unix.Unlinkat(directory, lockFileName, 0) //nolint:errcheck // a lock that could not be given over must not stay root's
+		}
+		_ = lock.Close() //nolint:errcheck // no buffered data
+		return nil, err
+	}
+	if !created {
+		// A name linked to another file would hand that file over with the owner and mode.
+		var stat unix.Stat_t
+		if err := unix.Fstat(descriptor, &stat); err != nil {
+			return fail(fmt.Errorf("bootstrap: reading the lock: %w", err))
+		}
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+			return fail(&Refusal{Cause: Link, Path: path})
+		}
+	}
+	if created || reset {
+		if err := unix.Fchown(descriptor, int(owner), -1); err != nil {
+			return fail(fmt.Errorf("bootstrap: setting the lock owner: %w", err))
+		}
+		if err := unix.Fchmod(descriptor, 0o600); err != nil {
+			return fail(fmt.Errorf("bootstrap: setting the lock mode: %w", err))
+		}
+	}
+	if err := unix.Flock(descriptor, unix.LOCK_EX|unix.LOCK_NB); errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+		_ = lock.Close() //nolint:errcheck // no buffered data
+		return nil, &Refusal{Cause: InUse}
+	} else if err != nil {
+		return fail(fmt.Errorf("bootstrap: locking the folder: %w", err))
+	}
+	return lock, nil
+}
+
+func releaseSetupLock(lock *os.File) {
+	if lock == nil {
+		return
+	}
+	_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck // closing also releases the lock
+	_ = lock.Close()                             //nolint:errcheck // no buffered data
+}
+
+// systemdRunning is whether systemd is the running service manager.
+func systemdRunning() (bool, error) {
+	if _, err := os.Stat("/run/systemd/system"); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("bootstrap: checking the running service manager: %w", err)
+	}
+	return true, nil
 }

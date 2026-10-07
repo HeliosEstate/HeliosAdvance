@@ -42,6 +42,17 @@ const (
 	lineSetToRuleSwarm       = "If the finding's item is ItemSwarmSecret, then SetToRule shall refuse with LooserThanRule and change nothing."
 )
 
+// The rows every folder-rule line shares, by Check's, Build's and the unlocks' rows alike:
+// one name for each case, so the same case reads the same under every line.
+const (
+	rowRelativePath = "a relative path"
+	rowFolderLink   = "a symbolic link to a good folder"
+	rowTmpfs        = "a folder on tmpfs"
+	rowOverlayfs    = "a folder on overlayfs"
+	rowFolder0755   = "the folder at 0755"
+	relativeFolder  = "bootstrap" // a folder named by a relative path
+)
+
 // The bootstrap folder's file names, as the package comment lists them.
 const (
 	nameFile       = "bootstrap.hadv"
