@@ -596,6 +596,8 @@ type Bootstrap interface {
 	//   - If the process is neither elevated nor root, then UnlockForSetup shall refuse with
 	//     NotElevated.
 	//   - If another handle holds the lock, then UnlockForSetup shall refuse with InUse.
+	//   - If bootstrap.lock is absent, then UnlockForSetup shall create it already set to its
+	//     rule.
 	//   - If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused,
 	//     naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
@@ -673,6 +675,8 @@ type Bootstrap interface {
 	//     folder's access list does not name beside SYSTEM and Administrators, then
 	//     UnlockForService shall refuse with WrongAccount.
 	//   - If another handle holds the lock, then UnlockForService shall refuse with InUse.
+	//   - If bootstrap.lock is absent, then UnlockForService shall create it already set to its
+	//     rule.
 	//   - If the folder breaks a folder rule, then UnlockForService shall refuse with
 	//     FolderRefused, naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
