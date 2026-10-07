@@ -6,9 +6,12 @@ package bootstrap
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +54,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 		if path == FirstSetup || path == Joining {
 			return 0, &Refusal{Cause: MachineKeyPairExists}
 		}
-		if err := windowsKeyPair(ctx, "remove", "", ""); err != nil {
+		if _, err := windowsKeyPair(ctx, "remove", ""); err != nil {
 			return 0, err
 		}
 	}
@@ -66,23 +69,6 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	}
 	defer clear(key)
 	sealed := filepath.Join(folder, sealedKeyFileName)
-	keyFile, err := os.CreateTemp(folder, ".bootstrap-key-")
-	if err != nil {
-		return 0, err
-	}
-	keyPath := keyFile.Name()
-	defer func() { _ = os.Remove(keyPath) }() //nolint:errcheck // the temporary plaintext key must not remain
-	if err := keyFile.Chmod(0o600); err != nil {
-		_ = keyFile.Close() //nolint:errcheck // return the chmod error
-		return 0, err
-	}
-	if _, err := keyFile.Write(key); err != nil {
-		_ = keyFile.Close() //nolint:errcheck // return the write error
-		return 0, err
-	}
-	if err := keyFile.Close(); err != nil {
-		return 0, err
-	}
 	sealedFile, err := os.OpenFile(sealed, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // the folder was opened and checked above
 	if err != nil {
 		return 0, err
@@ -93,7 +79,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	keyPairMade, sealedMade := false, true
 	defer func(cleanupContext context.Context) {
 		if keyPairMade {
-			_ = windowsKeyPair(cleanupContext, "remove", "", "") //nolint:errcheck // preserve the build error
+			_, _ = windowsKeyPair(cleanupContext, "remove", "") //nolint:errcheck // preserve the build error
 		}
 		if sealedMade {
 			_ = os.Remove(sealed) //nolint:errcheck // a failed build must not leave the sealed key
@@ -102,10 +88,18 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err := setToRule(Finding{Item: ItemOtherFile, Path: sealed}, account); err != nil {
 		return 0, err
 	}
-	if err := windowsKeyPair(ctx, "create", keyPath, service.String()); err != nil {
+	publicKey, err := windowsKeyPair(ctx, "create", service.String())
+	if err != nil {
 		return 0, err
 	}
 	keyPairMade = true
+	ciphertext, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, publicKey, key, nil)
+	if err != nil {
+		return 0, fmt.Errorf("bootstrap: sealing the bootstrap key: %w", err)
+	}
+	if err := os.WriteFile(sealed, ciphertext, 0o600); err != nil {
+		return 0, err
+	}
 	file := &bootstrapFile{}
 	file.setFields(fields)
 	newPath := filepath.Join(folder, bootstrapFileName+".new")
@@ -149,7 +143,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	return ModeMachineKeyPair, nil
 }
 
-func windowsKeyPair(ctx context.Context, action, keyPath, accountSID string) error {
+func windowsKeyPair(ctx context.Context, action, accountSID string) (*rsa.PublicKey, error) {
 	const script = `$ErrorActionPreference = 'Stop'
 $keyName = 'heliosadvance-bootstrap-key'
 $providers = 'Microsoft Software Key Storage Provider', 'Microsoft Platform Crypto Provider'
@@ -165,7 +159,8 @@ foreach ($name in $providers) {
 }
 if ($env:HELIOS_ACTION -eq 'remove') { exit 0 }
 $providerName = 'Microsoft Software Key Storage Provider'
-if ((Get-Tpm -ErrorAction SilentlyContinue).TpmPresent) { $providerName = 'Microsoft Platform Crypto Provider' }
+$tpm = Get-Tpm -ErrorAction Stop
+if ($tpm.TpmPresent) { $providerName = 'Microsoft Platform Crypto Provider' }
 $parameters = New-Object Security.Cryptography.CngKeyCreationParameters
 $parameters.Provider = New-Object Security.Cryptography.CngProvider $providerName
 $parameters.KeyCreationOptions = [Security.Cryptography.CngKeyCreationOptions]::MachineKey
@@ -177,7 +172,9 @@ try {
     $descriptor.GetBinaryForm($bytes, 0)
     $key.SetProperty((New-Object Security.Cryptography.CngProperty 'Security Descr', $bytes, ([Security.Cryptography.CngPropertyOptions]5)))
     $rsa = New-Object Security.Cryptography.RSACng $key
-    [IO.File]::WriteAllBytes($env:HELIOS_SEALED_PATH, $rsa.Encrypt([IO.File]::ReadAllBytes($env:HELIOS_KEY_PATH), [Security.Cryptography.RSAEncryptionPadding]::OaepSHA256))
+    $public = $rsa.ExportParameters($false)
+    [Console]::Out.WriteLine([Convert]::ToBase64String($public.Modulus))
+    [Console]::Out.WriteLine([Convert]::ToBase64String($public.Exponent))
 } catch { $key.Delete(); throw } finally { $key.Dispose() }
 `
 	units := utf16.Encode([]rune(script))
@@ -186,12 +183,39 @@ try {
 		binary.LittleEndian.PutUint16(encoded[index*2:], unit)
 	}
 	command := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(encoded)) //nolint:gosec // fixed program; input data is passed through environment variables
-	command.Env = append(os.Environ(), "HELIOS_ACTION="+action, "HELIOS_ACCOUNT_SID="+accountSID, "HELIOS_KEY_PATH="+keyPath, "HELIOS_SEALED_PATH="+filepath.Join(filepath.Dir(keyPath), sealedKeyFileName))
-	if output, err := command.CombinedOutput(); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	command.Env = append(os.Environ(), "HELIOS_ACTION="+action, "HELIOS_ACCOUNT_SID="+accountSID)
+	env := command.Env[:0]
+	for _, value := range command.Env {
+		if !strings.HasPrefix(value, "PSModulePath=") {
+			env = append(env, value)
 		}
-		return fmt.Errorf("bootstrap: Windows machine key operation failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	return nil
+	command.Env = env
+	output, err := command.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("bootstrap: Windows machine key operation failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if action != "create" {
+		return nil, nil
+	}
+	parts := strings.Fields(string(output))
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("bootstrap: Windows returned invalid public key")
+	}
+	modulus, err := base64.StdEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	exponentBytes, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	exponent := 0
+	for _, value := range exponentBytes {
+		exponent = exponent<<8 | int(value)
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: exponent}, nil
 }

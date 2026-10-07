@@ -4,6 +4,7 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -193,47 +194,50 @@ func linuxTPMDevice(ctx context.Context) (string, error) {
 }
 
 func sealSystemdCredential(ctx context.Context, folder string, accountID uint32, perUse bool, tpmDevice string, key []byte) error {
-	plain, err := os.CreateTemp("", "heliosadvance-key-")
-	if err != nil {
-		return fmt.Errorf("bootstrap: creating the temporary key: %w", err)
-	}
-	plainPath := plain.Name()
-	defer func() { _ = os.Remove(plainPath) }() //nolint:errcheck // remove the temporary plaintext key
-	if err := plain.Chmod(0o600); err != nil {
-		_ = plain.Close() //nolint:errcheck // return the chmod error
-		return err
-	}
-	if _, err := plain.Write(key); err != nil {
-		_ = plain.Close() //nolint:errcheck // return the write error
-		return err
-	}
-	if err := plain.Close(); err != nil {
-		return err
-	}
 	sealedPath := filepath.Join(folder, systemdCredentialFileName+".new")
+	sealed, err := os.OpenFile(sealedPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // folder is the checked bootstrap directory
+	if err != nil {
+		return err
+	}
+	if err := sealed.Chown(int(accountID), -1); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // return the chown error
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
+	if err := sealed.Chmod(0o600); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // return the chmod error
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
 	args := []string{"encrypt", "--name=" + machineKeyPairName}
 	if tpmDevice != "" {
 		args = append(args, "--with-key=host+tpm2", "--tpm2-device="+tpmDevice, "--tpm2-pcrs=")
 	} else {
 		args = append(args, "--with-key=host")
 	}
-	args = append(args, plainPath, sealedPath)
+	args = append(args, "-", "-")
 	if perUse {
 		args = append([]string{"--user", "--uid=" + strconv.FormatUint(uint64(accountID), 10)}, args...)
 	}
 	command := exec.CommandContext(ctx, "systemd-creds", args...)
-	if output, err := command.CombinedOutput(); err != nil {
+	command.Stdin = bytes.NewReader(key)
+	command.Stdout = sealed
+	var output strings.Builder
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // remove the incomplete credential
 		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("bootstrap: sealing the credential: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("bootstrap: sealing the credential: %w: %s", err, strings.TrimSpace(output.String()))
 	}
-	if err := os.Chmod(sealedPath, 0o600); err != nil {
+	if err := sealed.Sync(); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // return the sync error
 		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		return err
 	}
-	if err := os.Chown(sealedPath, int(accountID), -1); err != nil {
+	if err := sealed.Close(); err != nil {
 		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
 		return err
 	}
