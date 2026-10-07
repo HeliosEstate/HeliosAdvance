@@ -191,6 +191,18 @@ func TestUnlockSetupLinuxAsRoot(t *testing.T) {
 		})
 	})
 
+	t.Run(lineSetupLockMade, func(t *testing.T) {
+		// The folder has no lock, as hadv-setup makes it; the folder's owner is the account
+		// the lock's rule is for.
+		folder := keyFileFolder(t, volume)
+		handle, err := unlockSetup(t, folder, ModeKeyFile)
+		wantUnlocked(t, handle, err).Close()
+		lock := filepath.Join(folder, nameLock)
+		if got, want := statPermissions(t, lock)[lock], linuxRule(ItemOtherFile, serviceAccount); !samePermissions(got, want) {
+			t.Errorf("the lock made is %+v, want its rule %+v", got, want)
+		}
+	})
+
 	t.Run(lineSetupHandle, func(t *testing.T) {
 		folder := keyFileFolder(t, volume)
 		handle, err := unlockSetup(t, folder, ModeKeyFile)

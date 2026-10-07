@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -47,6 +48,18 @@ func sealedFolder(t *testing.T) string {
 		base64.StdEncoding.EncodeToString(key)+"' '"+serviceAccountSID+"'\n")
 	writeGoodFile(t, filepath.Join(folder, nameFile), key)
 	return folder
+}
+
+// holdsWindowsRule fails the row unless the item holds its rule for the account: the account,
+// SYSTEM and Administrators only, no inherited access, owned by one of the three.
+func holdsWindowsRule(t *testing.T, got Permissions, account string) {
+	t.Helper()
+	want := windowsRule(account)
+	owners := []string{account, accountSystem, accountAdmins}
+	if !slices.Contains(owners, got.Owner) || got.Inherited ||
+		!slices.Equal(slices.Sorted(slices.Values(got.Accounts)), slices.Sorted(slices.Values(want.Accounts))) {
+		t.Errorf("found %+v, want its rule: %v only, not inherited, owned by one of them", got, want.Accounts)
+	}
 }
 
 // TestWindowsNotElevatedUnlockSetup runs where the process is not elevated: the loop's machine
@@ -102,6 +115,18 @@ func TestWindowsElevatedUnlockSetup(t *testing.T) {
 		handle.Close()
 		after, err := unlockSetup(t, folder, ModeMachineKeyPair)
 		wantUnlocked(t, after, err)
+	})
+
+	t.Run(lineSetupLockMade, func(t *testing.T) {
+		// The folder is set to its rule for the service account, which names the account the
+		// lock's rule is for, and has no lock, as Build leaves it on Windows.
+		folder := sealedFolder(t)
+		powerShell(t, "Set-Rule '"+folder+"' '"+serviceAccountSID+"' $true\n")
+		handle, err := unlockSetup(t, folder, ModeMachineKeyPair)
+		wantUnlocked(t, handle, err).Close()
+		lock := filepath.Join(folder, nameLock)
+		got := readItems(t, windowsFolder{path: folder, items: map[string]Item{lock: ItemOtherFile}}, "")[lock]
+		holdsWindowsRule(t, got, serviceAccount)
 	})
 
 	t.Run(lineSetupLink, func(t *testing.T) {
