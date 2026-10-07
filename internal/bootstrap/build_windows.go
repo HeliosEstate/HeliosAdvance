@@ -173,8 +173,7 @@ try {
     $key.SetProperty((New-Object Security.Cryptography.CngProperty 'Security Descr', $bytes, ([Security.Cryptography.CngPropertyOptions]5)))
     $rsa = New-Object Security.Cryptography.RSACng $key
     $public = $rsa.ExportParameters($false)
-    [Console]::Out.WriteLine([Convert]::ToBase64String($public.Modulus))
-    [Console]::Out.WriteLine([Convert]::ToBase64String($public.Exponent))
+    [Console]::Out.WriteLine('HELIOS_PUBLIC_KEY=' + [Convert]::ToBase64String($public.Modulus) + ' ' + [Convert]::ToBase64String($public.Exponent))
 } catch { $key.Delete(); throw } finally { $key.Dispose() }
 `
 	units := utf16.Encode([]rune(script))
@@ -201,7 +200,13 @@ try {
 	if action != "create" {
 		return nil, nil
 	}
-	parts := strings.Fields(string(output))
+	var parts []string
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "HELIOS_PUBLIC_KEY=") {
+			parts = strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "HELIOS_PUBLIC_KEY="))
+			break
+		}
+	}
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("bootstrap: Windows returned invalid public key")
 	}
