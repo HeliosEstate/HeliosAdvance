@@ -192,14 +192,23 @@ func TestUnlockSetupLinuxAsRoot(t *testing.T) {
 	})
 
 	t.Run(lineSetupLockMade, func(t *testing.T) {
-		// The folder has no lock, as hadv-setup makes it; the folder's owner is the account
-		// the lock's rule is for.
-		folder := keyFileFolder(t, volume)
-		handle, err := unlockSetup(t, folder, ModeKeyFile)
-		wantUnlocked(t, handle, err).Close()
-		lock := filepath.Join(folder, nameLock)
-		if got, want := statPermissions(t, lock)[lock], linuxRule(ItemOtherFile, serviceAccount); !samePermissions(got, want) {
-			t.Errorf("the lock made is %+v, want its rule %+v", got, want)
+		// The folder has no lock, as hadv-setup makes it. The lock's rule is for the account
+		// given, whoever owns the folder: a folder given to root is looser than its rule and
+		// not refused.
+		for _, row := range []struct{ name, folderOwner string }{
+			{"the folder the account's", serviceAccount},
+			{"the folder given to root", "root"},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				folder := keyFileFolder(t, volume)
+				setOwnerAndMode(t, folder, row.folderOwner, modeFolder)
+				handle, err := unlockSetup(t, folder, ModeKeyFile)
+				wantUnlocked(t, handle, err).Close()
+				lock := filepath.Join(folder, nameLock)
+				if got, want := statPermissions(t, lock)[lock], linuxRule(ItemOtherFile, serviceAccount); !samePermissions(got, want) {
+					t.Errorf("the lock made is %+v, want its rule %+v", got, want)
+				}
+			})
 		}
 	})
 
@@ -457,6 +466,16 @@ func TestUnlockSetupLinuxSystemd(t *testing.T) {
 		t.Run(lineSetupSystemd, func(t *testing.T) {
 			t.Run("systemd 257, ModeSystemdPerUse: a credential scoped to the account", func(t *testing.T) {
 				handle, err := unlockSetup(t, credentialFolder(t, credentialName, serviceAccount), ModeSystemdPerUse)
+				wantUnlocked(t, handle, err)
+			})
+		})
+		t.Run(lineSetupPerUseAccount, func(t *testing.T) {
+			t.Run("systemd 257: the folder given to root, the credential scoped to the account given", func(t *testing.T) {
+				// Looser than its rule and not refused: the folder's owner is not who the
+				// credential is for.
+				folder := credentialFolder(t, credentialName, serviceAccount)
+				setOwnerAndMode(t, folder, "root", modeFolder)
+				handle, err := unlockSetup(t, folder, ModeSystemdPerUse)
 				wantUnlocked(t, handle, err)
 			})
 		})

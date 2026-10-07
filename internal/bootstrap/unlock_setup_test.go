@@ -30,7 +30,8 @@ const (
 	lineHandleCloseTwice    = "If Close is called a second time, then Close shall do nothing."
 	lineSetupNotElevated    = "If the process is neither elevated nor root, then UnlockForSetup shall refuse with NotElevated."
 	lineSetupInUse          = "If another handle holds the lock, then UnlockForSetup shall refuse with InUse."
-	lineSetupLockMade       = "If bootstrap.lock is absent, then UnlockForSetup shall create it already set to its rule."
+	lineSetupLockMade       = "If bootstrap.lock is absent, then UnlockForSetup shall create it already set to its rule for the account it is given."
+	lineSetupPerUseAccount  = "Where the mode is ModeSystemdPerUse, UnlockForSetup shall have systemd decrypt the credential scoped to the account it is given."
 	lineSetupFolder         = "If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused, naming the rule."
 	lineSetupLink           = "If the bootstrap file or the key file is a symbolic link, a junction, or a file with more than one name, then UnlockForSetup shall refuse with Link."
 	lineSetupLooser         = "UnlockForSetup shall not refuse an item set looser than its rule."
@@ -120,10 +121,10 @@ func wantUnlocked(t *testing.T, handle SetupHandle, err error) SetupHandle {
 	return handle
 }
 
-// unlockSetup unlocks the folder in the mode, for hadv-setup.
+// unlockSetup unlocks the folder in the mode, for hadv-setup, with the rows' service account.
 func unlockSetup(t *testing.T, folder string, mode KeyMode) (SetupHandle, error) {
 	t.Helper()
-	return New().UnlockForSetup(t.Context(), folder, mode)
+	return New().UnlockForSetup(t.Context(), folder, mode, serviceAccount)
 }
 
 // wantRefused fails the row unless the unlock was refused with the cause, closing a handle it

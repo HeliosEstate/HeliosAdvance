@@ -118,15 +118,24 @@ func TestWindowsElevatedUnlockSetup(t *testing.T) {
 	})
 
 	t.Run(lineSetupLockMade, func(t *testing.T) {
-		// The folder is set to its rule for the service account, which names the account the
-		// lock's rule is for, and has no lock, as Build leaves it on Windows.
-		folder := sealedFolder(t)
-		powerShell(t, "Set-Rule '"+folder+"' '"+serviceAccountSID+"' $true\n")
-		handle, err := unlockSetup(t, folder, ModeMachineKeyPair)
-		wantUnlocked(t, handle, err).Close()
-		lock := filepath.Join(folder, nameLock)
-		got := readItems(t, windowsFolder{path: folder, items: map[string]Item{lock: ItemOtherFile}}, "")[lock]
-		holdsWindowsRule(t, got, serviceAccount)
+		// The folder is set to its rule for the service account and has no lock, as Build
+		// leaves it on Windows. The lock's rule is for the account given, whoever else the
+		// folder's list names: a folder open to Everyone is looser than its rule and not refused.
+		// Windows keeps the list sorted, and Everyone comes before the account in it.
+		for _, row := range []struct{ name, loosen string }{
+			{"the folder at its rule", ""},
+			{"the folder also open to Everyone", "Invoke-Icacls $folder /grant '*S-1-1-0:(OI)(CI)R'\n"},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				folder := sealedFolder(t)
+				powerShell(t, "$folder = '"+folder+"'\nSet-Rule $folder '"+serviceAccountSID+"' $true\n"+row.loosen)
+				handle, err := unlockSetup(t, folder, ModeMachineKeyPair)
+				wantUnlocked(t, handle, err).Close()
+				lock := filepath.Join(folder, nameLock)
+				got := readItems(t, windowsFolder{path: folder, items: map[string]Item{lock: ItemOtherFile}}, "")[lock]
+				holdsWindowsRule(t, got, serviceAccount)
+			})
+		}
 	})
 
 	t.Run(lineSetupLink, func(t *testing.T) {
