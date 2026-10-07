@@ -8,7 +8,6 @@ package bootstrap
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -51,13 +50,17 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 	if err := judgeFolder(directory, folder); err != nil {
 		return nil, err
 	}
-	if err := checkServiceItems(directory, folder, mode, stat.Uid); err != nil {
+	judged, err := checkServiceItems(directory, folder, mode, stat.Uid)
+	if err != nil {
 		return nil, err
+	}
+	if judged != nil {
+		defer func() { _ = judged.Close() }() //nolint:errcheck // a path handle holds nothing to flush
 	}
 	if err := checkSetupMode(ctx, mode); err != nil {
 		return nil, err
 	}
-	opened, holding, err := unlockLinuxFile(ctx, directory, folder, mode, stat.Uid, true)
+	opened, holding, err := unlockLinuxFile(ctx, directory, folder, mode, stat.Uid, true, judged)
 	if err != nil {
 		return nil, err
 	}
@@ -66,69 +69,60 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 }
 
 // checkServiceItems refuses a link, then an item looser than its rule, then a file or folder the
-// service account cannot write, in that order.
-func checkServiceItems(directory *os.File, folder string, mode KeyMode, accountID uint32) error {
+// service account cannot write, in that order. The bootstrap file is opened once, here, and every
+// check and the read that follows go through that descriptor; the caller closes it. An absent file
+// gives none.
+func checkServiceItems(directory *os.File, folder string, mode KeyMode, accountID uint32) (*os.File, error) {
 	var bootstrapFile *os.File
+	fail := func(err error) (*os.File, error) {
+		if bootstrapFile != nil {
+			_ = bootstrapFile.Close() //nolint:errcheck // a path handle holds nothing to flush
+		}
+		return nil, err
+	}
 	for _, name := range []string{bootstrapFileName, keyFileName} {
-		judged, err := openJudgedItem(directory, folder, name)
-		if err != nil {
-			return err
+		judged, _, err := openUnlinked(int(directory.Fd()), name, filepath.Join(folder, name), unix.O_PATH, itemOf(name))
+		if errors.Is(err, unix.ENOENT) {
+			continue
+		} else if err != nil {
+			return fail(err)
 		}
 		if name == bootstrapFileName {
 			bootstrapFile = judged
-		} else if judged != nil {
+		} else {
 			_ = judged.Close() //nolint:errcheck // a path handle holds nothing to flush
 		}
 	}
+	judged := map[string]*os.File{}
 	if bootstrapFile != nil {
-		defer func() { _ = bootstrapFile.Close() }() //nolint:errcheck // a path handle holds nothing to flush
+		judged[filepath.Join(folder, bootstrapFileName)] = bootstrapFile
 	}
-	findings, err := findLooserItems(directory, folder, mode, ownerName(accountID), accountID)
+	findings, err := findLooserItems(directory, folder, mode, ownerName(accountID), accountID, judged)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	if len(findings) > 0 {
-		return looserRefusal(findings)
+		return fail(looserRefusal(findings))
 	}
 	if bootstrapFile != nil {
-		// Reopening the judged descriptor through /proc asks that file itself, a link or a
-		// swapped name cannot answer for it; any refusal of write access, an immutable flag
-		// included, is NotWritable.
-		writer, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", bootstrapFile.Fd()), unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-		if err == nil {
-			_ = unix.Close(writer) //nolint:errcheck // nothing was written
-		} else if refusedWrite(err) {
-			return &Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile}
-		} else {
-			return err
+		// Any refusal of write access, an immutable flag included, is NotWritable; any other
+		// failure of the check is returned as it is.
+		writer, err := reopenDescriptor(bootstrapFile, unix.O_WRONLY)
+		if refusedWrite(err) {
+			return fail(&Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile})
+		} else if err != nil {
+			return fail(err)
 		}
+		_ = writer.Close() //nolint:errcheck // nothing was written
 	}
-	if err := unix.Faccessat(int(directory.Fd()), ".", unix.W_OK, unix.AT_EACCESS); refusedWrite(err) {
-		return &Refusal{Cause: NotWritable, Path: folder, Item: ItemFolder}
-	}
-	return nil
-}
-
-// openJudgedItem opens a name in the folder as a path handle, without following a link, and refuses
-// a link or a file with more than one name. An absent name gives no handle.
-func openJudgedItem(directory *os.File, folder, name string) (*os.File, error) {
-	descriptor, err := unix.Openat(int(directory.Fd()), name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if errors.Is(err, unix.ENOENT) {
-		return nil, nil
+	// Flags 0 ask the kernel itself: the service is not setuid, so its real and effective IDs match,
+	// and AT_EACCESS would fall back to the mode bits alone when the kernel answers EPERM.
+	if err := unix.Faccessat(int(directory.Fd()), ".", unix.W_OK, 0); refusedWrite(err) {
+		return fail(&Refusal{Cause: NotWritable, Path: folder, Item: ItemFolder})
 	} else if err != nil {
-		return nil, err
+		return fail(err)
 	}
-	judged := os.NewFile(uintptr(descriptor), name)
-	var stat unix.Stat_t
-	if err := unix.Fstat(descriptor, &stat); err != nil {
-		_ = judged.Close() //nolint:errcheck // returning the stat error
-		return nil, err
-	}
-	if stat.Mode&unix.S_IFMT == unix.S_IFLNK || (stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Nlink != 1) {
-		_ = judged.Close() //nolint:errcheck // returning the refusal
-		return nil, &Refusal{Cause: Link, Path: filepath.Join(folder, name), Item: itemOf(name)}
-	}
-	return judged, nil
+	return bootstrapFile, nil
 }
 
 func refusedWrite(err error) bool {

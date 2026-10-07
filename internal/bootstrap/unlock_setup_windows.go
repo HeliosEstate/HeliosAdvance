@@ -33,23 +33,20 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
-	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), service, false)
-	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
-		return nil, &Refusal{Cause: InUse}
-	} else if err != nil {
+	lock, err := takeSetupLock(directory, folder, service, false)
+	if err != nil {
 		return nil, err
 	}
-	lock := os.NewFile(uintptr(lockHandle), lockPath)
 	locked := false
 	defer func() {
 		if !locked {
 			_ = lock.Close() //nolint:errcheck // closing releases the exclusive share
 		}
 	}()
-	if err := checkWindowsHandle(lockHandle, lockPath); err != nil {
+	if err := checkWindowsHandle(windows.Handle(lock.Fd()), lockPath); err != nil {
 		return nil, err
 	}
-	opened, holding, err := unlockWindowsFile(ctx, directory, folder)
+	opened, holding, err := unlockWindowsFile(ctx, directory, folder, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -58,20 +55,21 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 }
 
 // unlockWindowsFile deletes the half-made file, unseals the bootstrap key and opens the bootstrap
-// file under it, all through the folder's handle.
-func unlockWindowsFile(ctx context.Context, directory *os.File, folder string) (*bootstrapFile, Holding, error) {
+// file under it, all through the folder's handle. The service's checks open the bootstrap file
+// once and hand it over as input; without it the file is opened here.
+func unlockWindowsFile(ctx context.Context, directory *os.File, folder string, input *os.File) (*bootstrapFile, Holding, error) {
 	if err := deleteChild(windows.Handle(directory.Fd()), bootstrapFileName+".new"); err != nil {
 		return nil, 0, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
 	}
-	bootstrapHandle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
-	if windowsMissingItem(err) {
-		return nil, 0, &Refusal{Cause: FileNotFound}
-	} else if err != nil {
-		return nil, 0, err
+	if input == nil {
+		var err error
+		input, err = openBootstrapFile(directory)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer func() { _ = input.Close() }() //nolint:errcheck // read-only handle
 	}
-	bootstrapInput := os.NewFile(uintptr(bootstrapHandle), bootstrapFileName)
-	defer func() { _ = bootstrapInput.Close() }() //nolint:errcheck // read-only handle
-	if err := checkWindowsHandle(bootstrapHandle, filepath.Join(folder, bootstrapFileName)); err != nil {
+	if err := checkWindowsHandle(windows.Handle(input.Fd()), filepath.Join(folder, bootstrapFileName)); err != nil {
 		return nil, 0, err
 	}
 	sealedHandle, err := openChild(windows.Handle(directory.Fd()), sealedKeyFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
@@ -103,10 +101,10 @@ func unlockWindowsFile(ctx context.Context, directory *os.File, folder string) (
 		return nil, 0, err
 	}
 	defer clear(key)
-	info, err := bootstrapInput.Stat()
+	info, err := input.Stat()
 	var opened *bootstrapFile
 	if err == nil {
-		opened, err = openFile(bootstrapInput, info.Size(), key)
+		opened, err = openFile(input, info.Size(), key)
 	}
 	if err != nil {
 		return nil, 0, err
@@ -119,7 +117,7 @@ func unlockWindowsFile(ctx context.Context, directory *os.File, folder string) (
 // the account, SYSTEM and Administrators only, not inherited, owned by Administrators. The create
 // runs with SeRestorePrivilege so the owner can be given, and holds it for that call only. A
 // process without that privilege, the service, owns the lock itself: ownedByAccount.
-func openSetupLock(folder windows.Handle, service *windows.SID, ownedByAccount bool) (windows.Handle, error) {
+func openSetupLock(folder windows.Handle, folderPath string, service *windows.SID, ownedByAccount bool) (windows.Handle, error) {
 	const access = windows.GENERIC_READ | windows.GENERIC_WRITE
 	handle, err := ntOpenChild(folder, lockFileName, access, 0, windows.FILE_OPEN, nil)
 	if !windowsMissingItem(err) {
@@ -136,13 +134,41 @@ func openSetupLock(folder windows.Handle, service *windows.SID, ownedByAccount b
 	if err != nil {
 		return 0, err
 	}
-	return ntOpenChild(folder, lockFileName, access, 0, windows.FILE_CREATE, rule)
+	handle, err = ntOpenChild(folder, lockFileName, access, 0, windows.FILE_CREATE, rule)
+	if errors.Is(err, windows.STATUS_ACCESS_DENIED) {
+		return 0, &Refusal{Cause: NotWritable, Path: folderPath, Item: ItemFolder}
+	}
+	return handle, err
+}
+
+// takeSetupLock is the lock opened by openSetupLock as a file, refusing with InUse when another
+// handle holds it.
+func takeSetupLock(directory *os.File, folder string, service *windows.SID, ownedByAccount bool) (*os.File, error) {
+	handle, err := openSetupLock(windows.Handle(directory.Fd()), folder, service, ownedByAccount)
+	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
+		return nil, &Refusal{Cause: InUse}
+	} else if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), filepath.Join(folder, lockFileName)), nil
+}
+
+// openBootstrapFile opens the bootstrap file once, relative to the folder's handle, for the reads
+// and the checks that follow.
+func openBootstrapFile(directory *os.File) (*os.File, error) {
+	handle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
+	if windowsMissingItem(err) {
+		return nil, &Refusal{Cause: FileNotFound}
+	} else if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), bootstrapFileName), nil
 }
 
 // deleteChild deletes a name inside the folder, relative to the folder's handle; a link is deleted
 // as itself. A name that is absent is not an error.
 func deleteChild(folder windows.Handle, name string) error {
-	handle, err := ntOpenChild(folder, name, windows.DELETE|windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, nil)
+	handle, err := ntOpenChild(folder, name, windows.DELETE|windows.FILE_READ_ATTRIBUTES, shareAll, windows.FILE_OPEN, nil)
 	if windowsMissingItem(err) {
 		return nil
 	} else if err != nil {

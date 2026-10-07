@@ -42,13 +42,10 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 	}
 	account := accountName(user.User.Sid)
 	lockPath := filepath.Join(folder, lockFileName)
-	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), user.User.Sid, true)
-	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
-		return nil, &Refusal{Cause: InUse}
-	} else if err != nil {
+	lock, err := takeSetupLock(directory, folder, user.User.Sid, true)
+	if err != nil {
 		return nil, err
 	}
-	lock := os.NewFile(uintptr(lockHandle), lockPath)
 	locked := false
 	defer func() {
 		if !locked {
@@ -58,16 +55,20 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 	if err := judgeFolder(directory, folder); err != nil {
 		return nil, err
 	}
-	if err := checkWindowsHandle(lockHandle, lockPath); err != nil {
+	if err := checkWindowsHandle(windows.Handle(lock.Fd()), lockPath); err != nil {
 		return nil, err
 	}
-	if err := checkServiceItems(directory, folder, mode, account, user.User.Sid); err != nil {
+	judged, err := checkServiceItems(directory, folder, mode, account, user.User.Sid)
+	if err != nil {
 		return nil, err
+	}
+	if judged != nil {
+		defer func() { _ = judged.Close() }() //nolint:errcheck // read-only handle
 	}
 	if mode != ModeMachineKeyPair {
 		return nil, &Refusal{Cause: SourceRefused}
 	}
-	opened, holding, err := unlockWindowsFile(ctx, directory, folder)
+	opened, holding, err := unlockWindowsFile(ctx, directory, folder, judged)
 	if err != nil {
 		return nil, err
 	}
@@ -89,66 +90,81 @@ func checkFolderNamesAccount(directory *os.File, folder string, account *windows
 }
 
 // checkServiceItems refuses a link, then an item looser than its rule, then a file or folder the
-// service account cannot write, in that order.
-func checkServiceItems(directory *os.File, folder string, mode KeyMode, account string, accountSID *windows.SID) error {
+// service account cannot write, in that order. The bootstrap file is opened once, here, and every
+// check and the read that follows go through that handle; the caller closes it. An absent file
+// gives none.
+func checkServiceItems(directory *os.File, folder string, mode KeyMode, account string, accountSID *windows.SID) (*os.File, error) {
 	folderHandle := windows.Handle(directory.Fd())
-	bootstrapHandle := windows.InvalidHandle
-	defer func() {
-		if bootstrapHandle != windows.InvalidHandle {
-			_ = windows.CloseHandle(bootstrapHandle) //nolint:errcheck // nothing to flush on a read-only handle
+	var bootstrapFile *os.File
+	fail := func(err error) (*os.File, error) {
+		if bootstrapFile != nil {
+			_ = bootstrapFile.Close() //nolint:errcheck // nothing to flush on a read-only handle
 		}
-	}()
+		return nil, err
+	}
 	for _, name := range []string{bootstrapFileName, sealedKeyFileName} {
-		handle, err := openChild(folderHandle, name, windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES)
+		access := uint32(windows.READ_CONTROL | windows.FILE_READ_ATTRIBUTES)
+		if name == bootstrapFileName {
+			access = windows.GENERIC_READ | windows.FILE_READ_ATTRIBUTES
+		}
+		handle, err := openChild(folderHandle, name, access)
 		if windowsMissingItem(err) {
 			continue
 		} else if err != nil {
-			return err
+			return fail(err)
 		}
+		judged := os.NewFile(uintptr(handle), name)
 		if err := checkWindowsHandle(handle, filepath.Join(folder, name)); err != nil {
-			_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
-			return err
+			_ = judged.Close() //nolint:errcheck // nothing to flush on a read-only handle
+			return fail(err)
 		}
 		if name == bootstrapFileName {
-			bootstrapHandle = handle
+			bootstrapFile = judged
 		} else {
-			_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
+			_ = judged.Close() //nolint:errcheck // nothing to flush on a read-only handle
 		}
 	}
 	allowed, err := allowedForSID(accountSID)
 	if err != nil {
-		return err
+		return fail(err)
 	}
-	findings, err := findLooserItems(directory, folder, mode, account, allowed)
+	judged := map[string]windows.Handle{}
+	if bootstrapFile != nil {
+		judged[bootstrapFileName] = windows.Handle(bootstrapFile.Fd())
+	}
+	findings, err := findLooserItems(directory, folder, mode, account, allowed, judged)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	if len(findings) > 0 {
-		return looserRefusal(findings)
+		return fail(looserRefusal(findings))
 	}
-	if bootstrapHandle != windows.InvalidHandle {
-		err = reopenForWrite(bootstrapHandle, windows.FILE_WRITE_DATA|windows.DELETE)
+	// A rewrite renames a new file over the bootstrap file, which needs delete access as well as
+	// write. Only a refusal of access is NotWritable; a sharing violation or any other failure of
+	// the check is returned as it is.
+	if bootstrapFile != nil {
+		err = reopenForWrite(windows.Handle(bootstrapFile.Fd()), windows.FILE_WRITE_DATA|windows.DELETE)
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-			return &Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile}
+			return fail(&Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile})
+		} else if err != nil {
+			return fail(err)
 		}
 	}
 	// ReOpenFile refuses a directory handle whatever its access list says, so the folder is
 	// opened again as an empty name under itself.
-	const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
-	again, err := ntOpenChild(folderHandle, "", fileAddFile, shareAll, windows.FILE_OPEN, nil)
+	again, err := openChild(folderHandle, "", fileAddFile)
 	if errors.Is(err, windows.STATUS_ACCESS_DENIED) {
-		return &Refusal{Cause: NotWritable, Path: folder, Item: ItemFolder}
-	} else if err == nil {
-		_ = windows.CloseHandle(again) //nolint:errcheck // nothing to flush
+		return fail(&Refusal{Cause: NotWritable, Path: folder, Item: ItemFolder})
+	} else if err != nil {
+		return fail(err)
 	}
-	return nil
+	_ = windows.CloseHandle(again) //nolint:errcheck // nothing to flush
+	return bootstrapFile, nil
 }
 
 // reopenForWrite asks the judged handle for a handle to the same item with the access given and
-// closes it at once: the check is made on the handle that was judged, never on a name. A rewrite
-// renames a new file over the bootstrap file, so the access asked for is write and delete.
+// closes it at once: the check is made on the handle that was judged, never on a name.
 func reopenForWrite(handle windows.Handle, access uint32) error {
-	const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
 	reopened, _, err := reOpenFile.Call(uintptr(handle), uintptr(access), shareAll, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT)
 	if windows.Handle(reopened) == windows.InvalidHandle {
 		return err

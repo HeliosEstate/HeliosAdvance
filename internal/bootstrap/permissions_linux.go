@@ -64,11 +64,12 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // nothing to flush on a read-only handle
-	return findLooserItems(directory, folder, mode, account, accountID)
+	return findLooserItems(directory, folder, mode, account, accountID, nil)
 }
 
 // findLooserItems is the findings for the items in the folder and, in a container, the Swarm secret.
-func findLooserItems(directory *os.File, folder string, mode KeyMode, account string, accountID uint32) ([]Finding, error) {
+// An item already open in judged, by path, is read from that handle and not from its name.
+func findLooserItems(directory *os.File, folder string, mode KeyMode, account string, accountID uint32, judged map[string]*os.File) ([]Finding, error) {
 	names, err := readNames(directory)
 	if err != nil {
 		return nil, err
@@ -83,7 +84,7 @@ func findLooserItems(directory *os.File, folder string, mode KeyMode, account st
 
 	findings := []Finding{}
 	for path, item := range items {
-		stat, err := statItem(directory, path, item)
+		stat, err := statItem(directory, path, item, judged[path])
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -109,8 +110,9 @@ func findLooserItems(directory *os.File, folder string, mode KeyMode, account st
 }
 
 // statItem reads an item's owner and mode: the folder from its handle, what is in it
-// relative to that handle, and the Swarm secret, which is mounted outside, from a handle of its own.
-func statItem(directory *os.File, path string, item Item) (unix.Stat_t, error) {
+// relative to that handle or from the handle given, and the Swarm secret, which is mounted outside,
+// from a handle of its own.
+func statItem(directory *os.File, path string, item Item, handle *os.File) (unix.Stat_t, error) {
 	var stat unix.Stat_t
 	var err error
 	switch item {
@@ -123,7 +125,11 @@ func statItem(directory *os.File, path string, item Item) (unix.Stat_t, error) {
 			_ = unix.Close(descriptor) //nolint:errcheck // nothing to flush on a read-only handle
 		}
 	default:
-		err = unix.Fstatat(int(directory.Fd()), filepath.Base(path), &stat, unix.AT_SYMLINK_NOFOLLOW)
+		if handle != nil {
+			err = unix.Fstat(int(handle.Fd()), &stat)
+		} else {
+			err = unix.Fstatat(int(directory.Fd()), filepath.Base(path), &stat, unix.AT_SYMLINK_NOFOLLOW)
+		}
 	}
 	return stat, err
 }

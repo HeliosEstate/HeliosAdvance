@@ -79,7 +79,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 			releaseSetupLock(lock)
 		}
 	}()
-	opened, holding, err := unlockLinuxFile(ctx, directory, folder, mode, accountID, false)
+	opened, holding, err := unlockLinuxFile(ctx, directory, folder, mode, accountID, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -88,13 +88,20 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 }
 
 // unlockLinuxFile deletes the half-made file, reads the bootstrap key from where the mode holds it
-// and opens the bootstrap file under it, all through the folder's handle. The service's
+// and opens the bootstrap file under it, all through the folder's handle. The descriptor the
+// service's checks judged, when there is one, is the one read. The service's
 // ModeSystemdAtStart reads the key from the credential folder systemd gives the service.
-func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool) (*bootstrapFile, Holding, error) {
+func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool, judged *os.File) (*bootstrapFile, Holding, error) {
 	if err := unix.Unlinkat(int(directory.Fd()), bootstrapFileName+".new", 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		return nil, 0, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
 	}
-	input, err := openLinuxBootstrapFile(int(directory.Fd()), filepath.Join(folder, bootstrapFileName))
+	var input *os.File
+	var err error
+	if judged != nil {
+		input, err = reopenDescriptor(judged, unix.O_RDONLY)
+	} else {
+		input, err = openLinuxBootstrapFile(int(directory.Fd()), filepath.Join(folder, bootstrapFileName))
+	}
 	if err != nil {
 		return nil, 0, err
 	}
@@ -206,23 +213,13 @@ func readCredentialsDirectoryKey() ([]byte, error) {
 // openLinuxBootstrapFile opens the bootstrap file once, without following a link, and judges that
 // descriptor; the reads that follow go through it.
 func openLinuxBootstrapFile(directory int, path string) (*os.File, error) {
-	descriptor, err := unix.Openat(directory, bootstrapFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	file, stat, err := openUnlinked(directory, bootstrapFileName, path, unix.O_RDONLY, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return nil, &Refusal{Cause: FileNotFound}
-	}
-	if errors.Is(err, unix.ELOOP) {
-		return nil, &Refusal{Cause: Link, Path: path}
-	}
-	if err != nil {
+	} else if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(descriptor), bootstrapFileName)
-	var stat unix.Stat_t
-	if err := unix.Fstat(descriptor, &stat); err != nil {
-		_ = file.Close() //nolint:errcheck // returning the stat error
-		return nil, err
-	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
 		_ = file.Close() //nolint:errcheck // returning the refusal
 		return nil, &Refusal{Cause: Link, Path: path}
 	}
@@ -233,20 +230,12 @@ func openLinuxBootstrapFile(directory int, path string) (*os.File, error) {
 // seal form's identifier; the caller clears the bytes.
 func openLinuxCredential(directory int, path string) ([]byte, [16]byte, error) {
 	var id [16]byte
-	descriptor, err := unix.Openat(directory, systemdCredentialFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if errors.Is(err, unix.ELOOP) {
-		return nil, id, &Refusal{Cause: Link, Path: path}
-	}
+	file, stat, err := openUnlinked(directory, systemdCredentialFileName, path, unix.O_RDONLY, 0)
 	if err != nil {
 		return nil, id, err
 	}
-	file := os.NewFile(uintptr(descriptor), path)
 	defer func() { _ = file.Close() }() //nolint:errcheck // read-only descriptor
-	var stat unix.Stat_t
-	if err := unix.Fstat(descriptor, &stat); err != nil {
-		return nil, id, err
-	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
 		return nil, id, &Refusal{Cause: Link, Path: path}
 	}
 	if stat.Size > 1<<20 {

@@ -311,43 +311,63 @@ func readBootstrapKey(directory int, name, path string) ([]byte, error) {
 // openKeySource opens a key source without following a link or blocking, and judges that
 // descriptor to be a regular file with one name before anything is read from it.
 func openKeySource(directory int, name, path string) (*os.File, error) {
-	var descriptor int
-	var err error
-	if directory == unix.AT_FDCWD {
-		descriptor, err = unix.Open(name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	} else {
-		descriptor, err = unix.Openat(directory, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	}
-	if errors.Is(err, unix.ELOOP) {
-		return nil, &Refusal{Cause: Link, Path: path}
-	}
+	file, stat, err := openUnlinked(directory, name, path, unix.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
-	var stat unix.Stat_t
-	if err := unix.Fstat(descriptor, &stat); err != nil {
-		_ = unix.Close(descriptor) //nolint:errcheck // returning the earlier stat error
-		return nil, fmt.Errorf("bootstrap: reading %s: %w", path, err)
-	}
-	if stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Nlink != 1 {
-		_ = unix.Close(descriptor) //nolint:errcheck // refusing the multiply named key
-		return nil, &Refusal{Cause: Link, Path: path}
-	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		_ = unix.Close(descriptor) //nolint:errcheck // refusing a non-file key source
+		_ = file.Close() //nolint:errcheck // refusing a non-file key source
 		return nil, fmt.Errorf("bootstrap: %s is not a regular file", path)
 	}
-	return os.NewFile(uintptr(descriptor), path), nil
+	return file, nil
+}
+
+// openUnlinked opens a name relative to a directory descriptor, without following a link or
+// blocking, and refuses a link or a file with more than one name before anything is read from the
+// descriptor. The stat says what else it is. O_PATH opens a link as itself, so the type is judged
+// as well as the open's own refusal.
+func openUnlinked(directory int, name, path string, access int, item Item) (*os.File, unix.Stat_t, error) {
+	var stat unix.Stat_t
+	descriptor, err := unix.Openat(directory, name, access|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ELOOP) {
+		return nil, stat, &Refusal{Cause: Link, Path: path, Item: item}
+	}
+	if err != nil {
+		return nil, stat, err
+	}
+	if err := unix.Fstat(descriptor, &stat); err != nil {
+		_ = unix.Close(descriptor) //nolint:errcheck // returning the earlier stat error
+		return nil, stat, fmt.Errorf("bootstrap: reading %s: %w", path, err)
+	}
+	if kind := stat.Mode & unix.S_IFMT; kind == unix.S_IFLNK || (kind == unix.S_IFREG && stat.Nlink != 1) {
+		_ = unix.Close(descriptor) //nolint:errcheck // refusing the link
+		return nil, stat, &Refusal{Cause: Link, Path: path, Item: item}
+	}
+	return os.NewFile(uintptr(descriptor), path), stat, nil
+}
+
+// reopenDescriptor opens the file a descriptor holds again with other access, through /proc, so
+// the answer comes from that file and not from a name that may have been swapped.
+func reopenDescriptor(file *os.File, access int) (*os.File, error) {
+	descriptor, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", file.Fd()), access|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(descriptor), file.Name()), nil
 }
 
 // openLinuxLock opens bootstrap.lock in the folder and takes it exclusively, refusing with InUse
-// when another handle holds it. A lock this call creates is given to the owner at 0600 and removed
+// when another handle holds it and with NotWritable when the lock cannot be created for want of
+// write access to the folder. A lock this call creates is given to the owner at 0600 and removed
 // again if that fails; one already there must be a file with one name, and is left as found unless
 // reset is set, as Build does.
 func openLinuxLock(directory int, path string, owner uint32, reset bool) (*os.File, error) {
 	const flags = unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
 	descriptor, err := unix.Openat(directory, lockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
 	created := err == nil
+	if refusedWrite(err) {
+		return nil, &Refusal{Cause: NotWritable, Path: filepath.Dir(path), Item: ItemFolder}
+	}
 	if errors.Is(err, unix.EEXIST) {
 		descriptor, err = unix.Openat(directory, lockFileName, flags, 0)
 	}

@@ -225,12 +225,13 @@ func checkPermissions(folder string, mode KeyMode, account string) ([]Finding, e
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // nothing to flush on a read-only handle
-	return findLooserItems(directory, folder, mode, account, allowed)
+	return findLooserItems(directory, folder, mode, account, allowed, nil)
 }
 
 // findLooserItems is the findings for the folder, what is in it and, for the machine key pair,
-// the key pair.
-func findLooserItems(directory *os.File, folder string, mode KeyMode, account string, allowed []*windows.SID) ([]Finding, error) {
+// the key pair. A name with a handle in judged
+// is read from that handle and not opened again.
+func findLooserItems(directory *os.File, folder string, mode KeyMode, account string, allowed []*windows.SID, judged map[string]windows.Handle) ([]Finding, error) {
 	names, err := readNames(directory)
 	if err != nil {
 		return nil, err
@@ -252,7 +253,11 @@ func findLooserItems(directory *os.File, folder string, mode KeyMode, account st
 		return nil, err
 	}
 	for _, name := range names {
-		if err := judgeChild(folderHandle, folder, name, judge); err != nil {
+		if handle, ok := judged[name]; ok {
+			if err := judge(handle, filepath.Join(folder, name), itemOf(name)); err != nil {
+				return nil, err
+			}
+		} else if err := judgeChild(folderHandle, folder, name, judge); err != nil {
 			return nil, err
 		}
 	}
@@ -343,11 +348,15 @@ func openItem(path string, access uint32) (windows.Handle, error) {
 		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 }
 
+// shareAll lets other handles read, write and delete what a check opens, so a check never blocks
+// or is blocked by another process.
+const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
+
 // openChild opens a name inside a folder, relative to the folder's handle, so it is the folder
 // that was judged and not whatever the folder's path names by now. A link is opened as itself, and
 // the name is matched exactly as listed: in a case-sensitive folder a name of another case is another file.
 func openChild(folder windows.Handle, name string, access uint32) (windows.Handle, error) {
-	return ntOpenChild(folder, name, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, nil)
+	return ntOpenChild(folder, name, access, shareAll, windows.FILE_OPEN, nil)
 }
 
 // ntOpenChild is openChild with the sharing and the disposition chosen; a descriptor is given

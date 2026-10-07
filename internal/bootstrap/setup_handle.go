@@ -43,10 +43,15 @@ func (handle *setupHandle) Close() {
 	handle.lock = nil
 }
 
-// serviceHandle is the handle UnlockForService returns: the unlock's own, with the two
-// vault-key writes.
-type serviceHandle struct{ *setupHandle }
+// serviceHandle is the handle UnlockForService returns: the unlock's own, forwarded by name, and
+// the two vault-key writes. It does not embed the setup handle, whose Rewrite would make it a
+// SetupHandle.
+type serviceHandle struct{ setup *setupHandle }
 
+func (handle serviceHandle) Fields() Fields                 { return handle.setup.Fields() }
+func (handle serviceHandle) Holding() Holding               { return handle.setup.Holding() }
+func (handle serviceHandle) RewriteFailure() RewriteFailure { return handle.setup.RewriteFailure() }
+func (handle serviceHandle) Close()                         { handle.setup.Close() }
 func (serviceHandle) AddVaultKey(context.Context, VaultKey) error {
 	return &Refusal{Cause: RewriteFailed}
 }
