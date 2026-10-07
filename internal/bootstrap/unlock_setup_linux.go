@@ -4,15 +4,22 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
+
+var hostCredentialIDs = [][16]byte{
+	{0x5a, 0x1c, 0x6a, 0x86, 0xdf, 0x9d, 0x40, 0x96, 0xb1, 0xd5, 0xa6, 0x5e, 0x08, 0x62, 0xf1, 0x9a},
+	{0x55, 0xb9, 0xed, 0x1d, 0x38, 0x59, 0x4d, 0x43, 0xa8, 0x31, 0x9d, 0x2e, 0xbb, 0x33, 0x2a, 0xc6},
+}
 
 func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error) {
 	if !isElevated() {
@@ -80,8 +87,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		}
 	case ModeSystemdAtStart, ModeSystemdPerUse:
 		credential := filepath.Join(folder, systemdCredentialFileName)
-		var credentialHeader [16]byte
-		credentialID, statErr := linuxCredentialID(int(directory.Fd()), credential, &credentialHeader)
+		credentialFile, credentialID, statErr := openLinuxCredential(int(directory.Fd()), credential)
 		if errors.Is(statErr, os.ErrNotExist) {
 			err = &Refusal{Cause: KeyNotFound}
 			break
@@ -89,23 +95,28 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 			err = statErr
 			break
 		}
+		defer func() { _ = credentialFile.Close() }() //nolint:errcheck // read-only credential
 		if credentialID == [16]byte{0x93, 0xa8, 0x94, 0x09, 0x48, 0x74, 0x44, 0x90, 0x90, 0xca, 0xf2, 0xfc, 0x93, 0xca, 0xb5, 0x53} {
 			holding = HeldInTPM
-		} else {
+			if _, err = linuxTPMDevice(ctx); err != nil {
+				break
+			}
+		} else if credentialID == hostCredentialIDs[0] || credentialID == hostCredentialIDs[1] {
 			holding = HeldUnderHostKey
-		}
-		if _, err = linuxTPMDevice(ctx); err != nil {
+		} else {
+			err = &Refusal{Cause: KeyNotUnsealed}
 			break
 		}
-		args := []string{"decrypt", "--name=" + machineKeyPairName, credential, "-"}
+		args := []string{"decrypt", "--name=" + machineKeyPairName, "-", "-"}
 		if mode == ModeSystemdPerUse {
 			var stat unix.Stat_t
 			if err = unix.Fstat(int(directory.Fd()), &stat); err != nil {
 				break
 			}
-			args = []string{"--user", fmt.Sprintf("--uid=%d", stat.Uid), "decrypt", "--name=" + machineKeyPairName, credential, "-"}
+			args = []string{"--user", fmt.Sprintf("--uid=%d", stat.Uid), "decrypt", "--name=" + machineKeyPairName, "-", "-"}
 		}
-		command := exec.CommandContext(ctx, "systemd-creds", args...) //nolint:gosec // fixed binary and operation; variable UID is derived from folder owner
+		command := exec.CommandContext(ctx, "systemd-creds", args...)
+		command.Stdin = credentialFile
 		key, err = command.Output()
 		if err != nil {
 			clear(key)
@@ -156,26 +167,50 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
 }
 
-func linuxCredentialID(directory int, path string, header *[16]byte) ([16]byte, error) {
+func openLinuxCredential(directory int, path string) (*os.File, [16]byte, error) {
 	var id [16]byte
 	descriptor, err := unix.Openat(directory, systemdCredentialFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return id, err
+		return nil, id, err
 	}
 	file := os.NewFile(uintptr(descriptor), path)
-	defer func() { _ = file.Close() }() //nolint:errcheck // read-only credential
 	var stat unix.Stat_t
 	if err := unix.Fstat(descriptor, &stat); err != nil {
-		return id, err
+		_ = file.Close() //nolint:errcheck // returning the stat error
+		return nil, id, err
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
-		return id, &Refusal{Cause: Link, Path: path}
+		_ = file.Close() //nolint:errcheck // returning the refusal
+		return nil, id, &Refusal{Cause: Link, Path: path}
 	}
-	if _, err := io.ReadFull(file, header[:]); err != nil {
-		return id, err
+	if stat.Size > 1<<20 {
+		_ = file.Close() //nolint:errcheck // refusing an oversized credential
+		return nil, id, &Refusal{Cause: KeyNotUnsealed}
 	}
-	copy(id[:], header[:])
-	return id, nil
+	data := make([]byte, stat.Size)
+	_, err = io.ReadFull(file, data)
+	if err != nil {
+		clear(data)
+		_ = file.Close() //nolint:errcheck // returning the read error
+		return nil, id, err
+	}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+	if decodeErr == nil {
+		clear(data)
+		data = decoded
+	}
+	if len(data) < len(id) {
+		clear(data)
+		_ = file.Close() //nolint:errcheck // refusing a malformed credential
+		return nil, id, &Refusal{Cause: KeyNotUnsealed}
+	}
+	copy(id[:], data[:len(id)])
+	clear(data)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close() //nolint:errcheck // returning the seek error
+		return nil, id, err
+	}
+	return file, id, nil
 }
 
 func linuxSetupMode(mode KeyMode, version int, systemd bool) bool {
