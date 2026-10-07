@@ -159,13 +159,21 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 func linuxCredentialID(directory int, path string, header *[16]byte) ([16]byte, error) {
 	var id [16]byte
 	descriptor, err := unix.Openat(directory, systemdCredentialFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if err != nil { return id, err }
+	if err != nil {
+		return id, err
+	}
 	file := os.NewFile(uintptr(descriptor), path)
 	defer func() { _ = file.Close() }() //nolint:errcheck // read-only credential
 	var stat unix.Stat_t
-	if err := unix.Fstat(descriptor, &stat); err != nil { return id, err }
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 { return id, &Refusal{Cause: Link, Path: path} }
-	if _, err := io.ReadFull(file, header[:]); err != nil { return id, err }
+	if err := unix.Fstat(descriptor, &stat); err != nil {
+		return id, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		return id, &Refusal{Cause: Link, Path: path}
+	}
+	if _, err := io.ReadFull(file, header[:]); err != nil {
+		return id, err
+	}
 	copy(id[:], header[:])
 	return id, nil
 }
