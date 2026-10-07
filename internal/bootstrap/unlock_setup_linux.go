@@ -100,10 +100,10 @@ func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mod
 	}
 	defer func() { _ = input.Close() }() //nolint:errcheck // read-only descriptor
 	key, holding, err := readLinuxKey(ctx, directory, folder, mode, accountID, service)
+	defer clear(key)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer clear(key)
 	if len(key) != 32 {
 		return nil, 0, &Refusal{Cause: KeyNotUnsealed}
 	}
@@ -181,13 +181,14 @@ func readLinuxKey(ctx context.Context, directory *os.File, folder string, mode K
 }
 
 // readCredentialsDirectoryKey reads the key systemd decrypted into the service's credential
-// folder. The key is 32 bytes, so a larger file is not one.
+// folder, opened as every other key is. The key is 32 bytes, so a larger file is not one.
 func readCredentialsDirectoryKey() ([]byte, error) {
 	directory := os.Getenv("CREDENTIALS_DIRECTORY") //nolint:forbidigo // systemd gives a service its credential folder only through the environment
 	if directory == "" {
 		return nil, &Refusal{Cause: KeyNotFound}
 	}
-	file, err := os.Open(filepath.Join(directory, machineKeyPairName)) //nolint:gosec // the folder systemd gives the service
+	path := filepath.Join(directory, machineKeyPairName)
+	file, err := openKeySource(unix.AT_FDCWD, path, path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, &Refusal{Cause: KeyNotFound}
 	} else if err != nil {

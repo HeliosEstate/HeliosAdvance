@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -30,7 +29,11 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // no pending writes
 	lockPath := filepath.Join(folder, lockFileName)
-	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), account, false)
+	service, _, _, err := windows.LookupSID("", account)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: the account %s: %w", account, err)
+	}
+	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), service, false)
 	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
 		return nil, &Refusal{Cause: InUse}
 	} else if err != nil {
@@ -112,28 +115,24 @@ func unlockWindowsFile(ctx context.Context, directory *os.File, folder string) (
 }
 
 // openSetupLock opens the lock exclusively without following a link, relative to the checked
-// folder's handle. A lock that is absent is created already set to its rule for the account: the
-// account, SYSTEM and Administrators only, not inherited, owned by Administrators. The create runs
-// with SeRestorePrivilege so the owner can be given, and holds it for that call only. A process
-// without that privilege, the service, owns the lock itself: ownedByAccount.
-func openSetupLock(folder windows.Handle, account string, ownedByAccount bool) (windows.Handle, error) {
+// folder's handle. A lock that is absent is created already set to its rule for the account's SID:
+// the account, SYSTEM and Administrators only, not inherited, owned by Administrators. The create
+// runs with SeRestorePrivilege so the owner can be given, and holds it for that call only. A
+// process without that privilege, the service, owns the lock itself: ownedByAccount.
+func openSetupLock(folder windows.Handle, service *windows.SID, ownedByAccount bool) (windows.Handle, error) {
 	const access = windows.GENERIC_READ | windows.GENERIC_WRITE
 	handle, err := ntOpenChild(folder, lockFileName, access, 0, windows.FILE_OPEN, nil)
 	if !windowsMissingItem(err) {
 		return handle, err
 	}
-	service, _, _, err := windows.LookupSID("", account)
-	if err != nil {
-		return 0, fmt.Errorf("bootstrap: the account %s: %w", account, err)
-	}
-	description := ruleSDDL(service, "", fileAllAccess)
+	owner := administratorsSDDL
 	if ownedByAccount {
-		description = strings.Replace(description, "O:BA", "O:"+service.String(), 1)
+		owner = service.String()
 	} else {
 		restorePrivileges := enablePrivileges("SeRestorePrivilege")
 		defer restorePrivileges()
 	}
-	rule, err := windows.SecurityDescriptorFromString(description)
+	rule, err := windows.SecurityDescriptorFromString(ruleSDDL(owner, service, "", fileAllAccess))
 	if err != nil {
 		return 0, err
 	}

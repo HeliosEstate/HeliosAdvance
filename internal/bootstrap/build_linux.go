@@ -292,6 +292,25 @@ func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte,
 }
 
 func readBootstrapKey(directory int, name, path string) ([]byte, error) {
+	file, err := openKeySource(directory, name, path)
+	if err != nil {
+		return nil, err
+	}
+	key, readErr := readKeyFile(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		clear(key)
+		return nil, closeErr
+	}
+	return key, nil
+}
+
+// openKeySource opens a key source without following a link or blocking, and judges that
+// descriptor to be a regular file with one name before anything is read from it.
+func openKeySource(directory int, name, path string) (*os.File, error) {
 	var descriptor int
 	var err error
 	if directory == unix.AT_FDCWD {
@@ -318,13 +337,7 @@ func readBootstrapKey(directory int, name, path string) ([]byte, error) {
 		_ = unix.Close(descriptor) //nolint:errcheck // refusing a non-file key source
 		return nil, fmt.Errorf("bootstrap: %s is not a regular file", path)
 	}
-	file := os.NewFile(uintptr(descriptor), path)
-	key, readErr := readKeyFile(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-	return key, closeErr
+	return os.NewFile(uintptr(descriptor), path), nil
 }
 
 // openLinuxLock opens bootstrap.lock in the folder and takes it exclusively, refusing with InUse

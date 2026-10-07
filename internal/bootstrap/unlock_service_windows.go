@@ -42,7 +42,7 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 	}
 	account := accountName(user.User.Sid)
 	lockPath := filepath.Join(folder, lockFileName)
-	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), account, true)
+	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), user.User.Sid, true)
 	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
 		return nil, &Refusal{Cause: InUse}
 	} else if err != nil {
@@ -92,6 +92,12 @@ func checkFolderNamesAccount(directory *os.File, folder string, account *windows
 // service account cannot write, in that order.
 func checkServiceItems(directory *os.File, folder string, mode KeyMode, account string, accountSID *windows.SID) error {
 	folderHandle := windows.Handle(directory.Fd())
+	bootstrapHandle := windows.InvalidHandle
+	defer func() {
+		if bootstrapHandle != windows.InvalidHandle {
+			_ = windows.CloseHandle(bootstrapHandle) //nolint:errcheck // nothing to flush on a read-only handle
+		}
+	}()
 	for _, name := range []string{bootstrapFileName, sealedKeyFileName} {
 		handle, err := openChild(folderHandle, name, windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES)
 		if windowsMissingItem(err) {
@@ -99,10 +105,14 @@ func checkServiceItems(directory *os.File, folder string, mode KeyMode, account 
 		} else if err != nil {
 			return err
 		}
-		err = checkWindowsHandle(handle, filepath.Join(folder, name))
-		_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
-		if err != nil {
+		if err := checkWindowsHandle(handle, filepath.Join(folder, name)); err != nil {
+			_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
 			return err
+		}
+		if name == bootstrapFileName {
+			bootstrapHandle = handle
+		} else {
+			_ = windows.CloseHandle(handle) //nolint:errcheck // nothing to flush on a read-only handle
 		}
 	}
 	allowed, err := allowedForSID(accountSID)
@@ -114,12 +124,10 @@ func checkServiceItems(directory *os.File, folder string, mode KeyMode, account 
 		return err
 	}
 	if len(findings) > 0 {
-		return &Refusal{Cause: LooserThanRule, Path: findings[0].Path, Item: findings[0].Item}
+		return looserRefusal(findings)
 	}
-	file, err := openChild(folderHandle, bootstrapFileName, windows.READ_CONTROL|windows.FILE_READ_ATTRIBUTES)
-	if err == nil {
-		err = reopenForWrite(file, windows.FILE_WRITE_DATA)
-		_ = windows.CloseHandle(file) //nolint:errcheck // nothing to flush on a read-only handle
+	if bootstrapHandle != windows.InvalidHandle {
+		err = reopenForWrite(bootstrapHandle, windows.FILE_WRITE_DATA|windows.DELETE)
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 			return &Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile}
 		}
@@ -136,8 +144,9 @@ func checkServiceItems(directory *os.File, folder string, mode KeyMode, account 
 	return nil
 }
 
-// reopenForWrite asks for a handle to the same item with write access and closes it at once: the
-// check is made on the handle that was judged, never on a name.
+// reopenForWrite asks the judged handle for a handle to the same item with the access given and
+// closes it at once: the check is made on the handle that was judged, never on a name. A rewrite
+// renames a new file over the bootstrap file, so the access asked for is write and delete.
 func reopenForWrite(handle windows.Handle, access uint32) error {
 	const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
 	reopened, _, err := reOpenFile.Call(uintptr(handle), uintptr(access), shareAll, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT)

@@ -8,13 +8,10 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
-	"os/user"
 	"path/filepath"
-	"slices"
-	"strconv"
-	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -71,38 +68,69 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 // checkServiceItems refuses a link, then an item looser than its rule, then a file or folder the
 // service account cannot write, in that order.
 func checkServiceItems(directory *os.File, folder string, mode KeyMode, accountID uint32) error {
+	var bootstrapFile *os.File
 	for _, name := range []string{bootstrapFileName, keyFileName} {
-		var stat unix.Stat_t
-		err := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
-		if errors.Is(err, unix.ENOENT) {
-			continue
-		} else if err != nil {
+		judged, err := openJudgedItem(directory, folder, name)
+		if err != nil {
 			return err
 		}
-		if stat.Mode&unix.S_IFMT == unix.S_IFLNK || (stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Nlink != 1) {
-			return &Refusal{Cause: Link, Path: filepath.Join(folder, name), Item: itemOf(name)}
+		if name == bootstrapFileName {
+			bootstrapFile = judged
+		} else if judged != nil {
+			_ = judged.Close() //nolint:errcheck // a path handle holds nothing to flush
 		}
 	}
-	account := strconv.FormatUint(uint64(accountID), 10)
-	if found, err := user.LookupId(account); err == nil {
-		account = found.Username
+	if bootstrapFile != nil {
+		defer func() { _ = bootstrapFile.Close() }() //nolint:errcheck // a path handle holds nothing to flush
 	}
-	findings, err := findLooserItems(directory, folder, mode, account, accountID)
+	findings, err := findLooserItems(directory, folder, mode, ownerName(accountID), accountID)
 	if err != nil {
 		return err
 	}
 	if len(findings) > 0 {
-		// Map order is random; the first by path keeps the refusal the same every time.
-		first := slices.MinFunc(findings, func(left, right Finding) int { return strings.Compare(left.Path, right.Path) })
-		return &Refusal{Cause: LooserThanRule, Path: first.Path, Item: first.Item}
+		return looserRefusal(findings)
 	}
-	err = unix.Faccessat(int(directory.Fd()), bootstrapFileName, unix.W_OK, unix.AT_EACCESS)
-	if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EROFS) {
-		return &Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile}
+	if bootstrapFile != nil {
+		// Reopening the judged descriptor through /proc asks that file itself, a link or a
+		// swapped name cannot answer for it; any refusal of write access, an immutable flag
+		// included, is NotWritable.
+		writer, err := unix.Open(fmt.Sprintf("/proc/self/fd/%d", bootstrapFile.Fd()), unix.O_WRONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		if err == nil {
+			_ = unix.Close(writer) //nolint:errcheck // nothing was written
+		} else if refusedWrite(err) {
+			return &Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile}
+		} else {
+			return err
+		}
 	}
-	err = unix.Faccessat(int(directory.Fd()), ".", unix.W_OK, unix.AT_EACCESS)
-	if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EROFS) {
+	if err := unix.Faccessat(int(directory.Fd()), ".", unix.W_OK, unix.AT_EACCESS); refusedWrite(err) {
 		return &Refusal{Cause: NotWritable, Path: folder, Item: ItemFolder}
 	}
 	return nil
+}
+
+// openJudgedItem opens a name in the folder as a path handle, without following a link, and refuses
+// a link or a file with more than one name. An absent name gives no handle.
+func openJudgedItem(directory *os.File, folder, name string) (*os.File, error) {
+	descriptor, err := unix.Openat(int(directory.Fd()), name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	judged := os.NewFile(uintptr(descriptor), name)
+	var stat unix.Stat_t
+	if err := unix.Fstat(descriptor, &stat); err != nil {
+		_ = judged.Close() //nolint:errcheck // returning the stat error
+		return nil, err
+	}
+	if stat.Mode&unix.S_IFMT == unix.S_IFLNK || (stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Nlink != 1) {
+		_ = judged.Close() //nolint:errcheck // returning the refusal
+		return nil, &Refusal{Cause: Link, Path: filepath.Join(folder, name), Item: itemOf(name)}
+	}
+	return judged, nil
+}
+
+func refusedWrite(err error) bool {
+	return errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) || errors.Is(err, unix.EROFS)
 }

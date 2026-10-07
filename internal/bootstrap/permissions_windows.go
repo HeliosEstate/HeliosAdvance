@@ -30,14 +30,15 @@ var keyProviders = []string{"Microsoft Software Key Storage Provider", tpmKeyPro
 
 // What the key store is called with, from ncrypt.h.
 const (
-	machineKeyFlag      = 0x20 // NCRYPT_MACHINE_KEY_FLAG
-	securityProperty    = "Security Descr"
-	badKeySet           = 0x80090016 // NTE_BAD_KEYSET: no such key in this provider
-	ownerAndDACL        = windows.OWNER_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION
-	keyPairAccess       = "GA" // SDDL: generic all
-	folderInherit       = "OICI"
-	fileAllAccess       = "FA"
-	securityDescriptors = "O:BAD:P"
+	machineKeyFlag     = 0x20 // NCRYPT_MACHINE_KEY_FLAG
+	securityProperty   = "Security Descr"
+	badKeySet          = 0x80090016 // NTE_BAD_KEYSET: no such key in this provider
+	ownerAndDACL       = windows.OWNER_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION
+	keyPairAccess      = "GA" // SDDL: generic all
+	folderInherit      = "OICI"
+	fileAllAccess      = "FA"
+	protectedDACL      = "D:P"
+	administratorsSDDL = "BA" // the SDDL alias of Administrators, the owner every rule gives
 )
 
 var ncrypt = windows.NewLazySystemDLL("ncrypt.dll")
@@ -569,7 +570,7 @@ func setToRule(finding Finding, account string) error {
 	if finding.Item == ItemFolder {
 		inherit = folderInherit
 	}
-	descriptor, err := windows.SecurityDescriptorFromString(ruleSDDL(service, inherit, fileAllAccess))
+	descriptor, err := windows.SecurityDescriptorFromString(ruleSDDL(administratorsSDDL, service, inherit, fileAllAccess))
 	if err != nil {
 		return err
 	}
@@ -640,15 +641,15 @@ func openFinding(finding Finding) (windows.Handle, error) {
 	return handle, nil
 }
 
-// ruleSDDL is the rule as a security descriptor: owned by Administrators, protected from
+// ruleSDDL is the rule as a security descriptor: owned by the SDDL trustee given, protected from
 // inheritance, granting the account, SYSTEM and Administrators the access given.
-func ruleSDDL(service *windows.SID, inherit, access string) string {
+func ruleSDDL(owner string, service *windows.SID, inherit, access string) string {
 	entry := func(trustee string) string { return "(A;" + inherit + ";" + access + ";;;" + trustee + ")" }
-	return securityDescriptors + entry(service.String()) + entry("SY") + entry("BA")
+	return "O:" + owner + protectedDACL + entry(service.String()) + entry("SY") + entry("BA")
 }
 
 func setKeyPairToRule(service *windows.SID) error {
-	descriptor, err := windows.SecurityDescriptorFromString(ruleSDDL(service, "", keyPairAccess))
+	descriptor, err := windows.SecurityDescriptorFromString(ruleSDDL(administratorsSDDL, service, "", keyPairAccess))
 	if err != nil {
 		return err
 	}
