@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pascal Fairchild
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //go:build linux
 
 package bootstrap
@@ -44,7 +47,7 @@ var hostKeyCredentialIDs = [][16]byte{
 	{0x55, 0xb9, 0xed, 0x1d, 0x38, 0x59, 0x4d, 0x43, 0xa8, 0x31, 0x9d, 0x2e, 0xbb, 0x33, 0x2a, 0xc6},
 }
 
-func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error) {
+func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error) {
 	if !isElevated() {
 		return nil, &Refusal{Cause: NotElevated}
 	}
@@ -56,47 +59,25 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // no pending writes
-	version, hasSystemd, err := runningSystemdVersion(ctx)
+	if err := checkSetupMode(ctx, mode); err != nil {
+		return nil, err
+	}
+	accountID, err := lookupAccount(account)
 	if err != nil {
 		return nil, err
 	}
-	if !linuxSetupMode(mode, version, hasSystemd) {
-		return nil, &Refusal{Cause: SourceRefused}
-	}
-	// The lock's rule is the folder's owner; one this root process just created is root's, so only a
-	// lock made here is given over. One found there is for Check and SetToRule.
-	lockFD, err := unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	created := err == nil
-	if errors.Is(err, unix.EEXIST) {
-		lockFD, err = unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	}
+	// The lock's rule is for the account given, whoever owns the folder: UnlockForSetup does not
+	// refuse a folder set looser than its rule, so the folder cannot say whose it is.
+	lock, err := openLinuxLock(int(directory.Fd()), accountID, false)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap: opening the lock: %w", err)
-	}
-	lock := os.NewFile(uintptr(lockFD), "bootstrap.lock")
-	if created {
-		var folderStat unix.Stat_t
-		if err := unix.Fstat(int(directory.Fd()), &folderStat); err != nil {
-			_ = lock.Close() //nolint:errcheck // returning the stat error
-			return nil, err
-		}
-		if err := unix.Fchown(lockFD, int(folderStat.Uid), -1); err != nil {
-			_ = lock.Close() //nolint:errcheck // returning the chown error
-			return nil, err
-		}
+		return nil, err
 	}
 	locked := false
 	defer func() {
 		if !locked {
-			_ = unix.Flock(lockFD, unix.LOCK_UN) //nolint:errcheck // closing releases the lock
-			_ = lock.Close()                     //nolint:errcheck // no buffered data
+			releaseSetupLock(lock)
 		}
 	}()
-	if err := unix.Flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-		return nil, &Refusal{Cause: InUse}
-	} else if err != nil {
-		return nil, err
-	}
 	_ = unix.Unlinkat(int(directory.Fd()), bootstrapFileName+".new", 0) //nolint:errcheck // stale partial rewrite is disposable
 	var bootstrapStat unix.Stat_t
 	if err := unix.Fstatat(int(directory.Fd()), bootstrapFileName, &bootstrapStat, unix.AT_SYMLINK_NOFOLLOW); errors.Is(err, unix.ENOENT) {
@@ -149,11 +130,7 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		}
 		args := []string{"decrypt", "--name=" + machineKeyPairName, "-", "-"}
 		if mode == ModeSystemdPerUse {
-			var stat unix.Stat_t
-			if err = unix.Fstat(int(directory.Fd()), &stat); err != nil {
-				break
-			}
-			args = []string{"--user", fmt.Sprintf("--uid=%d", stat.Uid), "decrypt", "--name=" + machineKeyPairName, "-", "-"}
+			args = []string{"--user", fmt.Sprintf("--uid=%d", accountID), "decrypt", "--name=" + machineKeyPairName, "-", "-"}
 		}
 		command := exec.CommandContext(ctx, "systemd-creds", args...)
 		command.Stdin = credentialFile
@@ -161,7 +138,11 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		if err != nil {
 			clear(key)
 			key = nil
-			err = &Refusal{Cause: KeyNotUnsealed}
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			} else {
+				err = &Refusal{Cause: KeyNotUnsealed}
+			}
 			break
 		}
 	}
@@ -210,6 +191,9 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 func openLinuxCredential(directory int, path string) (*os.File, [16]byte, error) {
 	var id [16]byte
 	descriptor, err := unix.Openat(directory, systemdCredentialFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ELOOP) {
+		return nil, id, &Refusal{Cause: Link, Path: path}
+	}
 	if err != nil {
 		return nil, id, err
 	}
@@ -253,25 +237,35 @@ func openLinuxCredential(directory int, path string) (*os.File, [16]byte, error)
 	return file, id, nil
 }
 
-func linuxSetupMode(mode KeyMode, version int, systemd bool) bool {
+// checkSetupMode refuses a mode that is not this platform's. The running systemd's version is read
+// only for the modes that turn on it.
+func checkSetupMode(ctx context.Context, mode KeyMode) error {
 	switch mode {
 	case ModeKeyFile:
-		return true
+		return nil
 	case ModeContainer:
-		return !systemd
-	case ModeSystemdAtStart:
-		return systemd && version >= 250
-	case ModeSystemdPerUse:
-		return systemd && version >= 256
+		running, err := systemdRunning()
+		if err != nil {
+			return err
+		}
+		if running {
+			return &Refusal{Cause: SourceRefused}
+		}
+		return nil
+	case ModeSystemdAtStart, ModeSystemdPerUse:
+		version, running, err := runningSystemdVersion(ctx)
+		if err != nil {
+			return err
+		}
+		minimum := 250
+		if mode == ModeSystemdPerUse {
+			minimum = 256
+		}
+		if !running || version < minimum {
+			return &Refusal{Cause: SourceRefused}
+		}
+		return nil
 	default:
-		return false
+		return &Refusal{Cause: SourceRefused}
 	}
-}
-
-func releaseSetupLock(lock *os.File) {
-	if lock == nil {
-		return
-	}
-	_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck // closing also releases the lock
-	_ = lock.Close()                             //nolint:errcheck // no buffered data
 }

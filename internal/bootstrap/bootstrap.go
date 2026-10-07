@@ -32,8 +32,8 @@ func (builder) SetToRule(finding Finding, account string) error {
 // unbuilt retains the operations handled by later bootstrap work.
 type unbuilt struct{}
 
-func (unbuilt) UnlockForSetup(ctx context.Context, folder string, mode KeyMode, _ string) (SetupHandle, error) {
-	return unlockSetupOnPlatform(ctx, folder, mode)
+func (unbuilt) UnlockForSetup(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error) {
+	return unlockSetupOnPlatform(ctx, folder, mode, account)
 }
 
 func (unbuilt) UnlockForService(context.Context, string, KeyMode) (ServiceHandle, error) {

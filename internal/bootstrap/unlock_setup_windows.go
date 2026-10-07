@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Pascal Fairchild
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //go:build windows
 
 package bootstrap
@@ -13,7 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error) {
+func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error) {
 	if !isElevated() {
 		return nil, &Refusal{Cause: NotElevated}
 	}
@@ -25,25 +28,11 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		return nil, err
 	}
 	defer func() { _ = directory.Close() }() //nolint:errcheck // no pending writes
-	lockPath := filepath.Join(folder, "bootstrap.lock")
-	lockName, err := windows.UTF16PtrFromString(lockPath)
-	if err != nil {
-		return nil, err
-	}
-	restorePrivileges := enablePrivileges("SeRestorePrivilege")
-	lockHandle, err := windows.CreateFile(lockName, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if windowsMissingItem(err) {
-		// The descriptor is built only for a lock this unlock creates.
-		var attributes *windows.SecurityAttributes
-		if attributes, err = lockAttributes(windows.Handle(directory.Fd())); err == nil {
-			lockHandle, err = windows.CreateFile(lockName, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
-		}
-	}
-	restorePrivileges()
-	if err != nil {
-		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_FILE_EXISTS) {
-			return nil, &Refusal{Cause: InUse}
-		}
+	lockPath := filepath.Join(folder, lockFileName)
+	lockHandle, err := openSetupLock(windows.Handle(directory.Fd()), account)
+	if errors.Is(err, windows.STATUS_SHARING_VIOLATION) || errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
+		return nil, &Refusal{Cause: InUse}
+	} else if err != nil {
 		return nil, err
 	}
 	lock := os.NewFile(uintptr(lockHandle), lockPath)
@@ -53,6 +42,9 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 			_ = lock.Close() //nolint:errcheck // closing releases the exclusive share
 		}
 	}()
+	if err := checkWindowsHandle(lockHandle, lockPath); err != nil {
+		return nil, err
+	}
 	_ = os.Remove(filepath.Join(folder, bootstrapFileName+".new")) //nolint:errcheck // stale partial rewrite is disposable
 	bootstrapHandle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
 	if windowsMissingItem(err) {
@@ -107,37 +99,27 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
 }
 
-// lockAttributes is the lock's rule as a descriptor to create it with: the folder's service
-// account, SYSTEM and Administrators only, not inherited, owned by Administrators. The service
-// account is the one entry in the folder's access list that is neither of the other two.
-func lockAttributes(folder windows.Handle) (*windows.SecurityAttributes, error) {
-	descriptor, err := windows.GetSecurityInfo(folder, windows.SE_FILE_OBJECT, ownerAndDACL)
+// openSetupLock opens the lock exclusively without following a link, relative to the checked
+// folder's handle. A lock that is absent is created already set to its rule for the account: the
+// account, SYSTEM and Administrators only, not inherited, owned by Administrators. The create runs
+// with SeRestorePrivilege so the owner can be given, and holds it for that call only.
+func openSetupLock(folder windows.Handle, account string) (windows.Handle, error) {
+	const access = windows.GENERIC_READ | windows.GENERIC_WRITE
+	handle, err := ntOpenChild(folder, lockFileName, access, 0, windows.FILE_OPEN, nil)
+	if !windowsMissingItem(err) {
+		return handle, err
+	}
+	service, _, _, err := windows.LookupSID("", account)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap: reading the access list of the folder: %w", err)
+		return 0, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
-	folderHeld, err := readHeldDescriptor(descriptor, true)
+	rule, err := windows.SecurityDescriptorFromString(ruleSDDL(service, "", fileAllAccess))
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
-	if err != nil {
-		return nil, err
-	}
-	administrators, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	if err != nil {
-		return nil, err
-	}
-	for _, trustee := range folderHeld.grantees {
-		if windows.EqualSid(trustee, system) || windows.EqualSid(trustee, administrators) {
-			continue
-		}
-		rule, err := windows.SecurityDescriptorFromString(ruleSDDL(trustee, "", fileAllAccess))
-		if err != nil {
-			return nil, err
-		}
-		return &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: rule}, nil
-	}
-	return nil, fmt.Errorf("bootstrap: the folder's access list names no service account")
+	restorePrivileges := enablePrivileges("SeRestorePrivilege")
+	defer restorePrivileges()
+	return ntOpenChild(folder, lockFileName, access, 0, windows.FILE_CREATE, rule)
 }
 
 func windowsMissingItem(err error) bool {
@@ -175,58 +157,35 @@ func decryptWindowsKey(ctx context.Context, ciphertext []byte) ([]byte, Holding,
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
 	}
-	for index, provider := range []struct {
-		holding Holding
-	}{{HeldInSoftwareKeyStore}, {HeldInTPM}} {
-		providerName, err := windows.UTF16PtrFromString(keyProviders[index])
-		if err != nil {
-			return nil, 0, err
-		}
-		var providerHandle uintptr
-		status, _, _ := procOpenProvider.Call(uintptr(unsafe.Pointer(&providerHandle)), uintptr(unsafe.Pointer(providerName)), 0) //nolint:errcheck,gosec // NCrypt returns status as its first result; these are API buffers
-		if status != 0 {
-			continue
-		}
-		keyName, err := windows.UTF16PtrFromString("heliosadvance-bootstrap-key")
-		if err != nil {
-			_, _, _ = procFreeObject.Call(providerHandle) //nolint:errcheck // release provider after failed conversion
-			return nil, 0, err
-		}
-		var keyHandle uintptr
-		status, _, _ = procOpenKey.Call(providerHandle, uintptr(unsafe.Pointer(&keyHandle)), uintptr(unsafe.Pointer(keyName)), 0, machineKeyFlag) //nolint:errcheck,gosec // NCrypt returns status as its first result; keyName is an API input
-		if status != 0 {
-			_, _, _ = procFreeObject.Call(providerHandle) //nolint:errcheck // cleanup after failed key open
-			continue
-		}
-		algorithm, err := windows.UTF16PtrFromString("SHA256")
-		if err != nil {
-			_, _, _ = procFreeObject.Call(keyHandle)      //nolint:errcheck // release key after failed conversion
-			_, _, _ = procFreeObject.Call(providerHandle) //nolint:errcheck // release provider after failed conversion
-			return nil, 0, err
-		}
-		padding := oaepPaddingInfo{Algorithm: algorithm}
-		var size uint32
-		status, _, _ = ncryptDecrypt.Call(keyHandle, uintptr(unsafe.Pointer(&ciphertext[0])), uintptr(len(ciphertext)), uintptr(unsafe.Pointer(&padding)), 0, 0, uintptr(unsafe.Pointer(&size)), 4) //nolint:errcheck,gosec // NCrypt returns status as its first result; buffers follow its API contract
-		if status == 0 && size > 0 && size <= maxDecryptedSize {
-			// A key held in the TPM reports the key's length here, not the plaintext's; only the
-			// second call's length says how much of the buffer is the key.
-			plain := make([]byte, size)
-			status, _, _ = ncryptDecrypt.Call(keyHandle, uintptr(unsafe.Pointer(&ciphertext[0])), uintptr(len(ciphertext)), uintptr(unsafe.Pointer(&padding)), uintptr(unsafe.Pointer(&plain[0])), uintptr(len(plain)), uintptr(unsafe.Pointer(&size)), 4) //nolint:errcheck,gosec // NCrypt returns status as its first result; buffers follow its API contract
-			_, _, _ = procFreeObject.Call(keyHandle)                                                                                                                                                                                                       //nolint:errcheck // cleanup after decrypt
-			_, _, _ = procFreeObject.Call(providerHandle)                                                                                                                                                                                                  //nolint:errcheck // cleanup after decrypt
-			if status == 0 && size == 32 {
-				key := make([]byte, size)
-				copy(key, plain)
-				clear(plain)
-				return key, provider.holding, nil
-			}
-			clear(plain)
-		} else {
-			_, _, _ = procFreeObject.Call(keyHandle)      //nolint:errcheck // cleanup after failed decrypt
-			_, _, _ = procFreeObject.Call(providerHandle) //nolint:errcheck // cleanup after failed decrypt
-		}
+	pair, found, err := openKeyPair()
+	if err != nil {
+		return nil, 0, err
 	}
-	return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+	if !found {
+		return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+	}
+	defer pair.close()
+	holding := HeldInSoftwareKeyStore
+	if pair.inTPM {
+		holding = HeldInTPM
+	}
+	algorithm, err := windows.UTF16PtrFromString("SHA256")
+	if err != nil {
+		return nil, 0, err
+	}
+	padding := oaepPaddingInfo{Algorithm: algorithm}
+	var size uint32
+	if status := call(ncryptDecrypt, pair.key, uintptr(unsafe.Pointer(&ciphertext[0])), uintptr(len(ciphertext)), uintptr(unsafe.Pointer(&padding)), 0, 0, uintptr(unsafe.Pointer(&size)), 4); status != 0 || size == 0 || size > maxDecryptedSize { //nolint:gosec // the key store's calling convention
+		return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+	}
+	// A key held in the TPM reports the key's length here, not the plaintext's; only the second
+	// call's length says how much of the buffer is the key.
+	plain := make([]byte, size)
+	defer clear(plain)
+	if status := call(ncryptDecrypt, pair.key, uintptr(unsafe.Pointer(&ciphertext[0])), uintptr(len(ciphertext)), uintptr(unsafe.Pointer(&padding)), uintptr(unsafe.Pointer(&plain[0])), uintptr(len(plain)), uintptr(unsafe.Pointer(&size)), 4); status != 0 || size != 32 { //nolint:gosec // the key store's calling convention
+		return nil, 0, fmt.Errorf("NCrypt could not unseal the bootstrap key")
+	}
+	return append([]byte(nil), plain[:size]...), holding, nil
 }
 
 func releaseSetupLock(lock *os.File) {

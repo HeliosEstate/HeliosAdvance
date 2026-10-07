@@ -74,23 +74,11 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err := unix.Fchmod(int(directory.Fd()), 0o700); err != nil {
 		return 0, fmt.Errorf("bootstrap: setting the mode of %s: %w", folder, err)
 	}
-	lock, err := unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	lock, err := openLinuxLock(int(directory.Fd()), accountID, true)
 	if err != nil {
-		return 0, fmt.Errorf("bootstrap: opening the lock: %w", err)
+		return 0, err
 	}
-	defer func() { _ = unix.Close(lock) }() //nolint:errcheck // nothing is buffered on this descriptor
-	if err := unix.Fchown(lock, int(accountID), -1); err != nil {
-		return 0, fmt.Errorf("bootstrap: setting the lock owner: %w", err)
-	}
-	if err := unix.Fchmod(lock, 0o600); err != nil {
-		return 0, fmt.Errorf("bootstrap: setting the lock mode: %w", err)
-	}
-	if err := unix.Flock(lock, unix.LOCK_EX|unix.LOCK_NB); errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-		return 0, &Refusal{Cause: InUse}
-	} else if err != nil {
-		return 0, fmt.Errorf("bootstrap: locking the folder: %w", err)
-	}
-	defer func() { _ = unix.Flock(lock, unix.LOCK_UN) }() //nolint:errcheck // close also releases the lock
+	defer releaseSetupLock(lock)
 	var existing unix.Stat_t
 	err = unix.Fstatat(int(directory.Fd()), bootstrapFileName, &existing, unix.AT_SYMLINK_NOFOLLOW)
 	if err == nil && (path == FirstSetup || path == Joining) {
@@ -249,10 +237,8 @@ func sealSystemdCredential(ctx context.Context, folder string, accountID uint32,
 }
 
 func runningSystemdVersion(ctx context.Context) (int, bool, error) {
-	if _, err := os.Stat("/run/systemd/system"); errors.Is(err, os.ErrNotExist) {
-		return 0, false, nil
-	} else if err != nil {
-		return 0, false, fmt.Errorf("bootstrap: checking the running service manager: %w", err)
+	if running, err := systemdRunning(); !running || err != nil {
+		return 0, false, err
 	}
 	output, err := exec.CommandContext(ctx, "systemctl", "show", "--property=Version", "--value").Output()
 	if err != nil {
@@ -338,4 +324,60 @@ func readBootstrapKey(directory int, name, path string) ([]byte, error) {
 		return nil, readErr
 	}
 	return key, closeErr
+}
+
+// openLinuxLock opens bootstrap.lock in the folder and takes it exclusively, refusing with InUse
+// when another handle holds it. A lock this call creates is given to the owner at 0600 and removed
+// again if that fails; one already there is left as found unless reset is set, as Build does.
+func openLinuxLock(directory int, owner uint32, reset bool) (*os.File, error) {
+	const flags = unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	descriptor, err := unix.Openat(directory, lockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+	created := err == nil
+	if errors.Is(err, unix.EEXIST) {
+		descriptor, err = unix.Openat(directory, lockFileName, flags, 0)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: opening the lock: %w", err)
+	}
+	lock := os.NewFile(uintptr(descriptor), lockFileName)
+	fail := func(err error) (*os.File, error) {
+		if created {
+			_ = unix.Unlinkat(directory, lockFileName, 0) //nolint:errcheck // a lock that could not be given over must not stay root's
+		}
+		_ = lock.Close() //nolint:errcheck // no buffered data
+		return nil, err
+	}
+	if created || reset {
+		if err := unix.Fchown(descriptor, int(owner), -1); err != nil {
+			return fail(fmt.Errorf("bootstrap: setting the lock owner: %w", err))
+		}
+		if err := unix.Fchmod(descriptor, 0o600); err != nil {
+			return fail(fmt.Errorf("bootstrap: setting the lock mode: %w", err))
+		}
+	}
+	if err := unix.Flock(descriptor, unix.LOCK_EX|unix.LOCK_NB); errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+		_ = lock.Close() //nolint:errcheck // no buffered data
+		return nil, &Refusal{Cause: InUse}
+	} else if err != nil {
+		return fail(fmt.Errorf("bootstrap: locking the folder: %w", err))
+	}
+	return lock, nil
+}
+
+func releaseSetupLock(lock *os.File) {
+	if lock == nil {
+		return
+	}
+	_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck // closing also releases the lock
+	_ = lock.Close()                             //nolint:errcheck // no buffered data
+}
+
+// systemdRunning is whether systemd is the running service manager.
+func systemdRunning() (bool, error) {
+	if _, err := os.Stat("/run/systemd/system"); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("bootstrap: checking the running service manager: %w", err)
+	}
+	return true, nil
 }

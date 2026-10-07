@@ -24,7 +24,9 @@ const (
 
 // The machine key pair lives in one of two key storage providers: the software one, and the
 // TPM's.
-var keyProviders = []string{"Microsoft Software Key Storage Provider", "Microsoft Platform Crypto Provider"}
+const tpmKeyProvider = "Microsoft Platform Crypto Provider"
+
+var keyProviders = []string{"Microsoft Software Key Storage Provider", tpmKeyProvider}
 
 // What the key store is called with, from ncrypt.h.
 const (
@@ -333,16 +335,21 @@ func openItem(path string, access uint32) (windows.Handle, error) {
 // that was judged and not whatever the folder's path names by now. A link is opened as itself, and
 // the name is matched exactly as listed: in a case-sensitive folder a name of another case is another file.
 func openChild(folder windows.Handle, name string, access uint32) (windows.Handle, error) {
+	return ntOpenChild(folder, name, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, nil)
+}
+
+// ntOpenChild is openChild with the sharing and the disposition chosen; a descriptor is given
+// only when the item is created.
+func ntOpenChild(folder windows.Handle, name string, access, share, disposition uint32, descriptor *windows.SECURITY_DESCRIPTOR) (windows.Handle, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return 0, err
 	}
-	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: folder, ObjectName: objectName, Attributes: 0}
+	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: folder, ObjectName: objectName, Attributes: 0, SecurityDescriptor: descriptor}
 	attributes.Length = uint32(unsafe.Sizeof(attributes))
 	var handle windows.Handle
 	var status windows.IO_STATUS_BLOCK
-	err = windows.NtCreateFile(&handle, access|windows.SYNCHRONIZE, &attributes, &status, nil, 0,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN,
+	err = windows.NtCreateFile(&handle, access|windows.SYNCHRONIZE, &attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL, share, disposition,
 		windows.FILE_OPEN_REPARSE_POINT|windows.FILE_OPEN_FOR_BACKUP_INTENT|windows.FILE_SYNCHRONOUS_IO_NONALERT, 0, 0)
 	return handle, err
 }
@@ -451,8 +458,12 @@ func driveType(handle windows.Handle) uint32 {
 
 // The machine key pair, through the CNG key store.
 
-// keyPair is an open machine key pair and the provider it is in.
-type keyPair struct{ provider, key uintptr }
+// keyPair is an open machine key pair and the provider it is in; inTPM is whether that
+// provider is the TPM's.
+type keyPair struct {
+	provider, key uintptr
+	inTPM         bool
+}
 
 func (pair keyPair) close() {
 	call(procFreeObject, pair.key)
@@ -477,7 +488,7 @@ func openKeyPair() (pair keyPair, ok bool, err error) {
 		}
 		status := call(procOpenKey, provider, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(keyName)), 0, machineKeyFlag) //nolint:gosec // the key store's calling convention
 		if status == 0 {
-			return keyPair{provider, key}, true, nil
+			return keyPair{provider, key, providerName == tpmKeyProvider}, true, nil
 		}
 		call(procFreeObject, provider)
 		if uint32(status) != badKeySet { //nolint:gosec // an NTSTATUS-sized value
