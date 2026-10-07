@@ -4,7 +4,9 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +17,8 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+const systemdCredentialFileName = "bootstrap-key.cred" //nolint:gosec // fixed credential filename, not secret data
 
 func buildOnPlatform(ctx context.Context, folder string, fields Fields, path BuildPath, account string, source KeySource) (KeyMode, error) {
 	if !isElevated() {
@@ -45,6 +49,17 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 		return 0, &Refusal{Cause: NoCredentialStore}
 	}
 	key, mode, err := linuxBuildKey(directory, folder, source)
+	if source == FromOSStore {
+		key = make([]byte, 32)
+		if _, err = rand.Read(key); err != nil {
+			return 0, fmt.Errorf("bootstrap: making the bootstrap key: %w", err)
+		}
+		if version >= 256 {
+			mode = ModeSystemdPerUse
+		} else {
+			mode = ModeSystemdAtStart
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -83,6 +98,22 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	}
 	if err != nil && !errors.Is(err, unix.ENOENT) {
 		return 0, fmt.Errorf("bootstrap: checking the old bootstrap file: %w", err)
+	}
+	tpmDevice, err := linuxTPMDevice(ctx)
+	if err != nil {
+		return 0, err
+	}
+	credentialMade := false
+	if source == FromOSStore {
+		credentialMade = true
+		defer func() {
+			if credentialMade {
+				_ = unix.Unlinkat(int(directory.Fd()), systemdCredentialFileName, 0) //nolint:errcheck // a failed build must not leave a credential
+			}
+		}()
+		if err := sealSystemdCredential(ctx, folder, accountID, version >= 256, tpmDevice, key); err != nil {
+			return 0, err
+		}
 	}
 	file := &bootstrapFile{}
 	file.setFields(fields)
@@ -135,7 +166,86 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err := directory.Sync(); err != nil {
 		return 0, &Refusal{Cause: RewriteFailed}
 	}
+	credentialMade = false
 	return mode, nil
+}
+
+func linuxTPMDevice(ctx context.Context) (string, error) {
+	for _, device := range []string{"/dev/tpmrm0", "/dev/tpm0"} {
+		if _, err := os.Stat(device); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("bootstrap: checking %s: %w", device, err)
+		}
+		command := exec.CommandContext(ctx, "systemd-creds", "--tpm2-device="+device, "--quiet", "has-tpm2") //nolint:gosec // device is selected from fixed /dev paths
+		if err := command.Run(); err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) && exitError.ExitCode()&4 != 0 {
+				return "", &Refusal{Cause: TPMLibrariesMissing}
+			}
+			return "", fmt.Errorf("bootstrap: checking TPM support: %w", err)
+		}
+		return device, nil
+	}
+	return "", nil
+}
+
+func sealSystemdCredential(ctx context.Context, folder string, accountID uint32, perUse bool, tpmDevice string, key []byte) error {
+	sealedPath := filepath.Join(folder, systemdCredentialFileName+".new")
+	sealed, err := os.OpenFile(sealedPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // folder is the checked bootstrap directory
+	if err != nil {
+		return err
+	}
+	if err := sealed.Chown(int(accountID), -1); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // return the chown error
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
+	if err := sealed.Chmod(0o600); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // return the chmod error
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
+	args := []string{"encrypt", "--name=" + machineKeyPairName}
+	if tpmDevice != "" {
+		args = append(args, "--with-key=host+tpm2", "--tpm2-device="+tpmDevice, "--tpm2-pcrs=")
+	} else {
+		args = append(args, "--with-key=host")
+	}
+	args = append(args, "-", "-")
+	if perUse {
+		args = append([]string{"--user", "--uid=" + strconv.FormatUint(uint64(accountID), 10)}, args...)
+	}
+	command := exec.CommandContext(ctx, "systemd-creds", args...)
+	command.Stdin = bytes.NewReader(key)
+	command.Stdout = sealed
+	var output strings.Builder
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // remove the incomplete credential
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("bootstrap: sealing the credential: %w: %s", err, strings.TrimSpace(output.String()))
+	}
+	if err := sealed.Sync(); err != nil {
+		_ = sealed.Close()        //nolint:errcheck // return the sync error
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
+	if err := sealed.Close(); err != nil {
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
+	if err := os.Rename(sealedPath, filepath.Join(folder, systemdCredentialFileName)); err != nil {
+		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		return err
+	}
+	return nil
 }
 
 func runningSystemdVersion(ctx context.Context) (int, bool, error) {
@@ -162,7 +272,7 @@ func runningSystemdVersion(ctx context.Context) (int, bool, error) {
 
 func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte, KeyMode, error) {
 	if source == FromOSStore {
-		return nil, 0, errNotBuilt
+		return nil, 0, nil
 	}
 	if source == FromKeyFile {
 		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
