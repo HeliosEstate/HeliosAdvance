@@ -12,7 +12,6 @@ import (
 type setupHandle struct {
 	mutex   sync.Mutex
 	file    *bootstrapFile
-	key     []byte
 	lock    *os.File
 	holding Holding
 }
@@ -20,6 +19,9 @@ type setupHandle struct {
 func (handle *setupHandle) Fields() Fields {
 	handle.mutex.Lock()
 	defer handle.mutex.Unlock()
+	if handle.file == nil {
+		return Fields{}
+	}
 	return handle.file.fields()
 }
 func (handle *setupHandle) Holding() Holding { return handle.holding }
@@ -36,8 +38,7 @@ func (handle *setupHandle) Close() {
 	for index := range handle.file.records {
 		clear(handle.file.records[index].data)
 	}
-	clear(handle.key)
-	handle.file, handle.key = nil, nil
+	handle.file = nil
 	releaseSetupLock(handle.lock)
 	handle.lock = nil
 }

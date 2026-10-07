@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,12 +80,19 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		}
 	case ModeSystemdAtStart, ModeSystemdPerUse:
 		credential := filepath.Join(folder, systemdCredentialFileName)
-		if _, statErr := os.Lstat(credential); errors.Is(statErr, os.ErrNotExist) {
+		var credentialHeader [16]byte
+		credentialID, statErr := linuxCredentialID(int(directory.Fd()), credential, &credentialHeader)
+		if errors.Is(statErr, os.ErrNotExist) {
 			err = &Refusal{Cause: KeyNotFound}
 			break
 		} else if statErr != nil {
 			err = statErr
 			break
+		}
+		if credentialID == [16]byte{0x93, 0xa8, 0x94, 0x09, 0x48, 0x74, 0x44, 0x90, 0x90, 0xca, 0xf2, 0xfc, 0x93, 0xca, 0xb5, 0x53} {
+			holding = HeldInTPM
+		} else {
+			holding = HeldUnderHostKey
 		}
 		if _, err = linuxTPMDevice(ctx); err != nil {
 			break
@@ -105,7 +113,6 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 			err = &Refusal{Cause: KeyNotUnsealed}
 			break
 		}
-		holding = HeldUnderHostKey
 	}
 	if err != nil {
 		clear(key)
@@ -146,7 +153,21 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 		return nil, err
 	}
 	locked = true
-	return &setupHandle{file: opened, key: append([]byte(nil), key...), lock: lock, holding: holding}, nil
+	return &setupHandle{file: opened, lock: lock, holding: holding}, nil
+}
+
+func linuxCredentialID(directory int, path string, header *[16]byte) ([16]byte, error) {
+	var id [16]byte
+	descriptor, err := unix.Openat(directory, systemdCredentialFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil { return id, err }
+	file := os.NewFile(uintptr(descriptor), path)
+	defer func() { _ = file.Close() }() //nolint:errcheck // read-only credential
+	var stat unix.Stat_t
+	if err := unix.Fstat(descriptor, &stat); err != nil { return id, err }
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 { return id, &Refusal{Cause: Link, Path: path} }
+	if _, err := io.ReadFull(file, header[:]); err != nil { return id, err }
+	copy(id[:], header[:])
+	return id, nil
 }
 
 func linuxSetupMode(mode KeyMode, version int, systemd bool) bool {
