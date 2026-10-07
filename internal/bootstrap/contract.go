@@ -121,6 +121,13 @@
 // around them. On Linux, bootstrap-key.cred is systemd's own credential format, named for
 // its purpose and bound to no TPM PCR.
 //
+// The line for every file in the bootstrap folder:
+//
+//   - The bootstrap package shall open every file in the bootstrap folder relative to the
+//     folder's handle and without following a link, create every file it creates exclusively,
+//     and refuse with Link any item in the folder that is a symbolic link, a junction or a file
+//     with more than one name before it reads it, writes it or changes its owner or mode.
+//
 // The lines for the file:
 //
 //   - The bootstrap package shall write the bootstrap file only in the layout this package
@@ -597,8 +604,8 @@ type Bootstrap interface {
 	//   - If the process is neither elevated nor root, then UnlockForSetup shall refuse with
 	//     NotElevated.
 	//   - If another handle holds the lock, then UnlockForSetup shall refuse with InUse.
-	//   - If bootstrap.lock is absent, then UnlockForSetup shall create it already set to its
-	//     rule for the account it is given.
+	//   - If bootstrap.lock is absent, then UnlockForSetup shall create it exclusively, already
+	//     set to its rule for the account it is given.
 	//   - If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused,
 	//     naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
@@ -678,8 +685,8 @@ type Bootstrap interface {
 	//     folder's access list does not name beside SYSTEM and Administrators, then
 	//     UnlockForService shall refuse with WrongAccount.
 	//   - If another handle holds the lock, then UnlockForService shall refuse with InUse.
-	//   - If bootstrap.lock is absent, then UnlockForService shall create it already set to its
-	//     rule.
+	//   - If bootstrap.lock is absent, then UnlockForService shall create it exclusively, already
+	//     set to its rule.
 	//   - If the folder breaks a folder rule, then UnlockForService shall refuse with
 	//     FolderRefused, naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
