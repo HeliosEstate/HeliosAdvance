@@ -88,17 +88,23 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 }
 
 // unlockLinuxFile deletes the half-made file, reads the bootstrap key from where the mode holds it
-// and opens the bootstrap file under it, all through the folder's handle. The descriptor the
-// service's checks judged, when there is one, is the one read. The service's
-// ModeSystemdAtStart reads the key from the credential folder systemd gives the service.
-func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool, judged *os.File) (*bootstrapFile, Holding, error) {
+// and opens the bootstrap file under it, all through the folder's handle. The service's checks
+// open every item once and hand the descriptors over in judged, by path; each is read through the
+// descriptor that was judged, and an item missing from judged is absent. Without judged, as for
+// UnlockForSetup, each item is opened here. The service's ModeSystemdAtStart reads the key from
+// the credential folder systemd gives the service.
+func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool, judged map[string]*os.File) (*bootstrapFile, Holding, error) {
 	if err := unix.Unlinkat(int(directory.Fd()), bootstrapFileName+".new", 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		return nil, 0, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
 	}
 	var input *os.File
 	var err error
 	if judged != nil {
-		input, err = reopenDescriptor(judged, unix.O_RDONLY)
+		held := judged[filepath.Join(folder, bootstrapFileName)]
+		if held == nil {
+			return nil, 0, &Refusal{Cause: FileNotFound}
+		}
+		input, err = reopenDescriptor(held, unix.O_RDONLY)
 	} else {
 		input, err = openLinuxBootstrapFile(int(directory.Fd()), filepath.Join(folder, bootstrapFileName))
 	}
@@ -106,7 +112,7 @@ func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mod
 		return nil, 0, err
 	}
 	defer func() { _ = input.Close() }() //nolint:errcheck // read-only descriptor
-	key, holding, err := readLinuxKey(ctx, directory, folder, mode, accountID, service)
+	key, holding, err := readLinuxKey(ctx, directory, folder, mode, accountID, service, judged)
 	defer clear(key)
 	if err != nil {
 		return nil, 0, err
@@ -126,22 +132,25 @@ func unlockLinuxFile(ctx context.Context, directory *os.File, folder string, mod
 }
 
 // readLinuxKey is the bootstrap key and how it is held; the caller clears the key.
-func readLinuxKey(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool) ([]byte, Holding, error) {
+func readLinuxKey(ctx context.Context, directory *os.File, folder string, mode KeyMode, accountID uint32, service bool, judged map[string]*os.File) ([]byte, Holding, error) {
 	switch mode {
 	case ModeKeyFile:
-		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
+		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName), judged)
 		if errors.Is(err, unix.ENOENT) {
 			err = &Refusal{Cause: KeyNotFound}
 		}
 		return key, HeldInKeyFile, err
 	case ModeContainer:
-		key, _, fromSecret, err := linuxBuildKey(directory, folder, FromContainer)
+		key, _, fromSecret, err := linuxBuildKey(directory, folder, FromContainer, judged)
 		if fromSecret {
 			return key, HeldAsSwarmSecret, err
 		}
 		return key, HeldInKeyFile, err
+	case ModeSystemdAtStart, ModeSystemdPerUse:
+	default:
+		return nil, 0, &Refusal{Cause: SourceRefused}
 	}
-	credential, credentialID, err := openLinuxCredential(int(directory.Fd()), filepath.Join(folder, systemdCredentialFileName))
+	credential, credentialID, err := openLinuxCredential(int(directory.Fd()), filepath.Join(folder, systemdCredentialFileName), judged)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, 0, &Refusal{Cause: KeyNotFound}
 	} else if err != nil {
@@ -227,11 +236,26 @@ func openLinuxBootstrapFile(directory int, path string) (*os.File, error) {
 }
 
 // openLinuxCredential reads the credential through one descriptor and returns its bytes with the
-// seal form's identifier; the caller clears the bytes.
-func openLinuxCredential(directory int, path string) ([]byte, [16]byte, error) {
+// seal form's identifier; the caller clears the bytes. With judged set, the descriptor is the one
+// held there under the path, an absent one being absent.
+func openLinuxCredential(directory int, path string, judged map[string]*os.File) ([]byte, [16]byte, error) {
 	var id [16]byte
-	file, stat, err := openUnlinked(directory, systemdCredentialFileName, path, unix.O_RDONLY, 0)
+	var file *os.File
+	var stat unix.Stat_t
+	var err error
+	if judged == nil {
+		file, stat, err = openUnlinked(directory, systemdCredentialFileName, path, unix.O_RDONLY, 0)
+	} else if held := judged[path]; held != nil {
+		if file, err = reopenDescriptor(held, unix.O_RDONLY); err == nil {
+			err = unix.Fstat(int(file.Fd()), &stat)
+		}
+	} else {
+		err = os.ErrNotExist
+	}
 	if err != nil {
+		if file != nil {
+			_ = file.Close() //nolint:errcheck // read-only descriptor
+		}
 		return nil, id, err
 	}
 	defer func() { _ = file.Close() }() //nolint:errcheck // read-only descriptor

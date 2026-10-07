@@ -48,7 +48,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if source == FromOSStore && version < 250 {
 		return 0, &Refusal{Cause: NoCredentialStore}
 	}
-	key, mode, _, err := linuxBuildKey(directory, folder, source)
+	key, mode, _, err := linuxBuildKey(directory, folder, source, nil)
 	if source == FromOSStore {
 		key = make([]byte, 32)
 		if _, err = rand.Read(key); err != nil {
@@ -256,23 +256,24 @@ func runningSystemdVersion(ctx context.Context) (int, bool, error) {
 	return version, true, nil
 }
 
-// linuxBuildKey also says whether the key came from the Swarm secret rather than the key file.
-func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte, KeyMode, bool, error) {
+// linuxBuildKey also says whether the key came from the Swarm secret rather than the key file. A
+// key source already open in judged, by path, is read from that descriptor and not from its name.
+func linuxBuildKey(directory *os.File, folder string, source KeySource, judged map[string]*os.File) ([]byte, KeyMode, bool, error) {
 	if source == FromOSStore {
 		return nil, 0, false, nil
 	}
 	if source == FromKeyFile {
-		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
+		key, err := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName), judged)
 		if errors.Is(err, unix.ENOENT) {
 			return nil, 0, false, &Refusal{Cause: KeyNotFound}
 		}
 		return key, ModeKeyFile, false, err
 	}
-	keyFile, keyFileErr := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName))
+	keyFile, keyFileErr := readBootstrapKey(int(directory.Fd()), keyFileName, filepath.Join(folder, keyFileName), judged)
 	if keyFileErr != nil && !errors.Is(keyFileErr, unix.ENOENT) {
 		return nil, 0, false, keyFileErr
 	}
-	secret, secretErr := readBootstrapKey(unix.AT_FDCWD, swarmSecretPath, swarmSecretPath)
+	secret, secretErr := readBootstrapKey(unix.AT_FDCWD, swarmSecretPath, swarmSecretPath, judged)
 	if secretErr != nil && !errors.Is(secretErr, unix.ENOENT) {
 		clear(keyFile)
 		return nil, 0, false, secretErr
@@ -291,8 +292,18 @@ func linuxBuildKey(directory *os.File, folder string, source KeySource) ([]byte,
 	return keyFile, ModeContainer, false, nil
 }
 
-func readBootstrapKey(directory int, name, path string) ([]byte, error) {
-	file, err := openKeySource(directory, name, path)
+// readBootstrapKey reads a key source. With judged set, the source is the descriptor held there
+// under its path, an absent one being absent; without it, the source is opened here.
+func readBootstrapKey(directory int, name, path string, judged map[string]*os.File) ([]byte, error) {
+	var file *os.File
+	var err error
+	if judged == nil {
+		file, err = openKeySource(directory, name, path)
+	} else if held := judged[path]; held != nil {
+		file, err = reopenDescriptor(held, unix.O_RDONLY)
+	} else {
+		err = unix.ENOENT
+	}
 	if err != nil {
 		return nil, err
 	}

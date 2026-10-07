@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -50,13 +51,11 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 	if err := judgeFolder(directory, folder); err != nil {
 		return nil, err
 	}
-	judged, err := checkServiceItems(directory, folder, mode, stat.Uid)
+	judged, err := checkServiceItems(directory, folder, mode, stat.Uid, lock)
 	if err != nil {
 		return nil, err
 	}
-	if judged != nil {
-		defer func() { _ = judged.Close() }() //nolint:errcheck // a path handle holds nothing to flush
-	}
+	defer closeJudged(judged)
 	if err := checkSetupMode(ctx, mode); err != nil {
 		return nil, err
 	}
@@ -69,42 +68,54 @@ func unlockServiceOnPlatform(ctx context.Context, folder string, mode KeyMode) (
 }
 
 // checkServiceItems refuses a link, then an item looser than its rule, then a file or folder the
-// service account cannot write, in that order. The bootstrap file is opened once, here, and every
-// check and the read that follows go through that descriptor; the caller closes it. An absent file
-// gives none.
-func checkServiceItems(directory *os.File, folder string, mode KeyMode, accountID uint32) (*os.File, error) {
-	var bootstrapFile *os.File
-	fail := func(err error) (*os.File, error) {
-		if bootstrapFile != nil {
-			_ = bootstrapFile.Close() //nolint:errcheck // a path handle holds nothing to flush
-		}
+// service account cannot write, in that order. Every item the unlock reads is opened once, here,
+// and judged on that descriptor, the held lock on its own; the read that follows goes through the
+// same descriptors, which are returned by path and closed by the caller. An absent item is not in
+// the map.
+func checkServiceItems(directory *os.File, folder string, mode KeyMode, accountID uint32, lock *os.File) (map[string]*os.File, error) {
+	held := map[string]*os.File{}
+	fail := func(err error) (map[string]*os.File, error) {
+		closeJudged(held)
 		return nil, err
 	}
-	for _, name := range []string{bootstrapFileName, keyFileName} {
-		judged, _, err := openUnlinked(int(directory.Fd()), name, filepath.Join(folder, name), unix.O_PATH, itemOf(name))
+	keep := func(path string, file *os.File, err error) error {
 		if errors.Is(err, unix.ENOENT) {
-			continue
+			return nil
 		} else if err != nil {
+			return err
+		}
+		held[path] = file
+		return nil
+	}
+	for _, name := range []string{bootstrapFileName, keyFileName} {
+		path := filepath.Join(folder, name)
+		file, _, err := openUnlinked(int(directory.Fd()), name, path, unix.O_PATH, itemOf(name))
+		if err := keep(path, file, err); err != nil {
 			return fail(err)
 		}
-		if name == bootstrapFileName {
-			bootstrapFile = judged
-		} else {
-			_ = judged.Close() //nolint:errcheck // a path handle holds nothing to flush
+	}
+	// A link in either of these is a finding of the permission check, not a Link refusal.
+	credentialPath := filepath.Join(folder, systemdCredentialFileName)
+	credential, err := openPathHandle(int(directory.Fd()), systemdCredentialFileName, credentialPath)
+	if err := keep(credentialPath, credential, err); err != nil {
+		return fail(err)
+	}
+	if mode == ModeContainer {
+		secret, err := openPathHandle(unix.AT_FDCWD, swarmSecretPath, swarmSecretPath)
+		if err := keep(swarmSecretPath, secret, err); err != nil {
+			return fail(err)
 		}
 	}
-	judged := map[string]*os.File{}
-	if bootstrapFile != nil {
-		judged[filepath.Join(folder, bootstrapFileName)] = bootstrapFile
-	}
-	findings, err := findLooserItems(directory, folder, mode, ownerName(accountID), accountID, judged)
+	inspected := maps.Clone(held)
+	inspected[filepath.Join(folder, lockFileName)] = lock
+	findings, err := findLooserItems(directory, folder, mode, ownerName(accountID), accountID, inspected)
 	if err != nil {
 		return fail(err)
 	}
 	if len(findings) > 0 {
 		return fail(looserRefusal(findings))
 	}
-	if bootstrapFile != nil {
+	if bootstrapFile := held[filepath.Join(folder, bootstrapFileName)]; bootstrapFile != nil {
 		// Any refusal of write access, an immutable flag included, is NotWritable; any other
 		// failure of the check is returned as it is.
 		writer, err := reopenDescriptor(bootstrapFile, unix.O_WRONLY)
@@ -122,7 +133,22 @@ func checkServiceItems(directory *os.File, folder string, mode KeyMode, accountI
 	} else if err != nil {
 		return fail(err)
 	}
-	return bootstrapFile, nil
+	return held, nil
+}
+
+func closeJudged(held map[string]*os.File) {
+	for _, file := range held {
+		_ = file.Close() //nolint:errcheck // a path handle holds nothing to flush
+	}
+}
+
+// openPathHandle opens an item as itself, a link included, without reading it.
+func openPathHandle(directory int, name, path string) (*os.File, error) {
+	descriptor, err := unix.Openat(directory, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(descriptor), path), nil
 }
 
 func refusedWrite(err error) bool {

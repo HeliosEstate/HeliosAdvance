@@ -56,33 +56,22 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode, acc
 
 // unlockWindowsFile deletes the half-made file, unseals the bootstrap key and opens the bootstrap
 // file under it, all through the folder's handle. The service's checks open the bootstrap file
-// once and hand it over as input; without it the file is opened here.
-func unlockWindowsFile(ctx context.Context, directory *os.File, folder string, input *os.File) (*bootstrapFile, Holding, error) {
+// and the sealed-key file once and hand them over in judged, by name, and the caller closes them;
+// an item missing from judged is absent. Without judged, each is opened here.
+func unlockWindowsFile(ctx context.Context, directory *os.File, folder string, judged map[string]*os.File) (*bootstrapFile, Holding, error) {
 	if err := deleteChild(windows.Handle(directory.Fd()), bootstrapFileName+".new"); err != nil {
 		return nil, 0, fmt.Errorf("bootstrap: deleting the half-made bootstrap file: %w", err)
 	}
-	if input == nil {
-		var err error
-		input, err = openBootstrapFile(directory)
-		if err != nil {
-			return nil, 0, err
-		}
-		defer func() { _ = input.Close() }() //nolint:errcheck // read-only handle
-	}
-	if err := checkWindowsHandle(windows.Handle(input.Fd()), filepath.Join(folder, bootstrapFileName)); err != nil {
+	input, closeInput, err := unlockItem(directory, folder, bootstrapFileName, FileNotFound, judged)
+	if err != nil {
 		return nil, 0, err
 	}
-	sealedHandle, err := openChild(windows.Handle(directory.Fd()), sealedKeyFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
-	if windowsMissingItem(err) {
-		return nil, 0, &Refusal{Cause: KeyNotFound}
-	} else if err != nil {
+	defer closeInput()
+	sealedFile, closeSealed, err := unlockItem(directory, folder, sealedKeyFileName, KeyNotFound, judged)
+	if err != nil {
 		return nil, 0, err
 	}
-	sealedFile := os.NewFile(uintptr(sealedHandle), sealedKeyFileName)
-	defer func() { _ = sealedFile.Close() }() //nolint:errcheck // read-only handle
-	if err := checkWindowsHandle(sealedHandle, filepath.Join(folder, sealedKeyFileName)); err != nil {
-		return nil, 0, err
-	}
+	defer closeSealed()
 	sealedInfo, err := sealedFile.Stat()
 	if err != nil {
 		return nil, 0, err
@@ -153,16 +142,29 @@ func takeSetupLock(directory *os.File, folder string, service *windows.SID, owne
 	return os.NewFile(uintptr(handle), filepath.Join(folder, lockFileName)), nil
 }
 
-// openBootstrapFile opens the bootstrap file once, relative to the folder's handle, for the reads
-// and the checks that follow.
-func openBootstrapFile(directory *os.File) (*os.File, error) {
-	handle, err := openChild(windows.Handle(directory.Fd()), bootstrapFileName, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
-	if windowsMissingItem(err) {
-		return nil, &Refusal{Cause: FileNotFound}
-	} else if err != nil {
-		return nil, err
+// unlockItem is a file the unlock reads, and the function that closes it. From judged it is the
+// handle the checks judged, which the caller closes; without judged it is opened once here,
+// relative to the folder's handle, and judged for a link on that handle. An absent file is refused
+// with the cause given.
+func unlockItem(directory *os.File, folder, name string, missing Cause, judged map[string]*os.File) (*os.File, func(), error) {
+	if judged != nil {
+		if file := judged[name]; file != nil {
+			return file, func() {}, nil
+		}
+		return nil, nil, &Refusal{Cause: missing}
 	}
-	return os.NewFile(uintptr(handle), bootstrapFileName), nil
+	handle, err := openChild(windows.Handle(directory.Fd()), name, windows.GENERIC_READ|windows.FILE_READ_ATTRIBUTES)
+	if windowsMissingItem(err) {
+		return nil, nil, &Refusal{Cause: missing}
+	} else if err != nil {
+		return nil, nil, err
+	}
+	file := os.NewFile(uintptr(handle), name)
+	if err := checkWindowsHandle(handle, filepath.Join(folder, name)); err != nil {
+		_ = file.Close() //nolint:errcheck // read-only handle
+		return nil, nil, err
+	}
+	return file, func() { _ = file.Close() }, nil //nolint:errcheck // read-only handle
 }
 
 // deleteChild deletes a name inside the folder, relative to the folder's handle; a link is deleted

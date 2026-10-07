@@ -110,8 +110,8 @@ func findLooserItems(directory *os.File, folder string, mode KeyMode, account st
 }
 
 // statItem reads an item's owner and mode: the folder from its handle, what is in it
-// relative to that handle or from the handle given, and the Swarm secret, which is mounted outside,
-// from a handle of its own.
+// relative to that handle, and the Swarm secret, which is mounted outside, from a handle of its
+// own; an item whose handle is given is read from that handle.
 func statItem(directory *os.File, path string, item Item, handle *os.File) (unix.Stat_t, error) {
 	var stat unix.Stat_t
 	var err error
@@ -119,6 +119,10 @@ func statItem(directory *os.File, path string, item Item, handle *os.File) (unix
 	case ItemFolder:
 		err = unix.Fstat(int(directory.Fd()), &stat)
 	case ItemSwarmSecret:
+		if handle != nil {
+			err = unix.Fstat(int(handle.Fd()), &stat)
+			break
+		}
 		var descriptor int
 		if descriptor, err = unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); err == nil {
 			err = unix.Fstat(descriptor, &stat)
