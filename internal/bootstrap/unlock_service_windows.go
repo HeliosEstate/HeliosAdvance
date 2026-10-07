@@ -124,8 +124,14 @@ func checkServiceItems(directory *os.File, folder string, mode KeyMode, account 
 			return &Refusal{Cause: NotWritable, Path: filepath.Join(folder, bootstrapFileName), Item: ItemFile}
 		}
 	}
-	if err = reopenForWrite(folderHandle, fileAddFile); errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+	// ReOpenFile refuses a directory handle whatever its access list says, so the folder is
+	// opened again as an empty name under itself.
+	const shareAll = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
+	again, err := ntOpenChild(folderHandle, "", fileAddFile, shareAll, windows.FILE_OPEN, nil)
+	if errors.Is(err, windows.STATUS_ACCESS_DENIED) {
 		return &Refusal{Cause: NotWritable, Path: folder, Item: ItemFolder}
+	} else if err == nil {
+		_ = windows.CloseHandle(again) //nolint:errcheck // nothing to flush
 	}
 	return nil
 }
