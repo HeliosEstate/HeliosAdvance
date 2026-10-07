@@ -22,8 +22,8 @@
 // Two programs link this package and it cannot ask which one is calling, so each gets its
 // own handle. hadv-setup's operations are refused unless the process is elevated or root.
 // hadv-service's handle changes the vault-key fields and nothing else, and is refused when
-// elevated or root, since hadv-service runs only as the account that owns the bootstrap
-// folder. hadv-service therefore has no way to ask for a change to any other field.
+// elevated or root, since hadv-service runs only as the bootstrap folder's service account.
+// hadv-service therefore has no way to ask for a change to any other field.
 //
 // # Where things are
 //
@@ -42,7 +42,9 @@
 // defaults to %ProgramData%\HeliosAdvance on Windows and /var/lib/heliosadvance on Linux; in a
 // container it is always /var/lib/heliosadvance, a volume. The service account is the
 // virtual account NT SERVICE\HeliosAdvance on Windows and the system user heliosadvance on
-// Linux. Every file in the bootstrap folder other than the key file takes the bootstrap
+// Linux. The bootstrap folder's service account is the account that owns the folder on Linux,
+// and on Windows the account its access list names beside SYSTEM and Administrators, since
+// there the folder is owned by Administrators. Every file in the bootstrap folder other than the key file takes the bootstrap
 // file's permission rule. A key file or Swarm secret is RFC 4648's standard base64 alphabet
 // with its padding, and each key has one spelling: the bits after its last byte are zero.
 //
@@ -362,9 +364,9 @@ const (
 	NewerFormat                           // FileVersion and OwnVersion name both
 	FolderRefused                         // Rule names which
 	LooserThanRule                        // Item names what
-	NotWritable                           // the bootstrap file, for the service account
+	NotWritable                           // the bootstrap file or folder, for the service account
 	Link                                  // an item is a symbolic link, a junction, or a file with more than one name
-	WrongAccount                          // not the account that owns the bootstrap folder
+	WrongAccount                          // not the bootstrap folder's service account
 	NotElevated                           // a hadv-setup operation without administrator or root rights
 	KeyFileMalformed                      // not 32 bytes as base64 in 44 characters, at most one trailing newline
 	NoCredentialStore                     // Linux without systemd 250 or later, and no key file chosen
@@ -594,6 +596,8 @@ type Bootstrap interface {
 	//   - If the process is neither elevated nor root, then UnlockForSetup shall refuse with
 	//     NotElevated.
 	//   - If another handle holds the lock, then UnlockForSetup shall refuse with InUse.
+	//   - If bootstrap.lock is absent, then UnlockForSetup shall create it already set to its
+	//     rule.
 	//   - If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused,
 	//     naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
@@ -657,26 +661,30 @@ type Bootstrap interface {
 	//     LooserThanRule and change nothing.
 	SetToRule(finding Finding, account string) error
 
-	// UnlockForService is called by hadv-service, as the account that owns the bootstrap
-	// folder. It runs every start check, takes the lock, deletes a half-made file and
-	// unlocks.
+	// UnlockForService is called by hadv-service, as the bootstrap folder's service account.
+	// It runs every start check, takes the lock, deletes a half-made file and unlocks.
 	//
 	//   - UnlockForService shall check the account first, then take the lock, then check the
 	//     folder, the links and the permissions, then delete a half-made file, and only then
 	//     unlock.
 	//   - If the process runs elevated or as root, then UnlockForService shall refuse with
 	//     WrongAccount.
-	//   - If the process runs under any account other than the one that owns the bootstrap folder,
-	//     then UnlockForService shall refuse with WrongAccount.
+	//   - Where the server runs Linux, if the process runs under any account other than the one
+	//     that owns the bootstrap folder, then UnlockForService shall refuse with WrongAccount.
+	//   - Where the server runs Windows, if the process runs under any account that the bootstrap
+	//     folder's access list does not name beside SYSTEM and Administrators, then
+	//     UnlockForService shall refuse with WrongAccount.
 	//   - If another handle holds the lock, then UnlockForService shall refuse with InUse.
+	//   - If bootstrap.lock is absent, then UnlockForService shall create it already set to its
+	//     rule.
 	//   - If the folder breaks a folder rule, then UnlockForService shall refuse with
 	//     FolderRefused, naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
 	//     more than one name, then UnlockForService shall refuse with Link.
 	//   - If an item in the permission table is set looser than its rule, then UnlockForService
 	//     shall refuse with LooserThanRule, naming the item and its path.
-	//   - If the bootstrap file is not writable by the service account, then UnlockForService
-	//     shall refuse with NotWritable.
+	//   - If the bootstrap file or the bootstrap folder is not writable by the service account,
+	//     then UnlockForService shall refuse with NotWritable.
 	//   - UnlockForService shall make every check on the handle it opened, never on a name alone.
 	//     [read]
 	//   - UnlockForService shall change no permission. [read]
@@ -704,8 +712,8 @@ type Bootstrap interface {
 	//   - Where the server runs Windows, UnlockForService shall report HeldInTPM when the machine
 	//     key pair is in the Microsoft Platform Crypto Provider, and HeldInSoftwareKeyStore
 	//     otherwise.
-	//   - Where the server runs Linux with systemd, UnlockForService shall report HeldInTPM when
-	//     the credential is sealed under the TPM, and HeldUnderHostKey otherwise.
+	//   - Where the mode is ModeSystemdPerUse or ModeSystemdAtStart, UnlockForService shall report
+	//     HeldInTPM when the credential is sealed under the TPM, and HeldUnderHostKey otherwise.
 	//   - UnlockForService shall report HeldAsSwarmSecret for a Swarm secret and HeldInKeyFile for
 	//     a key file.
 	//   - UnlockForService shall overwrite the bootstrap key in its memory before it returns.
