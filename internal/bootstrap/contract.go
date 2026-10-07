@@ -591,13 +591,14 @@ type Bootstrap interface {
 	//   - Build shall overwrite the bootstrap key in its memory before it returns. [read]
 	Build(ctx context.Context, folder string, fields Fields, path BuildPath, account string, source KeySource) (KeyMode, error)
 
-	// UnlockForSetup is called by hadv-setup, elevated. It unlocks and takes the lock.
+	// UnlockForSetup is called by hadv-setup, elevated, with the service account, as hadv-setup
+	// registered it. It unlocks and takes the lock.
 	//
 	//   - If the process is neither elevated nor root, then UnlockForSetup shall refuse with
 	//     NotElevated.
 	//   - If another handle holds the lock, then UnlockForSetup shall refuse with InUse.
 	//   - If bootstrap.lock is absent, then UnlockForSetup shall create it already set to its
-	//     rule.
+	//     rule for the account it is given.
 	//   - If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused,
 	//     naming the rule.
 	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
@@ -622,11 +623,13 @@ type Bootstrap interface {
 	//   - If the bootstrap file is absent, then UnlockForSetup shall refuse with FileNotFound.
 	//   - Where the server runs Linux with systemd, UnlockForSetup shall have systemd decrypt the
 	//     credential itself, in either mode.
+	//   - Where the mode is ModeSystemdPerUse, UnlockForSetup shall have systemd decrypt the
+	//     credential scoped to the account it is given.
 	//   - UnlockForSetup shall overwrite the bootstrap key in its memory before it returns.
 	//     [read]
 	//   - When UnlockForSetup unlocks the bootstrap file, it shall return a handle that holds the
 	//     lock until Close.
-	UnlockForSetup(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error)
+	UnlockForSetup(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error)
 
 	// Check is called by hadv-setup, elevated: every item set looser than its rule, empty
 	// when all hold.
