@@ -30,15 +30,18 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 	if err != nil {
 		return nil, err
 	}
-	attributes, err := lockAttributes(windows.Handle(directory.Fd()))
-	if err != nil {
-		return nil, err
-	}
 	restorePrivileges := enablePrivileges("SeRestorePrivilege")
-	lockHandle, err := windows.CreateFile(lockName, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, attributes, windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	lockHandle, err := windows.CreateFile(lockName, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if windowsMissingItem(err) {
+		// The descriptor is built only for a lock this unlock creates.
+		var attributes *windows.SecurityAttributes
+		if attributes, err = lockAttributes(windows.Handle(directory.Fd())); err == nil {
+			lockHandle, err = windows.CreateFile(lockName, windows.GENERIC_READ|windows.GENERIC_WRITE, 0, attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		}
+	}
 	restorePrivileges()
 	if err != nil {
-		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		if errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_FILE_EXISTS) {
 			return nil, &Refusal{Cause: InUse}
 		}
 		return nil, err

@@ -11,21 +11,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
-var hostCredentialIDs = [][16]byte{
-	{0x5a, 0x1c, 0x6a, 0x86, 0xdf, 0x9d, 0x40, 0x96, 0xb1, 0xd5, 0xa6, 0x5e, 0x08, 0x62, 0xf1, 0x9a},
-	{0x55, 0xb9, 0xed, 0x1d, 0x38, 0x59, 0x4d, 0x43, 0xa8, 0x31, 0x9d, 0x2e, 0xbb, 0x33, 0x2a, 0xc6},
-}
-
-// tpmCredentialIDs are systemd's identifiers for a credential sealed under the host key and the TPM:
-// the system form, then the form scoped to an account.
+// tpmCredentialIDs are systemd's identifiers for every credential form that involves the TPM: under
+// the TPM alone or with the host key, system or scoped to an account, with or without a signed
+// policy, and with or without the storage root key pinned. The identifier only decides Holding;
+// systemd decides whether the credential decrypts.
 var tpmCredentialIDs = [][16]byte{
 	{0x93, 0xa8, 0x94, 0x09, 0x48, 0x74, 0x44, 0x90, 0x90, 0xca, 0xf2, 0xfc, 0x93, 0xca, 0xb5, 0x53},
 	{0xef, 0x4a, 0xc1, 0x36, 0x79, 0xa9, 0x48, 0x0e, 0xa7, 0xdb, 0x68, 0x89, 0x7f, 0x9f, 0x16, 0x5d},
+	{0x0c, 0x7c, 0xc0, 0x7b, 0x11, 0x76, 0x45, 0x91, 0x9c, 0x4b, 0x0b, 0xea, 0x08, 0xbc, 0x20, 0xfe},
+	{0xfa, 0xf7, 0xeb, 0x93, 0x41, 0xe3, 0x41, 0x2c, 0xa1, 0xa4, 0x36, 0xf9, 0x5a, 0x29, 0x36, 0x2f},
+	{0xaf, 0x49, 0x50, 0xa8, 0x49, 0x13, 0x4e, 0xb1, 0xa7, 0x38, 0x46, 0x30, 0x4f, 0xf3, 0x0c, 0x05},
+	{0xad, 0xbc, 0x4c, 0xa3, 0xef, 0xb6, 0x42, 0x01, 0xba, 0x88, 0x1b, 0x6f, 0x2e, 0x40, 0x95, 0xea},
+	{0xd4, 0x06, 0x2d, 0xfb, 0x71, 0xad, 0x4c, 0x86, 0x80, 0x4b, 0x40, 0xef, 0x11, 0x80, 0xf1, 0xfc},
+	{0x5e, 0x2d, 0x5c, 0x76, 0x03, 0x72, 0x4e, 0xaf, 0x84, 0x3c, 0x6f, 0xb5, 0xf6, 0x40, 0x98, 0xf5},
+	{0x14, 0x14, 0x25, 0x88, 0x18, 0xa2, 0x40, 0xcd, 0x90, 0x0b, 0xce, 0x86, 0x2d, 0xb5, 0xc7, 0xb9},
+	{0x2a, 0x1f, 0x87, 0x7a, 0x42, 0x75, 0x43, 0x1a, 0xb3, 0xf9, 0xed, 0x1f, 0x5d, 0x8f, 0x66, 0x01},
+	{0xaf, 0xbf, 0xea, 0xac, 0xeb, 0x6a, 0x4a, 0x37, 0x95, 0x41, 0x9d, 0x13, 0x5c, 0x47, 0xf3, 0x7b},
+	{0x16, 0xe4, 0x92, 0x94, 0x9f, 0x94, 0x40, 0x02, 0x86, 0x75, 0x8f, 0x94, 0xb7, 0xc5, 0x2b, 0xc7},
 }
 
 func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (SetupHandle, error) {
@@ -47,20 +55,27 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 	if !linuxSetupMode(mode, version, hasSystemd) {
 		return nil, &Refusal{Cause: SourceRefused}
 	}
-	lockFD, err := unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	// The lock's rule is the folder's owner; one this root process just created is root's, so only a
+	// lock made here is given over. One found there is for Check and SetToRule.
+	lockFD, err := unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	created := err == nil
+	if errors.Is(err, unix.EEXIST) {
+		lockFD, err = unix.Openat(int(directory.Fd()), "bootstrap.lock", unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: opening the lock: %w", err)
 	}
 	lock := os.NewFile(uintptr(lockFD), "bootstrap.lock")
-	// The lock's rule is the folder's owner; one this root process just created is root's.
-	var folderStat unix.Stat_t
-	if err := unix.Fstat(int(directory.Fd()), &folderStat); err != nil {
-		_ = lock.Close() //nolint:errcheck // returning the stat error
-		return nil, err
-	}
-	if err := unix.Fchown(lockFD, int(folderStat.Uid), -1); err != nil {
-		_ = lock.Close() //nolint:errcheck // returning the chown error
-		return nil, err
+	if created {
+		var folderStat unix.Stat_t
+		if err := unix.Fstat(int(directory.Fd()), &folderStat); err != nil {
+			_ = lock.Close() //nolint:errcheck // returning the stat error
+			return nil, err
+		}
+		if err := unix.Fchown(lockFD, int(folderStat.Uid), -1); err != nil {
+			_ = lock.Close() //nolint:errcheck // returning the chown error
+			return nil, err
+		}
 	}
 	locked := false
 	defer func() {
@@ -113,16 +128,13 @@ func unlockSetupOnPlatform(ctx context.Context, folder string, mode KeyMode) (Se
 			break
 		}
 		defer func() { _ = credentialFile.Close() }() //nolint:errcheck // read-only credential
-		if credentialID == tpmCredentialIDs[0] || credentialID == tpmCredentialIDs[1] {
+		if slices.Contains(tpmCredentialIDs, credentialID) {
 			holding = HeldInTPM
 			if _, err = linuxTPMDevice(ctx); err != nil {
 				break
 			}
-		} else if credentialID == hostCredentialIDs[0] || credentialID == hostCredentialIDs[1] {
-			holding = HeldUnderHostKey
 		} else {
-			err = &Refusal{Cause: KeyNotUnsealed}
-			break
+			holding = HeldUnderHostKey
 		}
 		args := []string{"decrypt", "--name=" + machineKeyPairName, "-", "-"}
 		if mode == ModeSystemdPerUse {
