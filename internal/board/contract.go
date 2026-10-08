@@ -20,6 +20,6 @@ type AccountID uint32
 type RoleID uint32
 
 // ServerID is allocated by the database at join, never reused, and held in the bootstrap
-// record. It carries no authority: the server's database login does. Small so it reads in
+// file. It carries no authority: the server's database login does. Small so it reads in
 // a log line.
 type ServerID uint32

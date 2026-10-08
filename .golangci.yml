@@ -144,6 +144,19 @@ linters:
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
+        # The bootstrap package reaches every file through os.OpenRoot on its folder, never by
+        # a path; these calls take one. Scoped to it below.
+        - pattern: ^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|Rename|Remove|RemoveAll|Stat|Lstat|Chmod|Chown|Lchown|Chtimes|Chdir|ReadDir|Mkdir|MkdirAll|MkdirTemp|Link|Symlink|Readlink|Truncate|DirFS)$
+          msg: the bootstrap package reaches files only through os.Root
+        - pattern: ^syscall\.(Open|Openat|Creat|Rename|Unlink|Mkdir|Rmdir|Chmod|Chown|Lchown|Chdir|Link|Symlink|Readlink|Stat|Lstat|Truncate|CreateFile|DeleteFile|MoveFile|CreateDirectory|RemoveDirectory)$
+          pkg: ^syscall$
+          msg: the bootstrap package reaches files only through os.Root
+        - pattern: ^unix\.(Open|Openat|Openat2|Creat|Rename|Renameat|Renameat2|Unlink|Unlinkat|Mkdir|Mkdirat|Rmdir|Chmod|Fchmodat|Chown|Fchownat|Lchown|Chdir|Link|Linkat|Symlink|Symlinkat|Readlink|Readlinkat|Stat|Lstat|Fstatat|Truncate)$
+          pkg: ^golang\.org/x/sys/unix$
+          msg: the bootstrap package reaches files only through os.Root
+        - pattern: ^windows\.(CreateFile|DeleteFile|MoveFile|MoveFileEx|CreateDirectory|RemoveDirectory|SetFileAttributes|GetFileAttributes|GetFileAttributesEx|FindFirstFile|CreateHardLink|CreateSymbolicLink|SetCurrentDirectory)$
+          pkg: ^golang\.org/x/sys/windows$
+          msg: the bootstrap package reaches files only through os.Root
     gosec:
       excludes:
         - G104 # errcheck already reports an unchecked error
@@ -158,12 +171,25 @@ linters:
         - name: unused-parameter
   exclusions:
     rules:
-      # The only exceptions to the unsafe ban: the bootstrap unit's Windows code, which reads
-      # access-control entries and calls the CNG key store through raw memory. The developer
-      # decided on 2026-10-07 that this code is thrown away; these lines go with it.
-      - path: internal/bootstrap/(permissions|unlock_setup)_windows\.go
+      # The only exception to the unsafe ban: the bootstrap package's one small file for the
+      # Windows key store (NCrypt), which golang.org/x/sys does not wrap, so its calls take raw
+      # pointers. The developer's decision, 2026-10-08; read line by line at review.
+      - path: internal/bootstrap/keystore_windows\.go
         linters: [depguard]
         text: import 'unsafe'
+      # systemd tells a service where its decrypted credentials are by CREDENTIALS_DIRECTORY
+      # (systemd.exec(5)); it is neither a setting nor a secret. This one file reads it.
+      - path: internal/bootstrap/credentials_linux\.go
+        linters: [forbidigo]
+        text: os\.LookupEnv
+      # The ban on calls that take a path is the bootstrap package's, and binds its product code,
+      # not its tests, which set up folders to open.
+      - path-except: internal/bootstrap/
+        linters: [forbidigo]
+        text: only through os\.Root
+      - path: internal/bootstrap/.*_test\.go
+        linters: [forbidigo]
+        text: only through os\.Root
       # A contract.go is a unit's whole surface, declared at the owner and locked; the
       # small-interface rule applies to consumers, which declare the slice they call.
       - path: contract\.go

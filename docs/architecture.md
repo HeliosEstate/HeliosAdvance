@@ -51,7 +51,8 @@ PR, with its reason.
 
 ## The engine's loop, as the contracts imply it
 
-Start: open the bootstrap file with `bootstrap`, which gives the server's ID and its database account;
+Start: open the bootstrap file with `bootstrap`, which gives the server's ID and its database account,
+and release the handle once those are taken;
 `registry.Approve`; `lease.Acquire`; `session.Repair`; declare settings and register
 permissions; open listeners. Then renew at the interval.
 On `Expired`: `session.DisconnectAll`, refuse new callers, `Approve` and `Acquire` again on

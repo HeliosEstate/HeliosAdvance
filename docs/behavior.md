@@ -490,10 +490,8 @@ it unseals.
   caller passes, with a new bootstrap key unless that key holder is a key file or a Swarm secret.
 - When create replaces a bootstrap file, the bootstrap package shall put the new file in place only
   after the new file opens.
-- When create replaces a bootstrap file, the bootstrap package shall delete the old bootstrap key
-  only after the new file is in place.
 - If create fails, then the bootstrap package shall leave the bootstrap folder and the key holder as
-  they were before the call.
+  they were before the call, or return the name of a key it failed to delete.
 
 ### Open
 
@@ -533,8 +531,8 @@ it unseals.
 | ErrNotFound | the bootstrap folder or the bootstrap file is not there |
 | ErrUnreadable | the bootstrap file is there and reading it fails |
 | ErrFormat | the header does not match format version 1's layout, the format version is newer, or the file is over 64 KiB |
-| ErrKey | the key holder gives no bootstrap key, or gives one that is not a 256-bit key |
+| ErrKey | the key holder gives no bootstrap key, or gives one that is not a 256-bit key, or the platform does not have the key holder |
 | ErrDecrypt | the bootstrap file does not unseal under the bootstrap key |
 | ErrInvalid | the fields break the rules of a valid bootstrap file, as read or as the caller would save them |
 | ErrExists | create is called with overwrite false and a bootstrap file is present |
-| ErrWrite | writing the new file, or putting it in place of the old one, fails |
+| ErrWrite | writing the new file, opening it, or putting it in place of the old one fails |
