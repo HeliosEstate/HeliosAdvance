@@ -74,6 +74,16 @@ if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >
   git diff --quiet origin/development HEAD -- .github || { git diff --stat origin/development HEAD -- .github; fail ".github/ differs from development; main must carry development's copy"; }
 fi
 
+# 4e. A security linter's finding is fixed or brought to the developer, never silenced: no line
+# this branch adds may switch off gosec, forbidigo or depguard, or every linter at once. The
+# developer, 2026-10-07: the bootstrap code held 17 unsafe uses, each silenced by a one-line
+# reason that every review let through.
+if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
+  silenced=$(git diff -U0 "$BASE...HEAD" -- '*.go' | grep -E '^\+' |
+    grep -E '//[[:space:]]*nolint([[:space:]]|$)|//[[:space:]]*nolint:[^/]*\b(gosec|forbidigo|depguard|all)\b' || true)
+  [ -z "$silenced" ] || { echo "$silenced"; fail "a security linter is silenced: fix the finding, or bring it to the developer"; }
+fi
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
@@ -83,7 +93,15 @@ pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
   need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
+  need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
   go mod verify
+  # Every module the engine is built from, indirect ones included, carries a licence that can
+  # be combined with AGPL-3.0-only; the engine's own module is the AGPL-3.0 one.
+  licences=MIT,BSD-2-Clause,BSD-3-Clause,ISC,Apache-2.0,MPL-2.0
+  for os in windows linux; do
+    GOOS=$os go-licenses check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
+      fail "a module's licence ($os build) is not one AGPL-3.0-only can carry: $licences"
+  done
   go build ./...
   go vet ./...
   golangci-lint run ./...
