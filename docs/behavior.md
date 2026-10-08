@@ -529,7 +529,7 @@ it unseals.
 | Code | The operation fails because |
 |---|---|
 | ErrNotFound | the bootstrap folder or the bootstrap file is not there |
-| ErrUnreadable | the bootstrap file is there and reading it fails |
+| ErrUnreadable | the bootstrap folder or the bootstrap file is there and opening or reading it fails |
 | ErrFormat | the header does not match format version 1's layout, the format version is newer, or the file is over 64 KiB |
 | ErrKey | the key holder gives no bootstrap key, or gives one that is not a 256-bit key, or the platform does not have the key holder |
 | ErrDecrypt | the bootstrap file does not unseal under the bootstrap key |

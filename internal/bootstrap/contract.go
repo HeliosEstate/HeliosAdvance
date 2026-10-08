@@ -86,6 +86,16 @@
 //     bootstrap package shall return ErrKey.
 //   - If the caller or the header names a key holder the platform does not have, then the
 //     bootstrap package shall return ErrKey.
+//   - If the Windows key the sealed key names is in neither provider, or unwrapping the
+//     bootstrap key under it fails, then open shall return ErrKey.
+//   - If systemd-creds decrypt fails, or CREDENTIALS_DIRECTORY is set and holds no
+//     hadv-bootstrap-key, then open shall return ErrKey.
+//   - If the key file or the Swarm secret is not there, or reading it fails, then the bootstrap
+//     package shall return ErrKey.
+//   - If making the Windows key, setting its access list, wrapping the bootstrap key under it or
+//     running systemd-creds encrypt fails, then create shall return ErrKey.
+//   - If a key holder gives a bootstrap key that is not 32 bytes, then the bootstrap package
+//     shall return ErrKey.
 //
 // # The bootstrap file, format version 1
 //
@@ -275,7 +285,8 @@ type ServiceAccount string
 var (
 	// ErrNotFound: the bootstrap folder or the bootstrap file is not there.
 	ErrNotFound = errors.New("bootstrap: not found")
-	// ErrUnreadable: the bootstrap file is there and reading it fails.
+	// ErrUnreadable: the bootstrap folder or the bootstrap file is there and opening or reading
+	// it fails.
 	ErrUnreadable = errors.New("bootstrap: unreadable")
 	// ErrFormat: the header does not match format version 1's layout, the format version is
 	// newer, or the file is over 64 KiB.
@@ -311,6 +322,9 @@ type VaultKey struct {
 // own stuff"). Go's garbage collector may leave the bytes elsewhere in memory, so zeroing is best
 // effort (runtime/secret to be revisited once it is stable). Unknown records never cross: the
 // handle keeps them and writes them back.
+//
+//   - If the fields create or save is passed, or the fields open reads from a file, break a rule
+//     the Fields type gives, then the bootstrap package shall return ErrInvalid.
 //
 // A file read or fields saved get ErrInvalid when:
 //
@@ -360,6 +374,8 @@ type File interface {
 	// asked again. The handle keeps its own copy of what it saved; the caller's stays the
 	// caller's to zero. Results: ErrNotFound, ErrInvalid, ErrWrite.
 	//
+	//   - If the bootstrap folder or bootstrap.hadv is not there, then save shall return
+	//     ErrNotFound before it writes bootstrap.hadv.new.
 	//   - When save is called, save shall write the header the file was opened with and seal
 	//     under the handle's bootstrap key, without asking the key holder.
 	//   - If save fails, then the handle shall keep the fields it held before the save.
@@ -390,6 +406,9 @@ type Bootstrap interface {
 	// After a failure it returns the name of the Windows key it made and could not delete, beside
 	// the code, or "" for none. Results: ErrNotFound, ErrExists, ErrInvalid, ErrKey, ErrWrite.
 	//
+	//   - If the bootstrap folder is not there, then create shall return ErrNotFound.
+	//   - If create is called with overwrite false and bootstrap.hadv is present, then create
+	//     shall return ErrExists before it makes a bootstrap key or writes a file.
 	//   - If create fails after it makes a Windows key, then create shall delete that key.
 	//   - If create fails and deleting the Windows key it made fails, then create shall return
 	//     that key's name with the failure's code.
@@ -400,6 +419,17 @@ type Bootstrap interface {
 	// names, unseals it and closes it before returning. account is used only by key holder 2.
 	// Results: ErrNotFound, ErrUnreadable, ErrFormat, ErrKey, ErrDecrypt, ErrInvalid.
 	//
+	//   - If the bootstrap folder or bootstrap.hadv is not there, then open shall return
+	//     ErrNotFound.
+	//   - If the bootstrap folder or bootstrap.hadv is there and opening or reading it fails, then
+	//     open shall return ErrUnreadable with the OS's cause beneath it.
+	//   - If bootstrap.hadv is larger than 65,536 bytes, then open shall return ErrFormat without
+	//     reading its contents.
+	//   - If a part of the header does not match the table the package comment gives for format
+	//     version 1, or the file is too short for its header, nonce and tag, then open shall
+	//     return ErrFormat before it asks the key holder.
+	//   - If the GCM tag does not verify under the bootstrap key, then open shall return
+	//     ErrDecrypt and no handle.
 	//   - When open returns a handle, the handle shall give the file's fields, its key holder and
 	//     its sealed key.
 	Open(ctx context.Context, folder string, account ServiceAccount) (File, error)
