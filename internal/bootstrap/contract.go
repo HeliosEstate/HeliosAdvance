@@ -164,8 +164,7 @@
 // # Untrusted input and oracles
 //
 // Untrusted inputs: the bootstrap file (the header before anything is verified, the records after
-// it unseals); the old file's header when create replaces it; the key file; the Swarm secret; the
-// credential folder's file; what systemd-creds decrypt and the Windows key store return. Each
+// it unseals); the key file; the Swarm secret; the credential folder's file; what systemd-creds decrypt and the Windows key store return. Each
 // parser among them is a fuzz target: the header reader, the record reader and the base64 key
 // reader, seeded from the kept samples. The fields a caller passes are checked (ErrInvalid), not
 // parsed.
@@ -192,7 +191,8 @@
 //
 //	hadv-setup      makes the bootstrap folder and sets its access list before create
 //	hadv-setup      runs as administrator or root
-//	hadv-setup      saves only once the OS service manager says the service is stopped
+//	hadv-setup      creates and saves only once the OS service manager says the service is
+//	                stopped
 //	hadv-setup      for key holder 3, writes the header's sealed key into the service
 //	                registration as hadv-bootstrap-key
 //	hadv-setup      tells the sysop of any key create could not delete
@@ -202,6 +202,8 @@
 //	every caller    passes the service account to create and open
 //	every caller    releases every handle it opens, uses none after its release, and never logs
 //	                a field
+//	every caller    zeroes, with Zero, every Fields it takes from a handle, and any secret it
+//	                copies out of one
 //	backup utility  leaves out bootstrap.hadv, bootstrap.hadv.new and bootstrap.key
 //
 // This file is the developer's contract (HeliosDesign records/skeleton/Bootstrap.pas) and is
@@ -211,6 +213,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"os"
 
 	"github.com/heliosestate/heliosadvance/internal/board"
 )
@@ -291,23 +294,32 @@ var (
 	ErrWrite = errors.New("bootstrap: write")
 )
 
+// Key256 is a 256-bit key held as a value: assigning or returning it copies the 32 bytes, so no
+// two holders share them. The bootstrap key and each vault key are one.
+type Key256 [32]byte
+
 // VaultKey is one vault key, numbered as the shared secrets unit numbers it.
 type VaultKey struct {
 	Version uint32
-	Key     []byte // 32 bytes
+	Key     Key256
 }
 
-// Fields is the known fields, what crosses the edge. Secrets are byte slices, never strings, so
-// Release can zero them; Go's garbage collector may leave the bytes elsewhere in memory, so
-// zeroing is best effort (runtime/secret to be revisited once it is stable). Unknown records never
-// cross: the handle keeps them and writes them back.
+// Fields is the known fields, what crosses the edge. Secrets are bytes, never strings, so they
+// can be zeroed. Every Fields the handle gives out is a fresh copy of every secret, never the
+// handle's own memory; whoever holds a copy is responsible for zeroing it with Zero (the
+// developer: "Everything that touches something security sensitive has to be responsible for its
+// own stuff"). Go's garbage collector may leave the bytes elsewhere in memory, so zeroing is best
+// effort (runtime/secret to be revisited once it is stable). Unknown records never cross: the
+// handle keeps them and writes them back.
 //
 // A file read or fields saved get ErrInvalid when:
 //
+//	any known field             its record is missing from the file
 //	Server                      it is 0
-//	Connection, AccountName     it is empty
-//	VaultKeys                   it holds none, more than two, two of one version, a key of
-//	                            version 0, or a key that is not 32 bytes
+//	Connection, AccountName     it is empty or not UTF-8
+//	AccountPassword             it is empty
+//	VaultKeys                   it holds none, more than two, two of one version, or a key of
+//	                            version 0
 //	ReceivingKey, SigningKey    it is empty
 type Fields struct {
 	Server          board.ServerID
@@ -319,22 +331,34 @@ type Fields struct {
 	SigningKey      []byte     // the private half; opaque here
 }
 
+// Zero zeroes every secret in this copy of the fields. The one body in this contract: small,
+// and the same for every holder.
+func (fields *Fields) Zero() {
+	clear(fields.AccountPassword)
+	for i := range fields.VaultKeys {
+		clear(fields.VaultKeys[i].Key[:])
+	}
+	clear(fields.ReceivingKey)
+	clear(fields.SigningKey)
+}
+
 // File is an opened bootstrap file. The file itself is closed; the handle holds its fields, its
 // header, its unknown records, the bootstrap key and the folder's path, so it saves only back to
 // the file it came from.
 type File interface {
-	// Fields is the fields as opened or last saved. The caller changes them and passes them to
-	// Save; the slices are the handle's own, so Release zeroes what the caller holds too.
+	// Fields is a fresh copy of the fields as opened or last saved. The caller changes its copy,
+	// passes it to Save, and zeroes it with Zero when done.
 	Fields() Fields
 
-	// KeyHolder and SealedKey are read-only, for hadv-setup's repair step, which rewrites the
-	// service registration from them.
+	// KeyHolder and SealedKey are for hadv-setup's repair step, which rewrites the service
+	// registration from them. SealedKey is a fresh copy; it is no secret.
 	KeyHolder() KeyHolder
 	SealedKey() []byte
 
 	// Save seals the fields under the handle's bootstrap key, with the same header and a new
 	// nonce, unknown records in their places, through the write path. The key holder is not
-	// asked again. Results: ErrNotFound, ErrInvalid, ErrWrite.
+	// asked again. The handle keeps its own copy of what it saved; the caller's stays the
+	// caller's to zero. Results: ErrNotFound, ErrInvalid, ErrWrite.
 	//
 	//   - When save is called, save shall write the header the file was opened with and seal
 	//     under the handle's bootstrap key, without asking the key holder.
@@ -342,8 +366,8 @@ type File interface {
 	//   - When save succeeds, the handle shall hold the fields it saved.
 	Save(fields Fields) error
 
-	// Release zeroes every secret the handle holds, best effort, as on Fields. The handle is
-	// not used after.
+	// Release zeroes every secret the handle holds, its own copies and the bootstrap key, best
+	// effort, as on Fields. The handle is not used after.
 	//
 	//   - When release is called, release shall zero every secret the handle holds, the
 	//     bootstrap key included.
@@ -356,25 +380,19 @@ type Bootstrap interface {
 	// Create makes a new bootstrap file in folder, sealed under holder: with a new bootstrap key
 	// for key holders 1 to 3, granted to account where the key holder needs it; under the key
 	// the key file or Swarm secret holds for 4 and 5. With overwrite false and a file present, it
-	// refuses before it makes anything. With overwrite true, it reads only the old file's
-	// header, never unsealing it: the new file goes in place only after it opens, and a Windows
-	// key the old header names is deleted only after that; an old header that does not parse is
-	// replaced and nothing is deleted. A failure leaves the folder and the key holder as they
-	// were, deleting any key it made.
+	// refuses before it makes anything. With overwrite true, it never reads the old file: the new
+	// file goes in place only after it opens. So a file copied from another system, whose header
+	// names a key holder this platform lacks, is still replaced. The old file's Windows key, if it
+	// had one, is left: named hadv-, it opens nothing and blocks nothing, and hadv-setup may list
+	// it for the sysop. A failure leaves the folder and the key holder as they were, deleting any
+	// key it made.
 	//
-	// It returns the name of any key it could not delete (the old one after a replace, or the new
-	// one after a failure), or "" for none; a key it could not delete does not fail it. Results:
-	// ErrNotFound, ErrExists, ErrInvalid, ErrKey, ErrWrite.
+	// After a failure it returns the name of the Windows key it made and could not delete, beside
+	// the code, or "" for none. Results: ErrNotFound, ErrExists, ErrInvalid, ErrKey, ErrWrite.
 	//
-	//   - When create replaces a bootstrap file, create shall read no more of the old file than
-	//     its header.
-	//   - When create replaces a bootstrap file whose header does not match format version 1's
-	//     layout, create shall put the new file in place and delete no key.
 	//   - If create fails after it makes a Windows key, then create shall delete that key.
 	//   - If create fails and deleting the Windows key it made fails, then create shall return
 	//     that key's name with the failure's code.
-	//   - If deleting the old Windows key fails after the new file is in place, then create shall
-	//     return that key's name and no code.
 	Create(ctx context.Context, folder string, holder KeyHolder, account ServiceAccount,
 		fields Fields, overwrite bool) (undeleted string, err error)
 
@@ -388,17 +406,19 @@ type Bootstrap interface {
 }
 
 // holder is the five key holders behind one interface, inside the package and not offered to
-// callers (the Pascal's IKeyHolder), so platform differences live in them and not in Create, Open
-// or Save.
+// callers, so platform differences live in them and not in Create, Open or Save.
 type holder interface {
 	// newKey makes a new bootstrap key and its sealed form for the header, granted to account
 	// where the key holder needs it. Key holders 4 and 5 make nothing: the key they hold, and
-	// no sealed key.
-	newKey(ctx context.Context, account ServiceAccount) (key, sealedKey []byte, err error)
+	// no sealed key. folder is the bootstrap folder's root, open for the call that holds it;
+	// the key file holder reads bootstrap.key through it, and the others ignore it.
+	newKey(ctx context.Context, folder *os.Root, account ServiceAccount) (
+		key Key256, sealedKey []byte, err error)
 
 	// key is the bootstrap key, from the sealed key the header carries (key holders 1 to 3) or
-	// the key file or Swarm secret (4 and 5): exactly 32 bytes, or ErrKey.
-	key(ctx context.Context, sealedKey []byte, account ServiceAccount) ([]byte, error)
+	// the key file or Swarm secret (4 and 5): exactly 32 bytes, or ErrKey. folder as on newKey.
+	key(ctx context.Context, folder *os.Root, sealedKey []byte, account ServiceAccount) (
+		Key256, error)
 
 	// deleteKey deletes the Windows key the sealed key names, for key holder 1; the others do
 	// nothing, since a systemd credential lives only in the header and the sysop's keys are the

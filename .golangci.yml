@@ -146,12 +146,15 @@ linters:
           msg: tests synchronise on events or the fake clock, never on a sleep
         # The bootstrap package reaches every file through os.OpenRoot on its folder, never by
         # a path; these calls take one. Scoped to it below.
-        - pattern: ^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|Rename|Remove|RemoveAll|Stat|Lstat|Chmod|Chown|Lchown|Chtimes|ReadDir|Mkdir|MkdirAll|MkdirTemp|Link|Symlink|Readlink|Truncate|DirFS)$
+        - pattern: ^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|Rename|Remove|RemoveAll|Stat|Lstat|Chmod|Chown|Lchown|Chtimes|Chdir|ReadDir|Mkdir|MkdirAll|MkdirTemp|Link|Symlink|Readlink|Truncate|DirFS)$
           msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^unix\.(Open|Openat|Openat2)$
+        - pattern: ^syscall\.(Open|Openat|Creat|Rename|Unlink|Mkdir|Rmdir|Chmod|Chown|Lchown|Chdir|Link|Symlink|Readlink|Stat|Lstat|Truncate|CreateFile|DeleteFile|MoveFile|CreateDirectory|RemoveDirectory)$
+          pkg: ^syscall$
+          msg: the bootstrap package reaches files only through os.Root
+        - pattern: ^unix\.(Open|Openat|Openat2|Creat|Rename|Renameat|Renameat2|Unlink|Unlinkat|Mkdir|Mkdirat|Rmdir|Chmod|Fchmodat|Chown|Fchownat|Lchown|Chdir|Link|Linkat|Symlink|Symlinkat|Readlink|Readlinkat|Stat|Lstat|Fstatat|Truncate)$
           pkg: ^golang\.org/x/sys/unix$
           msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^windows\.CreateFile$
+        - pattern: ^windows\.(CreateFile|DeleteFile|MoveFile|MoveFileEx|CreateDirectory|RemoveDirectory|SetFileAttributes|GetFileAttributes|GetFileAttributesEx|FindFirstFile|CreateHardLink|CreateSymbolicLink|SetCurrentDirectory)$
           pkg: ^golang\.org/x/sys/windows$
           msg: the bootstrap package reaches files only through os.Root
     gosec:
