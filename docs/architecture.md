@@ -20,7 +20,7 @@ page is fixed.
 | `settings` | Every sysop setting, board, server or role scoped, declared in code by its feature, read on use with no cache, Set and audit in one transaction. | `audit`, `board` |
 | `session` | One caller on one server from arrival to disconnect, transport-agnostic: identity, lifecycle, account, node, the row who's-online is built from, and the view a script is handed. | `audit`, `board`, `nodes` |
 | `rbac` | Roles, permissions, holders, and the one check every gate asks. Five seeded roles by fixed ID, none deletable; account #1 is Sysop always. | `audit`, `board` |
-| `bootstrap` | The bootstrap key subsystem: one server's bootstrap file, sealed under the bootstrap key that the OS credential store holds; its checks on the bootstrap folder as opened; a handle for `hadv-setup` that changes any field and one for `hadv-service` that changes only the vault keys. | `board` |
+| `bootstrap` | The bootstrap package: the only code that reads or writes one server's bootstrap file, or the bootstrap key it is sealed under, which one of five key holders keeps. Create, open and save of the whole file, the same three for `hadv-setup` and `hadv-service`. | `board` |
 
 `cmd/hadv-service` is the composition root and may import anything. The `Uses` column is
 enforced by `depguard` in `.golangci.yml`; a new arrow is a change to that file in the same
@@ -31,7 +31,7 @@ PR, with its reason.
 - Everything above `board` and `database` but `bootstrap` goes to the database and returns
   `database.ErrUnavailable` rather than a default. There is no degraded mode.
 - `bootstrap` never reaches the database: it is what a server reads before it can. Only
-  `hadv-setup` and `hadv-service` link it, each with its own handle.
+  `hadv-setup` and `hadv-service` link it, and both use the same three operations.
 - The registry never reads the lease. A removed server finds out at its next renewal.
 - The lease never calls anyone. Expiry is a fact readers compute; the allocator's
   occupancy rule, who's-online's filter and health's one line all read `Live`.
@@ -51,7 +51,7 @@ PR, with its reason.
 
 ## The engine's loop, as the contracts imply it
 
-Start: `bootstrap.UnlockForService`, which gives the server's ID and its database account;
+Start: open the bootstrap file with `bootstrap`, which gives the server's ID and its database account;
 `registry.Approve`; `lease.Acquire`; `session.Repair`; declare settings and register
 permissions; open listeners. Then renew at the interval.
 On `Expired`: `session.DisconnectAll`, refuse new callers, `Approve` and `Acquire` again on
