@@ -4,8 +4,8 @@
 # test. needs-code-review: it touches a security path and its issue has a [read] line, which
 # only reading proves. A review label comes off when its trigger no longer holds.
 # needs-developer, on the issue the pull request closes: it adds a line that silences a linter
-# (nolint), skips a test, carries a build tag, or imports unsafe or C, each a decision for the
-# developer by name (developer, 2026-10-07: "fail loud"). The loop takes no work and no CI
+# (nolint or #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision
+# for the developer by name (developer, 2026-10-07: "fail loud"). The loop takes no work and no CI
 # round on an issue with that label, so it waits for him; only he takes the label off. The
 # pull request's body lists those lines under a heading "For the developer", or this job fails.
 #
@@ -65,7 +65,7 @@ jobs:
           set_label needs-code-review "$code"
 
           for_developer=$(git diff -U0 "$BASE...HEAD" -- '*.go' | grep -E '^\+' |
-            grep -E '//[[:space:]]*nolint|\.Skip(f|Now)?\(|^\+//go:build|"unsafe"|import[[:space:]]+"C"' || true)
+            grep -E '//[[:space:]]*nolint|#nosec|\.Skip(f|Now)?\(|^\+//go:build|"unsafe"|import[[:space:]]+"C"' || true)
           developer=no; [ -n "$for_developer" ] && developer=yes
           {
             echo "lines for the developer: $(printf '%s' "$for_developer" | grep -c . || true)"
