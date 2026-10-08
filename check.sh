@@ -85,6 +85,15 @@ if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; the
   [ -z "$silenced" ] || { echo "$silenced"; fail "a security linter is silenced: fix the finding, or bring it to the developer"; }
 fi
 
+# 4f. A package's specification lives in one file, its contract.go. The developer, 2026-10-03:
+# "There should never be 2 contracts.go living side by side. final spec is the truth." So no
+# other Go file is named for a contract, and none but a test carries a "shall" in a comment,
+# which is how a unit line reads.
+specs=$(git ls-files '*.go' | grep -v '_test\.go$' | grep -v '/contract\.go$' | grep -i 'contract' || true)
+[ -z "$specs" ] || { echo "$specs"; fail "a second contract file beside contract.go: a package's specification is its contract.go alone"; }
+specs=$(git ls-files '*.go' | grep -v '_test\.go$' | grep -v '/contract\.go$' | xargs -r grep -nwE '//.*shall' || true)
+[ -z "$specs" ] || { echo "$specs"; fail "a unit line outside contract.go: a package's specification is its contract.go alone"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
