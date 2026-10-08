@@ -160,6 +160,11 @@ linters:
     gosec:
       excludes:
         - G104 # errcheck already reports an unchecked error
+      config:
+        global:
+          # gosec's own "#nosec" comment silences a finding without the word nolint, past every
+          # check on nolint; with this set, gosec ignores it and reports the finding anyway.
+          nosec: true
     nolintlint:
       require-explanation: true
       require-specific: true

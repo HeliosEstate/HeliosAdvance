@@ -77,10 +77,11 @@ fi
 # 4e. A security linter's finding is fixed or brought to the developer, never silenced: no line
 # this branch adds may switch off gosec, forbidigo or depguard, or every linter at once. The
 # developer, 2026-10-07: the bootstrap code held 17 unsafe uses, each silenced by a one-line
-# reason that every review let through.
+# reason that every review let through. gosec's own "#nosec" counts too (found 2026-10-08; the
+# lint config also makes gosec ignore it).
 if [ "$MUTATION" = 0 ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
   silenced=$(git diff -U0 "$BASE...HEAD" -- '*.go' | grep -E '^\+' |
-    grep -E '//[[:space:]]*nolint([[:space:]]|$)|//[[:space:]]*nolint:[^/]*\b(gosec|forbidigo|depguard|all)\b' || true)
+    grep -E '//[[:space:]]*nolint([[:space:]]|$)|//[[:space:]]*nolint:[^/]*\b(gosec|forbidigo|depguard|all)\b|#nosec' || true)
   [ -z "$silenced" ] || { echo "$silenced"; fail "a security linter is silenced: fix the finding, or bring it to the developer"; }
 fi
 
