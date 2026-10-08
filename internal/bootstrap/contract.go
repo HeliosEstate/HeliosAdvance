@@ -1,86 +1,91 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package bootstrap is the bootstrap key subsystem: one server's bootstrap file, sealed with
-// AES-256-GCM under the bootstrap key, and that key held by the OS credential store. It owns
-// the file: its envelope and named fields (fields it does not know are kept unchanged),
-// building it, unlocking it, rewriting it beside the old one and swapping it in one step,
-// and deleting a half-made one. It also owns the bootstrap key, made from 256 random bits
-// and sealed and unsealed by the OS credential store (the CNG machine key pair on Windows,
-// systemd credentials on Linux), or read from a Swarm secret or a key file the sysop made;
-// the checks on what it opens, each made on the open handle and never by name; the rules
-// those checks use; and setting one item to its rule when hadv-setup asks. For the detailed
-// health report, it reports how the bootstrap key is held and a rewrite that failed.
+// Package bootstrap is the bootstrap package: the only code that reads or writes one server's
+// bootstrap file, or the bootstrap key it is sealed under. It owns the file and its format from
+// the header to the fields, what a valid file holds, create, open and save of the whole file, and
+// the five key holders behind one small interface, each of which makes, gets and deletes its own
+// key. hadv-setup and hadv-service use the same operations and the same handle.
 //
-// It does not own creating the service account, the bootstrap folder or the service
-// registration, or offering a permission fix and asking the sysop: those are hadv-setup's.
-// What the vault keys and private keys mean is the shared secrets subsystem's; using the
-// database connection is the database-access unit's. The retry timer, the words of a
-// refusal and every log line belong to hadv-service and hadv-setup, built from what this
-// package returns. The health report is the Admin API's.
+// It does not own the bootstrap folder, its access list, the service account or the service
+// registration, the sealed key written into it included: those are hadv-setup's. Adding and
+// removing a vault key, and what the vault keys mean, are the shared secrets unit's. The words of
+// a refusal and every log line are the callers'. It does not defend the file from the service
+// account or from administrators: the folder's access list and the key holder keep other local
+// accounts out. It holds no lock and checks no links. It never reaches the database.
 //
-// Two programs link this package and it cannot ask which one is calling, so each gets its
-// own handle. hadv-setup's operations are refused unless the process is elevated or root.
-// hadv-service's handle changes the vault-key fields and nothing else, and is refused when
-// elevated or root, since hadv-service runs only as the bootstrap folder's service account.
-// hadv-service therefore has no way to ask for a change to any other field.
+// What the package must do as the board sees it is in docs/behavior.md, under "Bootstrap
+// package"; the lines here say how, at the package's edge.
 //
 // # Where things are
 //
-// Every file sits in the bootstrap folder, which is opened once and used through its
-// handle:
+// In the bootstrap folder, whose path the caller passes, opened with os.OpenRoot for each
+// operation and never kept open between:
 //
-//	bootstrap.hadv         the bootstrap file
-//	bootstrap.hadv.new     a rewrite in progress; found at start, a half-made file
-//	bootstrap.lock         locked exclusively while any handle is open
-//	bootstrap-key.sealed   Windows: the bootstrap key under the machine key pair
-//	bootstrap-key.cred     Linux: the bootstrap key as a systemd credential
-//	bootstrap-key.cred.new Linux: the credential being sealed, renamed over bootstrap-key.cred
-//	bootstrap.key          the key file, made by the sysop
+//	bootstrap.hadv        the bootstrap file
+//	bootstrap.hadv.new    the temp file of a create or save; a leftover one is overwritten
+//	bootstrap.key         the key file, made by the sysop
 //
-// A Swarm secret is /run/secrets/heliosadvance-bootstrap-key, and on Windows the machine key
-// pair is named heliosadvance-bootstrap-key in the CNG key store. The bootstrap folder
-// defaults to %ProgramData%\HeliosAdvance on Windows and /var/lib/heliosadvance on Linux; in a
-// container it is always /var/lib/heliosadvance, a volume. The service account is the
-// virtual account NT SERVICE\HeliosAdvance on Windows and the system user heliosadvance on
-// Linux. The bootstrap folder's service account is the account that owns the folder on Linux,
-// and on Windows the account its access list names beside SYSTEM and Administrators, since
-// there the folder is owned by Administrators. Every file in the bootstrap folder other than the key file takes the bootstrap
-// file's permission rule. A key file or Swarm secret is RFC 4648's standard base64 alphabet
-// with its padding, and each key has one spelling: the bits after its last byte are zero.
+// A Swarm secret is /run/secrets/hadv-bootstrap-key. A systemd credential is named
+// hadv-bootstrap-key, embedded when it is encrypted and checked when it is decrypted; when systemd
+// decrypts it at service start, it is that file in the credential folder. A Windows key is a
+// machine key named hadv- plus 32 lowercase hex digits (16 random bytes), in Microsoft's TPM
+// provider where the machine has a TPM, in the software key store provider where it does not.
 //
-// The folder rules. The bootstrap folder is refused when:
+// # The key holders
 //
-//	NotAbsolute    its path is not absolute
-//	NetworkShare   it is on a network share
-//	Removable      the OS reports it on a removable drive
-//	FolderLink     it is a symbolic link or, on Windows, a junction
-//	FileSystem     its file system is not NTFS or ReFS on Windows, or ext2, ext3, ext4,
-//	               XFS, Btrfs or ZFS on Linux
+// By the number the header carries:
 //
-// The permission table, each item's rule for the service account:
+//	1  Windows key store. Create makes a 2048-bit RSA key, sets its access list to the service
+//	   account, SYSTEM and Administrators, and wraps the bootstrap key with RSA-OAEP (SHA-256,
+//	   MGF1 with SHA-256, no label). Open looks for the key by its name in the TPM provider,
+//	   then in software.
+//	2  systemd, decrypted by the service. Create runs systemd-creds encrypt with --uid= the
+//	   service account, --with-key=auto and --tpm2-pcrs= with no PCR, so a firmware or Secure
+//	   Boot change never locks the server out. Open runs systemd-creds decrypt with --uid= the
+//	   service account it is given: root must name the account, and the account may name
+//	   itself.
+//	3  systemd, decrypted by systemd at service start. Create encrypts as for 2, with no --uid.
+//	   Open reads the credential folder when systemd set CREDENTIALS_DIRECTORY (the service);
+//	   otherwise it decrypts the header's sealed key with systemd-creds decrypt, which needs
+//	   root (hadv-setup).
+//	4  key file.
+//	5  Swarm secret.
 //
-//	Item                Linux and a container           Windows
-//	ItemFolder          owned by it, mode 0700          it, SYSTEM and Administrators only,
-//	                                                    with no inherited access
-//	ItemFile            owned by it, mode 0600          the same as ItemFolder
-//	ItemOtherFile       ItemFile's rule                 ItemFile's rule
-//	ItemKeyFile         owned by it, mode 0400          none: no key file on Windows
-//	ItemSwarmSecret     owned by it, mode 0400          none
-//	ItemMachineKeyPair  none                            usable only by it, SYSTEM and
-//	                                                    Administrators
+// The key file and the Swarm secret each hold exactly 44 characters of RFC 4648's standard base64
+// alphabet with its padding, with one trailing newline allowed, and each key has one spelling:
+// the bits after its last byte are zero. Neither makes nor deletes a key: create seals under the
+// key they hold. Windows has key holder 1; Linux has 2 to 5. A systemd too old for a key holder
+// fails at systemd-creds and gets ErrKey.
 //
-// On Windows the owner of every item is the service account, SYSTEM or Administrators, since
-// an owner can rewrite the access list whatever it says; an item set to its rule is owned by
-// Administrators.
-//
-// On Linux the bootstrap key is unsealed one of two ways, chosen by hadv-setup at build and
-// recorded in the service registration. On systemd 256 and later the credential is
-// user-scoped and this package decrypts it at each use. Below 256, systemd decrypts it when
-// the service starts, into the service's credential folder in memory that is never swapped,
-// and this package reads it from there at each use. A server has systemd when systemd is its
-// running service manager, as systemd's own test for that reports, and its version is the
-// running manager's, not the installed program's.
+//   - When create makes a Windows key, create shall make a 2048-bit RSA machine key named hadv-
+//     followed by 32 lowercase hex digits from 16 random bytes.
+//   - Where the server has a TPM, create shall make the Windows key in Microsoft's TPM provider,
+//     and in the software key store provider where it has none. [run]
+//   - When create makes a Windows key, create shall set the key's access list to the service
+//     account, SYSTEM and Administrators. [run]
+//   - When create makes a Windows key, create shall wrap the bootstrap key under it with
+//     RSA-OAEP, SHA-256 and MGF1 with SHA-256, and no label.
+//   - When open gets the bootstrap key from a Windows key, open shall look for the key by its
+//     name in the TPM provider, then in the software key store provider. [run]
+//   - When create seals under systemd credentials decrypted by the service, create shall run
+//     systemd-creds encrypt with --uid= the service account, --with-key=auto, --tpm2-pcrs= with
+//     no PCR, and --name=hadv-bootstrap-key.
+//   - When create seals under systemd credentials decrypted at service start, create shall run
+//     systemd-creds encrypt with --with-key=auto, --tpm2-pcrs= with no PCR, and
+//     --name=hadv-bootstrap-key.
+//   - When open gets the bootstrap key from systemd credentials decrypted by the service, open
+//     shall run systemd-creds decrypt with --uid= the service account it is given and
+//     --name=hadv-bootstrap-key.
+//   - When open gets the bootstrap key from systemd credentials decrypted at service start and
+//     CREDENTIALS_DIRECTORY is set, open shall read hadv-bootstrap-key from that folder.
+//   - When open gets the bootstrap key from systemd credentials decrypted at service start and
+//     CREDENTIALS_DIRECTORY is not set, open shall run systemd-creds decrypt on the header's
+//     sealed key with --name=hadv-bootstrap-key.
+//   - If the key file or the Swarm secret breaks the form the package comment gives, then the
+//     bootstrap package shall return ErrKey.
+//   - If the caller or the header names a key holder the platform does not have, then the
+//     bootstrap package shall return ErrKey.
 //
 // # The bootstrap file, format version 1
 //
@@ -88,128 +93,116 @@
 //
 //	offset 0     8 bytes   magic: the ASCII characters HADVBOOT
 //	offset 8     2 bytes   format version: 1
-//	offset 10   12 bytes   nonce: random, new on every write
-//	offset 22    n bytes   the AES-256-GCM ciphertext of the fields, under the bootstrap key,
-//	                       with the 22 bytes before it as the additional authenticated data
+//	offset 10    1 byte    key holder: 1 to 5
+//	offset 11    2 bytes   sealed-key length, n: exactly 293 for key holder 1, 1 to 4,096 for
+//	                       2 and 3, 0 for 4 and 5
+//	offset 13    n bytes   sealed key: for 1, the key name (37 ASCII bytes, hadv- and 32
+//	                       lowercase hex digits, never used as a path) then the 256-byte
+//	                       RSA-OAEP wrap; for 2 and 3, systemd's encrypted credential; for 4
+//	                       and 5, nothing
+//	then        12 bytes   nonce: random, new on every write
+//	then         m bytes   the records, AES-256-GCM under the bootstrap key, with every byte
+//	                       before them (the header and the nonce) as the authenticated data
 //	then        16 bytes   the GCM tag
 //
-// The whole file is at most 65,536 bytes. Only the magic and the format version are read
-// before the integrity check. The fields, once decrypted, are records one after another to
-// the end of the plaintext:
+// The header is the first 13 + n bytes. Each part of it is checked against this table before it
+// is used; anything else gets ErrFormat, a format version above 1 included, as does a file too
+// short for its header, nonce and tag. The whole file is at most 65,536 bytes; a larger one gets
+// ErrFormat unread. Nothing after the header is trusted until the tag verifies.
+//
+// Once unsealed, the records follow one another to the end of the plaintext:
 //
 //	2 bytes    name length, 1 to 255
 //	n bytes    name, UTF-8, unique in the file
 //	4 bytes    data length
 //	n bytes    data
 //
-// The known names and their data:
+// A record running past the end, an empty, over-long or non-UTF-8 name, or two records of one name
+// gets ErrInvalid. The known names and their data:
 //
 //	server                       4 bytes: the server's ID
 //	database.connection          UTF-8: the database connection, with no account in it
 //	database.account.name        UTF-8: the server's database account
 //	database.account.password    bytes
-//	vault.key.<version>          32 bytes, one record per vault key; the version in decimal
+//	vault.key.<version>          32 bytes, one record per vault key
 //	receiving.key                bytes: the receiving key pair's private half
 //	signing.key                  bytes: the signing key pair's private half
 //
-// A vault key's version is written in decimal with no leading zero, from 1 to 4,294,967,295,
-// so each version has one name; a name that begins with vault.key. and is spelled any other
-// way is a malformed field, never an unknown record. A record with any other name is kept
-// unchanged, in its place, when the file is rewritten.
+// A vault key's version is written in decimal with no leading zero, from 1 to 4,294,967,295, so
+// each version has one name; any other name under vault.key. gets ErrInvalid and is never an
+// unknown record. A record of any other name is kept unchanged, in its place, on save.
 //
-// On Windows, bootstrap-key.sealed is the bootstrap key encrypted with RSA-OAEP under the
-// machine key pair (RSA 2048, SHA-256 with MGF1 SHA-256, no label): 256 bytes, nothing
-// around them. On Linux, bootstrap-key.cred is systemd's own credential format, named for
-// its purpose and bound to no TPM PCR.
-//
-// The line for every file in the bootstrap folder:
-//
-//   - The bootstrap package shall open every file in the bootstrap folder relative to the
-//     folder's handle and without following a link, create every file it creates exclusively,
-//     and refuse with Link any item in the folder that is a symbolic link, a junction or a file
-//     with more than one name before it reads it, writes it, changes its owner or mode, or puts a
-//     file in its place.
-//
-// The lines for the file:
-//
-//   - The bootstrap package shall write the bootstrap file only in the layout this package
+//   - The bootstrap package shall write the bootstrap file only in the layout the package
 //     comment gives for format version 1.
-//   - The bootstrap package shall write a new random nonce each time it writes the bootstrap
-//     file.
-//   - The bootstrap package shall write each vault key as a record of its own, named vault.key.
-//     followed by its version in decimal.
-//   - If the bootstrap file is larger than 65,536 bytes, then the bootstrap package shall
-//     refuse it with FileNotUnsealed without reading its contents.
-//   - If the bootstrap file is shorter than its 22-byte header and 16-byte tag, then the
-//     bootstrap package shall refuse it with FileNotUnsealed.
-//   - If the bootstrap file does not begin with the magic HADVBOOT, then the bootstrap package
-//     shall refuse it with FileNotUnsealed.
-//   - If the bootstrap file's format version is 0, then the bootstrap package shall refuse it
-//     with FileNotUnsealed.
-//   - If the bootstrap file's format version is newer than 1, then the bootstrap package shall
-//     refuse it with NewerFormat, naming both versions.
-//   - If the GCM tag does not verify, then the bootstrap package shall refuse the bootstrap
-//     file with FileNotUnsealed.
-//   - The bootstrap package shall act on no part of the bootstrap file but its size, its magic
-//     and its format version before the GCM tag verifies. [read]
-//   - If a record's name or data runs past the end of the plaintext, then the bootstrap package
-//     shall refuse the bootstrap file with FileNotUnsealed.
-//   - If a record's name is empty, longer than 255 bytes, or not UTF-8, then the bootstrap
-//     package shall refuse the bootstrap file with FileNotUnsealed.
-//   - If two records share a name, then the bootstrap package shall refuse the bootstrap file
-//     with FileNotUnsealed.
-//   - If a known field is absent, its data breaks the form the format gives it, or it breaks a
-//     rule in the table on Fields, then the bootstrap package shall refuse the bootstrap file
-//     with FileNotUnsealed.
-//   - If the bootstrap file holds no vault key or more than two, then the bootstrap package
-//     shall refuse it with FileNotUnsealed.
+//   - The bootstrap package shall write a new random nonce each time it writes a bootstrap file.
+//   - The bootstrap package shall seal the records with AES-256-GCM under the bootstrap key, with
+//     the header and the nonce as the authenticated data.
+//   - If a record breaks the record layout the package comment gives, then the bootstrap package
+//     shall return ErrInvalid.
 //   - If a record's name begins with vault.key. and the rest is not a version in decimal from 1
-//     to 4,294,967,295 with no leading zero, then the bootstrap package shall refuse the
-//     bootstrap file with FileNotUnsealed.
-//   - When the bootstrap package rewrites the bootstrap file, it shall keep every record of an
-//     unknown name byte for byte, in the order it was read.
-//   - The bootstrap package shall put no key, no field's data and no field's length in a
-//     Refusal. [read]
+//     to 4,294,967,295 with no leading zero, then the bootstrap package shall return ErrInvalid.
+//   - When the bootstrap package writes a bootstrap file, it shall keep each record of an unknown
+//     name byte for byte, in the order it was read.
 //
-// # A rewrite
+// # The write path
 //
-// A rewrite is any of SetupHandle.Rewrite, ServiceHandle.AddVaultKey and
-// ServiceHandle.RemoveVaultKey. The lines for every rewrite:
+// One for create and save, through the folder's os.Root: write the temp file, truncating a
+// leftover; flush it; open it under the bootstrap key in hand, by the same reading open uses;
+// rename it over bootstrap.hadv; on Linux, flush the folder. If any step fails, the temp file is
+// deleted and the old file stands.
 //
-//   - Rewrite shall read the bootstrap key again for each rewrite from where its mode holds it:
-//     unsealed by the OS credential store, or read from the key file or the Swarm secret.
-//   - Where the mode is not ModeSystemdAtStart, AddVaultKey and RemoveVaultKey shall read the
-//     bootstrap key again for each rewrite from where its mode holds it: unsealed by the OS
-//     credential store, or read from the key file or the Swarm secret.
-//   - Where the mode is ModeSystemdAtStart, AddVaultKey and RemoveVaultKey shall read the
-//     bootstrap key again from the credential folder systemd gives the service for each
-//     rewrite. [run]
-//   - If the bootstrap key is absent at a rewrite, then the rewrite shall refuse with
-//     KeyNotFound.
-//   - If the OS credential store does not unseal the bootstrap key at a rewrite, then the
-//     rewrite shall refuse with KeyNotUnsealed.
-//   - A rewrite shall create bootstrap.hadv.new exclusively, already set to its rule. [read]
-//   - A rewrite shall write bootstrap.hadv.new, flush it, check that it reads back, and then
-//     rename it over bootstrap.hadv through the folder's handle. [read]
-//   - Where the server runs Linux, a rewrite shall flush the folder after the rename. [read]
-//   - If bootstrap.hadv.new does not read back, then the rewrite shall delete it, keep the old
-//     bootstrap file, and refuse with RewriteFailed. [read]
-//   - If writing bootstrap.hadv.new fails, then the rewrite shall delete what it wrote, keep
-//     the old bootstrap file, and refuse with RewriteFailed.
-//   - If a rewrite fails, then the handle shall keep the fields it held before the rewrite.
-//   - If a rewrite fails, then the handle shall record the failure for RewriteFailure.
-//   - A rewrite shall overwrite the bootstrap key in its memory before it returns. [read]
+//   - When create or save writes a bootstrap file, the bootstrap package shall write it as
+//     bootstrap.hadv.new and rename it over bootstrap.hadv through the folder's os.Root.
+//   - The bootstrap package shall flush bootstrap.hadv.new before it renames it. [read]
+//   - The bootstrap package shall open bootstrap.hadv.new under the bootstrap key before it
+//     renames it.
+//   - Where the server runs Linux, the bootstrap package shall flush the bootstrap folder after
+//     the rename. [read]
+//   - If writing, flushing, opening or renaming bootstrap.hadv.new fails, then the bootstrap
+//     package shall delete bootstrap.hadv.new and return ErrWrite.
 //
 // # Untrusted input and oracles
 //
-// Each parser of untrusted input is a fuzz target: the header reader and the field-record
-// reader, seeded by the format's sample files, and the reader of a key file or Swarm
-// secret. The files and folder as found, the sealed-key file and the fields a caller
-// passes in are checked but not parsed. The service registration is trusted: only root or
-// administrators change it. The oracles are the CNG key store driven through PowerShell,
-// systemd-creds, AES-256-GCM's published test vectors and OpenSSL, and, for the file
-// format, the developer's own oracle in oracle/bootstrap-file, whose sample files for each
-// format version are kept for good in testdata.
+// Untrusted inputs: the bootstrap file (the header before anything is verified, the records after
+// it unseals); the old file's header when create replaces it; the key file; the Swarm secret; the
+// credential folder's file; what systemd-creds decrypt and the Windows key store return. Each
+// parser among them is a fuzz target: the header reader, the record reader and the base64 key
+// reader, seeded from the kept samples. The fields a caller passes are checked (ErrInvalid), not
+// parsed.
+//
+// What proves each part:
+//
+//	the file format and AES-256-GCM   oracle/bootstrap-file, given the new header, and the
+//	                                  samples it makes in testdata/format-1/; its self-test runs
+//	                                  the published AES and GCM test vectors
+//	key holder 1                      the real key store, with and without a TPM; RSA-OAEP
+//	                                  against crypto/rsa on the exported public key; a key's
+//	                                  presence and deletion by certutil -csp; the access list by
+//	                                  a run as another account, refused
+//	key holders 2 and 3               systemd-creds run as a separate command in the
+//	                                  oracle/systemd-252 (key holder 3) and systemd-257 (key
+//	                                  holder 2) containers, systemd-249 below both: a file create
+//	                                  made opens with a key the command decrypts, and a
+//	                                  credential the command made opens here
+//	the base64 key reader             RFC 4648's test vectors and plain tests
+//	the write path                    plain tests, and a save killed partway that leaves the
+//	                                  old file whole
+//
+// # What it needs from its callers
+//
+//	hadv-setup      makes the bootstrap folder and sets its access list before create
+//	hadv-setup      runs as administrator or root
+//	hadv-setup      saves only once the OS service manager says the service is stopped
+//	hadv-setup      for key holder 3, writes the header's sealed key into the service
+//	                registration as hadv-bootstrap-key
+//	hadv-setup      tells the sysop of any key create could not delete
+//	hadv-service    opens at start, takes what it needs and releases the handle; on a failure,
+//	                writes the code to its local log and stops
+//	shared secrets  the only saver in the service, one save at a time
+//	every caller    passes the service account to create and open
+//	every caller    releases every handle it opens, uses none after its release, and never logs
+//	                a field
+//	backup utility  leaves out bootstrap.hadv, bootstrap.hadv.new and bootstrap.key
 //
 // This file is the developer's contract (HeliosDesign records/skeleton/Bootstrap.pas) and is
 // locked: a loop session does not edit it.
@@ -217,18 +210,32 @@ package bootstrap
 
 import (
 	"context"
-	"io/fs"
-	"time"
+	"errors"
 
 	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
-// The file's constants, as the format above states them.
+// The format's constants, as the package comment states them.
 const (
-	Magic         = "HADVBOOT"
-	FormatVersion = 1
-	MaxSize       = 65536 // bytes; a larger file is refused as corrupt, unread
-	TagSize       = 16    // the AES-256-GCM tag, after the ciphertext
+	Magic                = "HADVBOOT"
+	FormatVersion        = 1
+	MaxSize              = 65536 // bytes; a larger file gets ErrFormat, unread
+	HeaderStartSize      = 13    // magic, format version, key holder, sealed-key length
+	NonceSize            = 12
+	TagSize              = 16
+	KeySize              = 32   // the bootstrap key: 256 random bits
+	WindowsKeyNameSize   = 37   // "hadv-" + 32 lowercase hex digits
+	WindowsWrapSize      = 256  // RSA-2048 OAEP
+	SystemdCredentialMax = 4096 // bytes of systemd's encrypted credential
+	SystemdKeyName       = "hadv-bootstrap-key"
+)
+
+// The names in the bootstrap folder, and the Swarm secret's path.
+const (
+	FileName        = "bootstrap.hadv"
+	TempFileName    = "bootstrap.hadv.new"
+	KeyFileName     = "bootstrap.key"
+	SwarmSecretPath = "/run/secrets/hadv-bootstrap-key"
 )
 
 // The known field names.
@@ -242,18 +249,60 @@ const (
 	FieldSigningKey      = "signing.key"
 )
 
-// VaultKey is one vault key, numbered as the shared secrets subsystem numbers it.
+// KeyHolder is one of the five key holders, numbered as the header carries it.
+type KeyHolder uint8
+
+// The five key holders.
+const (
+	WindowsKeyStore  KeyHolder = 1
+	SystemdByService KeyHolder = 2
+	SystemdAtStart   KeyHolder = 3
+	KeyFile          KeyHolder = 4
+	SwarmSecret      KeyHolder = 5
+)
+
+// ServiceAccount is the account hadv-service runs under, by name: NT SERVICE\... on Windows, a
+// system user on Linux. hadv-setup owns it; this package grants it the key and names it to
+// systemd.
+type ServiceAccount string
+
+// The codes, one per cause of failure, never prose. The returned error wraps the code and, where
+// there is one, the OS's own error beneath it: errors.Is finds the code, errors.As the OS's
+// error. Neither carries a secret.
+var (
+	// ErrNotFound: the bootstrap folder or the bootstrap file is not there.
+	ErrNotFound = errors.New("bootstrap: not found")
+	// ErrUnreadable: the bootstrap file is there and reading it fails.
+	ErrUnreadable = errors.New("bootstrap: unreadable")
+	// ErrFormat: the header does not match format version 1's layout, the format version is
+	// newer, or the file is over 64 KiB.
+	ErrFormat = errors.New("bootstrap: format")
+	// ErrKey: the key holder gives no bootstrap key, or gives one that is not a 256-bit key; or
+	// the platform does not have the key holder.
+	ErrKey = errors.New("bootstrap: key")
+	// ErrDecrypt: the bootstrap file does not unseal under the bootstrap key.
+	ErrDecrypt = errors.New("bootstrap: decrypt")
+	// ErrInvalid: the fields or the records break the rules of a valid bootstrap file, as read or
+	// as the caller would save them.
+	ErrInvalid = errors.New("bootstrap: invalid")
+	// ErrExists: create is called with overwrite false and a bootstrap file is present.
+	ErrExists = errors.New("bootstrap: exists")
+	// ErrWrite: writing the new file, opening it, or putting it in place of the old one fails.
+	ErrWrite = errors.New("bootstrap: write")
+)
+
+// VaultKey is one vault key, numbered as the shared secrets unit numbers it.
 type VaultKey struct {
 	Version uint32
 	Key     []byte // 32 bytes
 }
 
-// Fields is the known fields. Secrets are byte slices, never strings, so Close can overwrite
-// them; the garbage collector may leave the bytes elsewhere in memory, so the overwrite
-// narrows the exposure and does not end it. Unknown fields never cross this edge: the handle
-// keeps them and writes them back unchanged.
+// Fields is the known fields, what crosses the edge. Secrets are byte slices, never strings, so
+// Release can zero them; Go's garbage collector may leave the bytes elsewhere in memory, so
+// zeroing is best effort (runtime/secret to be revisited once it is stable). Unknown records never
+// cross: the handle keeps them and writes them back.
 //
-// A field breaks its rule when:
+// A file read or fields saved get ErrInvalid when:
 //
 //	Server                      it is 0
 //	Connection, AccountName     it is empty
@@ -270,467 +319,93 @@ type Fields struct {
 	SigningKey      []byte     // the private half; opaque here
 }
 
-// KeySource is where hadv-setup asks Build to take the bootstrap key from.
-type KeySource uint8
-
-// Key sources. FromOSStore makes a new key in the platform's OS credential store. FromKeyFile
-// is the sysop's explicit choice, accepted only on Linux without systemd 250 or later.
-// FromContainer is passed by the shipped image: the Swarm secret or the key file, whichever
-// is present.
-const (
-	FromOSStore KeySource = iota + 1
-	FromKeyFile
-	FromContainer
-)
-
-// KeyMode is which way the bootstrap key is held. Build returns it, hadv-setup writes it into
-// the service registration, and hadv-service passes it back to UnlockForService.
-type KeyMode uint8
-
-// Key modes. In a container the shipped image's command line passes ModeContainer, decided at
-// each unlock by which of the Swarm secret and the key file is present.
-//
-// A platform's modes, the ones an unlock accepts on it:
-//
-//	Windows                        ModeMachineKeyPair
-//	Linux without systemd          ModeKeyFile, ModeContainer
-//	Linux, systemd below 250       ModeKeyFile
-//	Linux, systemd 250 to 255      ModeSystemdAtStart, ModeKeyFile
-//	Linux, systemd 256 or later    ModeSystemdPerUse, ModeSystemdAtStart, ModeKeyFile
-//
-// A server whose systemd was upgraded after Build keeps the mode Build gave it.
-const (
-	ModeMachineKeyPair KeyMode = iota + 1
-	ModeSystemdPerUse
-	ModeSystemdAtStart
-	ModeKeyFile
-	ModeContainer
-)
-
-// Holding is how the bootstrap key is held, for the detailed health report. No warning goes
-// with HeldInSoftwareKeyStore or HeldUnderHostKey: a TPM is never required.
-type Holding uint8
-
-// Holdings.
-const (
-	HeldInTPM Holding = iota + 1
-	HeldInSoftwareKeyStore
-	HeldUnderHostKey
-	HeldAsSwarmSecret
-	HeldInKeyFile
-)
-
-// BuildPath is which of hadv-setup's paths is building.
-type BuildPath uint8
-
-// Build paths. At first setup and joining, an existing machine key pair of this package's
-// name is refused; at joining again and restore it is deleted and a new one made.
-const (
-	FirstSetup BuildPath = iota + 1
-	Joining
-	JoiningAgain
-	Restore
-)
-
-// Item is what a permission rule covers.
-type Item uint8
-
-// Items. OtherFile is any other file in the bootstrap folder (the sealed-key file, the lock,
-// a half-made file), under the bootstrap file's rule.
-const (
-	ItemFolder Item = iota + 1
-	ItemFile
-	ItemOtherFile
-	ItemKeyFile
-	ItemSwarmSecret
-	ItemMachineKeyPair
-)
-
-// FolderRule is which folder rule was broken.
-type FolderRule uint8
-
-// Folder rules. Removable is what the OS reports, so a USB hard disk the OS calls fixed
-// passes.
-const (
-	NotAbsolute FolderRule = iota + 1
-	NetworkShare
-	Removable
-	FolderLink
-	FileSystem
-)
-
-// Cause is why an operation was refused. The first five are where an unlock fails;
-// hadv-service turns each into the path, the cause in plain words and what the sysop does
-// next.
-type Cause uint8
-
-// Causes.
-const (
-	KeyNotFound          Cause = iota + 1 // no sealed-key file, Swarm secret or key file
-	KeyNotUnsealed                        // the store refused: another machine, or corrupt
-	FileNotFound                          // no bootstrap file
-	FileNotUnsealed                       // corrupt or altered; or, under a Swarm secret or key file, not this file's key
-	NewerFormat                           // FileVersion and OwnVersion name both
-	FolderRefused                         // Rule names which
-	LooserThanRule                        // Item names what
-	NotWritable                           // the bootstrap file or folder, for the service account
-	Link                                  // an item is a symbolic link, a junction, or a file with more than one name
-	WrongAccount                          // not the bootstrap folder's service account
-	NotElevated                           // a hadv-setup operation without administrator or root rights
-	KeyFileMalformed                      // not 32 bytes as base64 in 44 characters, at most one trailing newline
-	NoCredentialStore                     // Linux without systemd 250 or later, and no key file chosen
-	NoKeySource                           // a container with neither a Swarm secret nor a key file
-	BothKeySources                        // a container with both
-	MachineKeyPairExists                  // at first setup or joining
-	InUse                                 // another handle holds the lock: the service is running
-	FieldMalformed                        // Field names which, never its data
-	VaultKeyConflict                      // AddVaultKey: that version held with other bytes, or two held
-	RewriteFailed                         // the new file was not written or did not read back; the old one is kept
-	SourceRefused                         // a key source or mode this platform does not allow
-	FileExists                            // a bootstrap file is already there at first setup or joining
-	TPMLibrariesMissing                   // Linux: a TPM, but not the libraries systemd needs to use it (tpm2-tss)
-)
-
-// Refusal is the one refusal every operation returns, tested with errors.As. It carries no
-// key and no field's data, so it belongs in any log or message as it is.
-type Refusal struct {
-	Cause       Cause
-	Path        string
-	Item        Item       // LooserThanRule; Link from Check
-	Rule        FolderRule // FolderRefused
-	Field       string     // FieldMalformed: the field's name as the bootstrap file names it; vault.key. alone when the count of vault keys is wrong
-	FileVersion uint16     // NewerFormat
-	OwnVersion  uint16     // NewerFormat
-}
-
-// Permissions is who owns an item and who can reach it, as data: hadv-setup writes the words.
-// An account is named as the OS resolves it: DOMAIN\name on Windows (NT AUTHORITY\SYSTEM,
-// BUILTIN\Administrators), the user name on Linux.
-type Permissions struct {
-	Owner     string      // the account that owns it
-	Mode      fs.FileMode // Linux and a container: its permission bits
-	Accounts  []string    // Windows: every account its access list grants anything
-	Inherited bool        // Windows: its access list inherits from the folder above
-}
-
-// Finding is one item set looser than its rule: what hadv-setup shows before it asks.
-type Finding struct {
-	Item  Item
-	Path  string      // for ItemMachineKeyPair, the key pair's name
-	Found Permissions // as found
-	Rule  Permissions // what SetToRule sets
-}
-
-// RewriteFailure is the last rewrite that failed, for the detailed health report. Failed is
-// false once a rewrite succeeds.
-type RewriteFailure struct {
-	Failed bool
-	Path   string
-	When   time.Time // UTC
-}
-
-// Handle is what both handles share. If Rewrite, AddVaultKey or RemoveVaultKey is called
-// after Close:
-//
-//   - If Rewrite, AddVaultKey or RemoveVaultKey is called after Close, then it shall refuse
-//     with RewriteFailed.
-type Handle interface {
-	// Fields is the known fields, in memory of their own. Unknown fields stay inside the
-	// handle.
-	//
-	//   - Fields shall return the known fields in memory of their own, so that a change to what it
-	//     returns changes nothing in the handle.
+// File is an opened bootstrap file. The file itself is closed; the handle holds its fields, its
+// header, its unknown records, the bootstrap key and the folder's path, so it saves only back to
+// the file it came from.
+type File interface {
+	// Fields is the fields as opened or last saved. The caller changes them and passes them to
+	// Save; the slices are the handle's own, so Release zeroes what the caller holds too.
 	Fields() Fields
 
-	// Holding is how the bootstrap key is held. hadv-service logs a warning at every start
-	// when it is HeldInKeyFile.
-	//
-	//   - Holding shall return how the bootstrap key was held when the handle was unlocked.
-	Holding() Holding
+	// KeyHolder and SealedKey are read-only, for hadv-setup's repair step, which rewrites the
+	// service registration from them.
+	KeyHolder() KeyHolder
+	SealedKey() []byte
 
-	// RewriteFailure is the last rewrite that failed. On a failure the handle's fields are
-	// unchanged; the caller keeps what it meant to write and retries: hadv-service on its
-	// timer and at every start, hadv-setup by telling the sysop.
+	// Save seals the fields under the handle's bootstrap key, with the same header and a new
+	// nonce, unknown records in their places, through the write path. The key holder is not
+	// asked again. Results: ErrNotFound, ErrInvalid, ErrWrite.
 	//
-	//   - RewriteFailure shall return the path and the UTC time of the last rewrite that failed,
-	//     with Failed set.
-	//   - When a rewrite succeeds, the handle shall clear Failed in what RewriteFailure returns.
-	RewriteFailure() RewriteFailure
+	//   - When save is called, save shall write the header the file was opened with and seal
+	//     under the handle's bootstrap key, without asking the key holder.
+	//   - If save fails, then the handle shall keep the fields it held before the save.
+	//   - When save succeeds, the handle shall hold the fields it saved.
+	Save(fields Fields) error
 
-	// Close overwrites every secret the handle holds and releases the lock.
+	// Release zeroes every secret the handle holds, best effort, as on Fields. The handle is
+	// not used after.
 	//
-	//   - Close shall overwrite with zeros every secret the handle holds and every unknown record
-	//     it keeps. [read]
-	//   - Close shall release the lock.
-	//   - If Close is called a second time, then Close shall do nothing.
-	Close()
+	//   - When release is called, release shall zero every secret the handle holds, the
+	//     bootstrap key included.
+	Release()
 }
 
-// SetupHandle is hadv-setup's handle: any field.
-type SetupHandle interface {
-	Handle
-
-	// Rewrite unseals the bootstrap key again, writes the new file beside the old with every
-	// unknown field unchanged, and swaps it in. hadv-setup calls it only with the service
-	// stopped, which the lock enforces. It follows the lines for every rewrite in the package
-	// comment, and:
-	//
-	//   - If a field breaks a rule in the table on Fields, then Rewrite shall refuse with
-	//     FieldMalformed, naming the field.
-	Rewrite(ctx context.Context, fields Fields) error
-}
-
-// ServiceHandle is hadv-service's handle: the vault-key fields and nothing else. Its two
-// writes follow the lines for every rewrite in the package comment.
-//
-//   - The ServiceHandle shall offer no operation that changes any field other than the
-//     vault-key fields. [read]
-type ServiceHandle interface {
-	Handle
-
-	// AddVaultKey is called during a vault-key change.
-	//
-	//   - If the key's version is held with the same bytes, then AddVaultKey shall write nothing
-	//     and succeed.
-	//   - If the key's version is held with other bytes, then AddVaultKey shall refuse with
-	//     VaultKeyConflict.
-	//   - If two vault keys are held and the key's version is neither of them, then AddVaultKey
-	//     shall refuse with VaultKeyConflict.
-	//   - If the key is not 32 bytes, then AddVaultKey shall refuse with FieldMalformed, naming
-	//     its field.
-	//   - When one vault key is held and the key's version is new, AddVaultKey shall rewrite the
-	//     bootstrap file with the key added.
-	AddVaultKey(ctx context.Context, key VaultKey) error
-
-	// RemoveVaultKey is called when a vault-key change finishes.
-	//
-	//   - If the version is not held, then RemoveVaultKey shall write nothing and succeed.
-	//   - If the version is the only vault key held, then RemoveVaultKey shall refuse with
-	//     FieldMalformed, naming its field.
-	//   - When two vault keys are held and the version is one of them, RemoveVaultKey shall
-	//     rewrite the bootstrap file without it.
-	RemoveVaultKey(ctx context.Context, version uint32) error
-}
-
-// Bootstrap is the contract, and New returns it. The folder is the bootstrap folder from the
-// service registration: empty means the platform's default, and in a container it is ignored
-// for the fixed path. The account is the service account. Every operation that reaches the OS
-// credential store carries a context with a deadline. Every refusal is a *Refusal, never a
-// default.
+// Bootstrap is the entry. Both programs call Open; only hadv-setup calls Create. Each takes a
+// context with a deadline, for the calls out to a key holder.
 type Bootstrap interface {
-	// Build is called by hadv-setup, elevated, in a folder hadv-setup has made, after it has
-	// registered the service so that the account exists. It returns the mode to record in
-	// the service registration.
+	// Create makes a new bootstrap file in folder, sealed under holder: with a new bootstrap key
+	// for key holders 1 to 3, granted to account where the key holder needs it; under the key
+	// the key file or Swarm secret holds for 4 and 5. With overwrite false and a file present, it
+	// refuses before it makes anything. With overwrite true, it reads only the old file's
+	// header, never unsealing it: the new file goes in place only after it opens, and a Windows
+	// key the old header names is deleted only after that; an old header that does not parse is
+	// replaced and nothing is deleted. A failure leaves the folder and the key holder as they
+	// were, deleting any key it made.
 	//
-	//   - If the process is neither elevated nor root, then Build shall refuse with NotElevated.
-	//   - If another handle holds the lock, then Build shall refuse with InUse.
-	//   - If the folder breaks a folder rule, then Build shall refuse with FolderRefused, naming
-	//     the rule.
-	//   - If a field breaks a rule in the table on Fields, then Build shall refuse with
-	//     FieldMalformed, naming the field.
-	//   - If a bootstrap file is in the folder and the path is FirstSetup or Joining, then Build
-	//     shall refuse with FileExists.
-	//   - If the source is FromKeyFile where the server runs Windows or has systemd 250 or later,
-	//     then Build shall refuse with SourceRefused.
-	//   - If the source is FromContainer where the server runs Windows or Linux with systemd, then
-	//     Build shall refuse with SourceRefused.
-	//   - If the source is FromOSStore where the server runs Linux without systemd 250 or later,
-	//     then Build shall refuse with NoCredentialStore.
-	//   - When the source is FromOSStore, Build shall make the bootstrap key from 256 bits read
-	//     from the operating system's random source. [read]
-	//   - Where the server runs Windows, when the source is FromOSStore, Build shall make a
-	//     2048-bit RSA machine key pair that is not exportable.
-	//   - Where the server runs Windows and has a TPM, Build shall make the machine key pair in
-	//     the Microsoft Platform Crypto Provider. [run]
-	//   - Where the server runs Windows without a TPM, Build shall make the machine key pair in
-	//     the Microsoft Software Key Storage Provider.
-	//   - Where the server runs Windows, Build shall give the machine key pair an access list
-	//     naming only the account, SYSTEM and Administrators.
-	//   - If a machine key pair of this package's name exists and the path is FirstSetup or
-	//     Joining, then Build shall refuse with MachineKeyPairExists.
-	//   - When the path is JoiningAgain or Restore, Build shall delete any machine key pair of
-	//     this package's name before it makes the new one.
-	//   - Where the server runs Windows, Build shall write bootstrap-key.sealed as the bootstrap
-	//     key encrypted with RSA-OAEP under the machine key pair, as this package comment gives
-	//     it.
-	//   - Where the server runs Windows, when the source is FromOSStore, Build shall return
-	//     ModeMachineKeyPair.
-	//   - Where the server runs Linux with systemd 256 or later, when the source is FromOSStore,
-	//     Build shall seal the bootstrap key as a credential scoped to the account and return
-	//     ModeSystemdPerUse.
-	//   - Where the server runs Linux with systemd 250 to 255, when the source is FromOSStore,
-	//     Build shall seal the bootstrap key as a system credential and return ModeSystemdAtStart.
-	//   - Where the server runs Linux and has a TPM, Build shall have systemd seal the bootstrap
-	//     key under both the TPM and the host key. [run]
-	//   - Where the server runs Linux and has a TPM, Build shall ask systemd for the TPM and the
-	//     host key by name, never for systemd's default choice. [read]
-	//   - If the server runs Linux and has a TPM without the libraries systemd needs to use it,
-	//     then Build shall refuse with TPMLibrariesMissing. [run]
-	//   - Where the server runs Linux without a TPM, Build shall have systemd seal the bootstrap
-	//     key under the host key.
-	//   - Where the server runs Linux, Build shall name the credential heliosadvance-bootstrap-key.
-	//   - Where the server runs Linux and has a TPM, Build shall bind the credential to no PCR.
-	//     [run]
-	//   - When the source is FromKeyFile, Build shall read the bootstrap key from bootstrap.key in
-	//     the folder and return ModeKeyFile.
-	//   - When the source is FromContainer, Build shall read the bootstrap key from the Swarm
-	//     secret or the key file and return ModeContainer.
-	//   - If the source is FromContainer and neither a Swarm secret nor a key file is present,
-	//     then Build shall refuse with NoKeySource.
-	//   - If the source is FromContainer and both a Swarm secret and a key file are present, then
-	//     Build shall refuse with BothKeySources.
-	//   - If the source is FromKeyFile and the key file is absent, then Build shall refuse with
-	//     KeyNotFound.
-	//   - If the key file is a symbolic link or a file with more than one name, then Build shall
-	//     refuse with Link.
-	//   - If a key file or Swarm secret holds anything other than 32 bytes as base64 in 44
-	//     characters with at most one trailing newline, then Build shall refuse with
-	//     KeyFileMalformed.
-	//   - When the source is FromKeyFile or FromContainer, Build shall make no bootstrap key and
-	//     no machine key pair.
-	//   - Build shall set the folder to its rule before it writes any file in it. [read]
-	//   - Build shall create every file it writes already set to its rule, owned by or listed for
-	//     the account. [read]
-	//   - Build shall write the bootstrap file beside any old one, flush it, check that it reads
-	//     back, and then swap it in. [read]
-	//   - If the new bootstrap file does not read back, then Build shall refuse with RewriteFailed
-	//     and delete it. [read]
-	//   - If Build fails after it makes a machine key pair or a credential, then Build shall
-	//     delete that machine key pair or credential. [read]
-	//   - Build shall overwrite the bootstrap key in its memory before it returns. [read]
-	Build(ctx context.Context, folder string, fields Fields, path BuildPath, account string, source KeySource) (KeyMode, error)
+	// It returns the name of any key it could not delete (the old one after a replace, or the new
+	// one after a failure), or "" for none; a key it could not delete does not fail it. Results:
+	// ErrNotFound, ErrExists, ErrInvalid, ErrKey, ErrWrite.
+	//
+	//   - When create replaces a bootstrap file, create shall read no more of the old file than
+	//     its header.
+	//   - When create replaces a bootstrap file whose header does not match format version 1's
+	//     layout, create shall put the new file in place and delete no key.
+	//   - If create fails after it makes a Windows key, then create shall delete that key.
+	//   - If create fails and deleting the Windows key it made fails, then create shall return
+	//     that key's name with the failure's code.
+	//   - If deleting the old Windows key fails after the new file is in place, then create shall
+	//     return that key's name and no code.
+	Create(ctx context.Context, folder string, holder KeyHolder, account ServiceAccount,
+		fields Fields, overwrite bool) (undeleted string, err error)
 
-	// UnlockForSetup is called by hadv-setup, elevated, with the service account, as hadv-setup
-	// registered it. It unlocks and takes the lock.
+	// Open reads bootstrap.hadv in folder, gets the bootstrap key from the key holder its header
+	// names, unseals it and closes it before returning. account is used only by key holder 2.
+	// Results: ErrNotFound, ErrUnreadable, ErrFormat, ErrKey, ErrDecrypt, ErrInvalid.
 	//
-	//   - If the process is neither elevated nor root, then UnlockForSetup shall refuse with
-	//     NotElevated.
-	//   - If another handle holds the lock, then UnlockForSetup shall refuse with InUse.
-	//   - If bootstrap.lock is absent, then UnlockForSetup shall create it exclusively, already
-	//     set to its rule for the account it is given.
-	//   - If the folder breaks a folder rule, then UnlockForSetup shall refuse with FolderRefused,
-	//     naming the rule.
-	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
-	//     more than one name, then UnlockForSetup shall refuse with Link.
-	//   - UnlockForSetup shall not refuse an item set looser than its rule.
-	//   - If bootstrap.hadv.new is in the folder, then UnlockForSetup shall delete it.
-	//   - If the mode is not one of this platform's, then UnlockForSetup shall refuse with
-	//     SourceRefused.
-	//   - If the mode is ModeContainer and neither a Swarm secret nor a key file is present, then
-	//     UnlockForSetup shall refuse with NoKeySource.
-	//   - If the mode is ModeContainer and both a Swarm secret and a key file are present, then
-	//     UnlockForSetup shall refuse with BothKeySources.
-	//   - If the mode is not ModeContainer and the sealed-key file, the credential or the key file
-	//     is absent, then UnlockForSetup shall refuse with KeyNotFound.
-	//   - If a key file or Swarm secret holds anything other than 32 bytes as base64 in 44
-	//     characters with at most one trailing newline, then UnlockForSetup shall refuse with
-	//     KeyFileMalformed.
-	//   - If the OS credential store does not unseal the bootstrap key, then UnlockForSetup shall
-	//     refuse with KeyNotUnsealed.
-	//   - If the credential is sealed under the TPM and the libraries systemd needs to use it are
-	//     absent, then UnlockForSetup shall refuse with TPMLibrariesMissing. [run]
-	//   - If the bootstrap file is absent, then UnlockForSetup shall refuse with FileNotFound.
-	//   - Where the server runs Linux with systemd, UnlockForSetup shall have systemd decrypt the
-	//     credential itself, in either mode.
-	//   - Where the mode is ModeSystemdPerUse, UnlockForSetup shall have systemd decrypt the
-	//     credential scoped to the account it is given.
-	//   - UnlockForSetup shall overwrite the bootstrap key in its memory before it returns.
-	//     [read]
-	//   - When UnlockForSetup unlocks the bootstrap file, it shall return a handle that holds the
-	//     lock until Close.
-	UnlockForSetup(ctx context.Context, folder string, mode KeyMode, account string) (SetupHandle, error)
-
-	// Check is called by hadv-setup, elevated: every item set looser than its rule, empty
-	// when all hold.
-	//
-	//   - If the process is neither elevated nor root, then Check shall refuse with NotElevated.
-	//   - If the folder breaks a folder rule, then Check shall refuse with FolderRefused, naming
-	//     the rule.
-	//   - If an item in the folder is a file with more than one name, then Check shall refuse with
-	//     Link, naming the item.
-	//   - Check shall return one finding for each item set looser than its rule, with its path,
-	//     what it found and its rule.
-	//   - If every item holds to its rule, then Check shall return no finding.
-	//   - Check shall judge which account owns each item, and each access list, against the
-	//     account it is given.
-	//   - Check shall change nothing. [read]
-	//   - Check shall run without the lock.
-	Check(folder string, mode KeyMode, account string) ([]Finding, error)
-
-	// SetToRule is called by hadv-setup, elevated, after the sysop's yes. A Swarm secret's
-	// file is mounted read-only: for it hadv-setup names the stack file's account and mode
-	// settings instead of calling this.
-	//
-	//   - If the process is neither elevated nor root, then SetToRule shall refuse with
-	//     NotElevated.
-	//   - SetToRule shall set the finding's item to its rule for the account it is given, and
-	//     change nothing else.
-	//   - SetToRule shall set the item through the handle it opened, never by name alone.
-	//     [read]
-	//   - If the finding's item is a symbolic link, a junction, or a file with more than one name,
-	//     then SetToRule shall refuse with Link.
-	//   - If the finding's item is ItemSwarmSecret, then SetToRule shall refuse with
-	//     LooserThanRule and change nothing.
-	SetToRule(finding Finding, account string) error
-
-	// UnlockForService is called by hadv-service, as the bootstrap folder's service account.
-	// It runs every start check, takes the lock, deletes a half-made file and unlocks.
-	//
-	//   - UnlockForService shall check the account first, then take the lock, then check the
-	//     folder, the links and the permissions, then delete a half-made file, and only then
-	//     unlock.
-	//   - If the process runs elevated or as root, then UnlockForService shall refuse with
-	//     WrongAccount.
-	//   - Where the server runs Linux, if the process runs under any account other than the one
-	//     that owns the bootstrap folder, then UnlockForService shall refuse with WrongAccount.
-	//   - Where the server runs Windows, if the process runs under any account that the bootstrap
-	//     folder's access list does not name beside SYSTEM and Administrators, then
-	//     UnlockForService shall refuse with WrongAccount.
-	//   - If another handle holds the lock, then UnlockForService shall refuse with InUse.
-	//   - If bootstrap.lock is absent, then UnlockForService shall create it exclusively, already
-	//     set to its rule.
-	//   - If the folder breaks a folder rule, then UnlockForService shall refuse with
-	//     FolderRefused, naming the rule.
-	//   - If the bootstrap file or the key file is a symbolic link, a junction, or a file with
-	//     more than one name, then UnlockForService shall refuse with Link.
-	//   - If an item in the permission table is set looser than its rule, then UnlockForService
-	//     shall refuse with LooserThanRule, naming the item and its path.
-	//   - If the bootstrap file or the bootstrap folder is not writable by the service account,
-	//     then UnlockForService shall refuse with NotWritable.
-	//   - UnlockForService shall make every check on the handle it opened, never on a name alone.
-	//     [read]
-	//   - UnlockForService shall change no permission. [read]
-	//   - If bootstrap.hadv.new is in the folder, then UnlockForService shall delete it.
-	//   - If the mode is not one of this platform's, then UnlockForService shall refuse with
-	//     SourceRefused.
-	//   - If the mode is ModeContainer and neither a Swarm secret nor a key file is present, then
-	//     UnlockForService shall refuse with NoKeySource.
-	//   - If the mode is ModeContainer and both a Swarm secret and a key file are present, then
-	//     UnlockForService shall refuse with BothKeySources.
-	//   - If the mode is not ModeContainer and the sealed-key file, the credential or the key file
-	//     is absent, then UnlockForService shall refuse with KeyNotFound.
-	//   - If a key file or Swarm secret holds anything other than 32 bytes as base64 in 44
-	//     characters with at most one trailing newline, then UnlockForService shall refuse with
-	//     KeyFileMalformed.
-	//   - If the OS credential store does not unseal the bootstrap key, then UnlockForService
-	//     shall refuse with KeyNotUnsealed.
-	//   - If the credential is sealed under the TPM and the libraries systemd needs to use it are
-	//     absent, then UnlockForService shall refuse with TPMLibrariesMissing. [run]
-	//   - If the bootstrap file is absent, then UnlockForService shall refuse with FileNotFound.
-	//   - Where the mode is ModeSystemdPerUse, UnlockForService shall have systemd decrypt the
-	//     credential for this unlock. [run]
-	//   - Where the mode is ModeSystemdAtStart, UnlockForService shall read the bootstrap key from
-	//     the credential folder systemd gives the service. [run]
-	//   - Where the server runs Windows, UnlockForService shall report HeldInTPM when the machine
-	//     key pair is in the Microsoft Platform Crypto Provider, and HeldInSoftwareKeyStore
-	//     otherwise.
-	//   - Where the mode is ModeSystemdPerUse or ModeSystemdAtStart, UnlockForService shall report
-	//     HeldInTPM when the credential is sealed under the TPM, and HeldUnderHostKey otherwise.
-	//   - UnlockForService shall report HeldAsSwarmSecret for a Swarm secret and HeldInKeyFile for
-	//     a key file.
-	//   - UnlockForService shall overwrite the bootstrap key in its memory before it returns.
-	//     [read]
-	//   - When UnlockForService unlocks the bootstrap file, it shall return a handle that holds
-	//     the lock until Close.
-	UnlockForService(ctx context.Context, folder string, mode KeyMode) (ServiceHandle, error)
+	//   - When open returns a handle, the handle shall give the file's fields, its key holder and
+	//     its sealed key.
+	Open(ctx context.Context, folder string, account ServiceAccount) (File, error)
 }
+
+// holder is the five key holders behind one interface, inside the package and not offered to
+// callers (the Pascal's IKeyHolder), so platform differences live in them and not in Create, Open
+// or Save.
+type holder interface {
+	// newKey makes a new bootstrap key and its sealed form for the header, granted to account
+	// where the key holder needs it. Key holders 4 and 5 make nothing: the key they hold, and
+	// no sealed key.
+	newKey(ctx context.Context, account ServiceAccount) (key, sealedKey []byte, err error)
+
+	// key is the bootstrap key, from the sealed key the header carries (key holders 1 to 3) or
+	// the key file or Swarm secret (4 and 5): exactly 32 bytes, or ErrKey.
+	key(ctx context.Context, sealedKey []byte, account ServiceAccount) ([]byte, error)
+
+	// deleteKey deletes the Windows key the sealed key names, for key holder 1; the others do
+	// nothing, since a systemd credential lives only in the header and the sysop's keys are the
+	// sysop's.
+	deleteKey(ctx context.Context, sealedKey []byte) error
+}
+
+// The key-holder interface is declared here for the build to implement; this keeps it in use
+// until it does.
+var _ holder = nil

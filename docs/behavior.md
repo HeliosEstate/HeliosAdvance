@@ -493,7 +493,7 @@ it unseals.
 - When create replaces a bootstrap file, the bootstrap package shall delete the old bootstrap key
   only after the new file is in place.
 - If create fails, then the bootstrap package shall leave the bootstrap folder and the key holder as
-  they were before the call.
+  they were before the call, or return the name of a key it failed to delete.
 
 ### Open
 
@@ -537,4 +537,4 @@ it unseals.
 | ErrDecrypt | the bootstrap file does not unseal under the bootstrap key |
 | ErrInvalid | the fields break the rules of a valid bootstrap file, as read or as the caller would save them |
 | ErrExists | create is called with overwrite false and a bootstrap file is present |
-| ErrWrite | writing the new file, or putting it in place of the old one, fails |
+| ErrWrite | writing the new file, opening it, or putting it in place of the old one fails |
