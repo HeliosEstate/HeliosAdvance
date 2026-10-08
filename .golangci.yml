@@ -146,17 +146,32 @@ linters:
           msg: tests synchronise on events or the fake clock, never on a sleep
         # The bootstrap package reaches every file through os.OpenRoot on its folder, never by
         # a path; these calls take one. Scoped to it below.
-        - pattern: ^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|Rename|Remove|RemoveAll|Stat|Lstat|Chmod|Chown|Lchown|Chtimes|Chdir|ReadDir|Mkdir|MkdirAll|MkdirTemp|Link|Symlink|Readlink|Truncate|DirFS)$
+        - pattern: ^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|Rename|Remove|RemoveAll|Stat|Lstat|Chmod|Chown|Lchown|Chtimes|Chdir|ReadDir|Mkdir|MkdirAll|MkdirTemp|Link|Symlink|Readlink|Truncate|DirFS|CopyFS)$
           msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^syscall\.(Open|Openat|Creat|Rename|Unlink|Mkdir|Rmdir|Chmod|Chown|Lchown|Chdir|Link|Symlink|Readlink|Stat|Lstat|Truncate|CreateFile|DeleteFile|MoveFile|CreateDirectory|RemoveDirectory)$
-          pkg: ^syscall$
+        - pattern: ^ioutil\.
+          pkg: ^io/ioutil$
           msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^unix\.(Open|Openat|Openat2|Creat|Rename|Renameat|Renameat2|Unlink|Unlinkat|Mkdir|Mkdirat|Rmdir|Chmod|Fchmodat|Chown|Fchownat|Lchown|Chdir|Link|Linkat|Symlink|Symlinkat|Readlink|Readlinkat|Stat|Lstat|Fstatat|Truncate)$
-          pkg: ^golang\.org/x/sys/unix$
+        - pattern: ^filepath\.(Walk|WalkDir|Glob|EvalSymlinks)$
+          pkg: ^path/filepath$
           msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^windows\.(CreateFile|DeleteFile|MoveFile|MoveFileEx|CreateDirectory|RemoveDirectory|SetFileAttributes|GetFileAttributes|GetFileAttributesEx|FindFirstFile|CreateHardLink|CreateSymbolicLink|SetCurrentDirectory)$
+        # A list of path-taking system calls always leaves a twin out (syscall.Renameat beside
+        # unix.Renameat), so the bootstrap package makes none at all: the folder is flushed by
+        # Sync on the root's own handle and systemd-creds runs through os/exec. Its one file
+        # for the Windows key store calls Windows, exempted below, and still never by a path.
+        - pattern: ^(syscall|unix)\.
+          pkg: ^(syscall|golang\.org/x/sys/unix)$
+          msg: the bootstrap package makes no raw system call
+        - pattern: ^windows\.
+          pkg: ^golang\.org/x/sys/windows$
+          msg: the bootstrap package calls Windows only in keystore_windows.go
+        - pattern: ^windows\.(CreateFile|Open|NtCreateFile|DeleteFile|Unlink|MoveFile|MoveFileEx|Rename|CreateDirectory|Mkdir|RemoveDirectory|Rmdir|SetFileAttributes|GetFileAttributes|GetFileAttributesEx|Chmod|FindFirstFile|CreateHardLink|CreateSymbolicLink|Readlink|SetCurrentDirectory|Chdir|Utimes|UtimesNano|SetNamedSecurityInfo|GetNamedSecurityInfo)$
           pkg: ^golang\.org/x/sys/windows$
           msg: the bootstrap package reaches files only through os.Root
+        # A DLL is loaded only from System32 (NewLazySystemDLL), never by the search order,
+        # where a planted DLL of the same name would run in the engine. Everywhere.
+        - pattern: ^(windows|syscall)\.(NewLazyDLL|LoadDLL|MustLoadDLL|LoadLibrary|LoadLibraryEx)$
+          pkg: ^(syscall|golang\.org/x/sys/windows)$
+          msg: load a DLL only from System32, with NewLazySystemDLL
     gosec:
       excludes:
         - G104 # errcheck already reports an unchecked error
@@ -179,22 +194,31 @@ linters:
       # The only exception to the unsafe ban: the bootstrap package's one small file for the
       # Windows key store (NCrypt), which golang.org/x/sys does not wrap, so its calls take raw
       # pointers. The developer's decision, 2026-10-08; read line by line at review.
-      - path: internal/bootstrap/keystore_windows\.go
+      - path: internal/bootstrap/keystore_windows\.go$
         linters: [depguard]
         text: import 'unsafe'
+      # gosec's G103 reports every use of unsafe for audit; in this file the audit is the
+      # developer's line-by-line read, and a silenced gosec is refused, so without this line
+      # the file the exception above allows could never pass.
+      - path: internal/bootstrap/keystore_windows\.go$
+        linters: [gosec]
+        text: G103
+      - path: internal/bootstrap/keystore_windows\.go$
+        linters: [forbidigo]
+        text: calls Windows only in keystore_windows\.go
       # systemd tells a service where its decrypted credentials are by CREDENTIALS_DIRECTORY
       # (systemd.exec(5)); it is neither a setting nor a secret. This one file reads it.
-      - path: internal/bootstrap/credentials_linux\.go
+      - path: internal/bootstrap/credentials_linux\.go$
         linters: [forbidigo]
         text: os\.LookupEnv
-      # The ban on calls that take a path is the bootstrap package's, and binds its product code,
-      # not its tests, which set up folders to open.
+      # The bans on calls that take a path and on system calls are the bootstrap package's, and
+      # bind its product code, not its tests, which set up folders to open.
       - path-except: internal/bootstrap/
         linters: [forbidigo]
-        text: only through os\.Root
-      - path: internal/bootstrap/.*_test\.go
+        text: only through os\.Root|makes no raw system call|calls Windows only in keystore_windows\.go
+      - path: internal/bootstrap/[^/]*_test\.go$
         linters: [forbidigo]
-        text: only through os\.Root
+        text: only through os\.Root|makes no raw system call|calls Windows only in keystore_windows\.go
       # A contract.go is a unit's whole surface, declared at the owner and locked; the
       # small-interface rule applies to consumers, which declare the slice they call.
       - path: contract\.go
