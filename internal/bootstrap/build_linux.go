@@ -79,6 +79,14 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 		return 0, err
 	}
 	defer releaseSetupLock(lock)
+	if err := refuseLink(int(directory.Fd()), folder, bootstrapFileName); err != nil {
+		return 0, err
+	}
+	if source == FromOSStore {
+		if err := refuseLink(int(directory.Fd()), folder, systemdCredentialFileName); err != nil {
+			return 0, err
+		}
+	}
 	var existing unix.Stat_t
 	err = unix.Fstatat(int(directory.Fd()), bootstrapFileName, &existing, unix.AT_SYMLINK_NOFOLLOW)
 	if err == nil && (path == FirstSetup || path == Joining) {
@@ -99,7 +107,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 				_ = unix.Unlinkat(int(directory.Fd()), systemdCredentialFileName, 0) //nolint:errcheck // a failed build must not leave a credential
 			}
 		}()
-		if err := sealSystemdCredential(ctx, folder, accountID, version >= 256, tpmDevice, key); err != nil {
+		if err := sealSystemdCredential(ctx, directory, folder, accountID, version >= 256, tpmDevice, key); err != nil {
 			return 0, err
 		}
 	}
@@ -108,7 +116,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	name := bootstrapFileName + ".new"
 	descriptor, err := unix.Openat(int(directory.Fd()), name, unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
-		return 0, fmt.Errorf("bootstrap: creating the new bootstrap file: %w", err)
+		return 0, createFailure(err, int(directory.Fd()), folder, name, "bootstrap: creating the new bootstrap file")
 	}
 	removeNew := true
 	defer func() {
@@ -181,20 +189,48 @@ func linuxTPMDevice(ctx context.Context) (string, error) {
 	return "", nil
 }
 
-func sealSystemdCredential(ctx context.Context, folder string, accountID uint32, perUse bool, tpmDevice string, key []byte) error {
-	sealedPath := filepath.Join(folder, systemdCredentialFileName+".new")
-	sealed, err := os.OpenFile(sealedPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // folder is the checked bootstrap directory
-	if err != nil {
-		return err
+// refuseLink refuses with Link a name in the folder that is a symbolic link or has more than one
+// name, judged without following it; a name that is absent or an ordinary file is let through.
+func refuseLink(directory int, folder, name string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(directory, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return fmt.Errorf("bootstrap: checking %s: %w", filepath.Join(folder, name), err)
 	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		return &Refusal{Cause: Link, Path: filepath.Join(folder, name)}
+	}
+	return nil
+}
+
+// createFailure explains a failed exclusive create: a name already taken by a link is Link.
+func createFailure(err error, directory int, folder, name, what string) error {
+	if errors.Is(err, unix.EEXIST) || errors.Is(err, unix.ELOOP) {
+		if linkErr := refuseLink(directory, folder, name); linkErr != nil {
+			return linkErr
+		}
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
+func sealSystemdCredential(ctx context.Context, directory *os.File, folder string, accountID uint32, perUse bool, tpmDevice string, key []byte) error {
+	sealedName := systemdCredentialFileName + ".new"
+	descriptor, err := unix.Openat(int(directory.Fd()), sealedName, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return createFailure(err, int(directory.Fd()), folder, sealedName, "bootstrap: creating the credential")
+	}
+	sealed := os.NewFile(uintptr(descriptor), sealedName)
+	remove := func() { _ = unix.Unlinkat(int(directory.Fd()), sealedName, 0) } //nolint:errcheck // remove the incomplete credential
 	if err := sealed.Chown(int(accountID), -1); err != nil {
-		_ = sealed.Close()        //nolint:errcheck // return the chown error
-		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		_ = sealed.Close() //nolint:errcheck // return the chown error
+		remove()
 		return err
 	}
 	if err := sealed.Chmod(0o600); err != nil {
-		_ = sealed.Close()        //nolint:errcheck // return the chmod error
-		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		_ = sealed.Close() //nolint:errcheck // return the chmod error
+		remove()
 		return err
 	}
 	args := []string{"encrypt", "--name=" + machineKeyPairName}
@@ -213,24 +249,24 @@ func sealSystemdCredential(ctx context.Context, folder string, accountID uint32,
 	var output strings.Builder
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
-		_ = sealed.Close()        //nolint:errcheck // remove the incomplete credential
-		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		_ = sealed.Close() //nolint:errcheck // remove the incomplete credential
+		remove()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return fmt.Errorf("bootstrap: sealing the credential: %w: %s", err, strings.TrimSpace(output.String()))
 	}
 	if err := sealed.Sync(); err != nil {
-		_ = sealed.Close()        //nolint:errcheck // return the sync error
-		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		_ = sealed.Close() //nolint:errcheck // return the sync error
+		remove()
 		return err
 	}
 	if err := sealed.Close(); err != nil {
-		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+		remove()
 		return err
 	}
-	if err := os.Rename(sealedPath, filepath.Join(folder, systemdCredentialFileName)); err != nil {
-		_ = os.Remove(sealedPath) //nolint:errcheck // remove the incomplete credential
+	if err := unix.Renameat(int(directory.Fd()), sealedName, int(directory.Fd()), systemdCredentialFileName); err != nil {
+		remove()
 		return err
 	}
 	return nil

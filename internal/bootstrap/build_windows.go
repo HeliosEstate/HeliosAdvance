@@ -45,6 +45,7 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: the account %s: %w", account, err)
 	}
+	folderHandle := windows.Handle(directory.Fd())
 	keyPair, exists, err := openKeyPair()
 	if err != nil {
 		return 0, err
@@ -54,26 +55,32 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 		if path == FirstSetup || path == Joining {
 			return 0, &Refusal{Cause: MachineKeyPairExists}
 		}
+	}
+	oldFile, err := openChild(folderHandle, bootstrapFileName, windows.FILE_READ_ATTRIBUTES)
+	if err == nil {
+		linkErr := checkWindowsHandle(oldFile, filepath.Join(folder, bootstrapFileName))
+		_ = windows.CloseHandle(oldFile) //nolint:errcheck // nothing to flush on a read-only handle
+		if linkErr != nil {
+			return 0, linkErr
+		}
+		if path == FirstSetup || path == Joining {
+			return 0, &Refusal{Cause: FileExists}
+		}
+	} else if !windowsMissingItem(err) {
+		return 0, err
+	}
+	if exists {
 		if _, err := windowsKeyPair(ctx, "remove", ""); err != nil {
 			return 0, err
 		}
-	}
-	if _, err := os.Lstat(filepath.Join(folder, bootstrapFileName)); err == nil && (path == FirstSetup || path == Joining) {
-		return 0, &Refusal{Cause: FileExists}
-	} else if err != nil && !os.IsNotExist(err) {
-		return 0, err
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return 0, fmt.Errorf("bootstrap: making the bootstrap key: %w", err)
 	}
 	defer clear(key)
-	sealed := filepath.Join(folder, sealedKeyFileName)
-	sealedFile, err := os.OpenFile(sealed, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // the folder was opened and checked above
+	sealedFile, err := createChild(folderHandle, folder, sealedKeyFileName, service)
 	if err != nil {
-		return 0, err
-	}
-	if err := sealedFile.Close(); err != nil {
 		return 0, err
 	}
 	keyPairMade, sealedMade := false, true
@@ -82,12 +89,10 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 			_, _ = windowsKeyPair(cleanupContext, "remove", "") //nolint:errcheck // preserve the build error
 		}
 		if sealedMade {
-			_ = os.Remove(sealed) //nolint:errcheck // a failed build must not leave the sealed key
+			_ = sealedFile.Close()                           //nolint:errcheck // closed already after a good write; the delete needs the share
+			_ = deleteChild(folderHandle, sealedKeyFileName) //nolint:errcheck // a failed build must not leave the sealed key
 		}
 	}(context.WithoutCancel(ctx))
-	if err := setToRule(Finding{Item: ItemOtherFile, Path: sealed}, account); err != nil {
-		return 0, err
-	}
 	publicKey, err := windowsKeyPair(ctx, "create", service.String())
 	if err != nil {
 		return 0, err
@@ -97,26 +102,26 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err != nil {
 		return 0, fmt.Errorf("bootstrap: sealing the bootstrap key: %w", err)
 	}
-	if err := os.WriteFile(sealed, ciphertext, 0o600); err != nil {
+	if _, err := sealedFile.Write(ciphertext); err != nil {
+		return 0, err
+	}
+	if err := sealedFile.Close(); err != nil {
 		return 0, err
 	}
 	file := &bootstrapFile{}
 	file.setFields(fields)
-	newPath := filepath.Join(folder, bootstrapFileName+".new")
-	output, err := os.OpenFile(newPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600) //nolint:gosec // the folder was opened and checked above
+	newName := bootstrapFileName + ".new"
+	output, err := createChild(folderHandle, folder, newName, service)
 	if err != nil {
 		return 0, err
 	}
 	removeNew := true
 	defer func() {
 		if removeNew {
-			_ = os.Remove(newPath) //nolint:errcheck // remove the incomplete build file
+			_ = output.Close()                     //nolint:errcheck // the delete needs the share
+			_ = deleteChild(folderHandle, newName) //nolint:errcheck // remove the incomplete build file
 		}
 	}()
-	if err := setToRule(Finding{Item: ItemOtherFile, Path: newPath}, account); err != nil {
-		_ = output.Close() //nolint:errcheck // return the ACL error
-		return 0, err
-	}
 	if err := file.writeTo(output, key); err != nil {
 		_ = output.Close() //nolint:errcheck // return the write error
 		return 0, &Refusal{Cause: RewriteFailed}
@@ -132,11 +137,12 @@ func buildOnPlatform(ctx context.Context, folder string, fields Fields, path Bui
 	if err == nil {
 		_, err = openFile(output, info.Size(), key)
 	}
-	_ = output.Close() //nolint:errcheck // read-back is complete
 	if err != nil {
 		return 0, &Refusal{Cause: RewriteFailed}
 	}
-	if err := os.Rename(newPath, filepath.Join(folder, bootstrapFileName)); err != nil {
+	err = renameOver(output, folderHandle, bootstrapFileName)
+	_ = output.Close() //nolint:errcheck // read-back is complete
+	if err != nil {
 		return 0, &Refusal{Cause: RewriteFailed}
 	}
 	removeNew, keyPairMade, sealedMade = false, false, false
