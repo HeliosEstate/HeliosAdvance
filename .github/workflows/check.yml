@@ -82,6 +82,7 @@ jobs:
           fi
           go install golang.org/x/vuln/cmd/govulncheck@latest
           go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+          go install github.com/google/go-licenses/v2@v2.0.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # Every oracle the tree holds, none on a tree without any: main is the skeleton.
       - name: Build the oracles

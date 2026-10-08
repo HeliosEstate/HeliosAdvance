@@ -33,9 +33,9 @@ or the PR is wrong.
 
 ## Out of road
 
-Locked tests still red, a spec gap, or a question: push the branch, comment on the issue
-with the failing output in full and the question, add `human-action-required`, stop. Never
-edit a test to make it pass; never guess at a spec gap; never file new work.
+Fail loud. Locked tests still red, a spec gap, a question, or anything doubtful, worked around,
+silenced or skipped: push the branch, comment on the issue with it in full, add the label
+`needs-developer`, stop. Never edit a test to make it pass; never guess; never file new work.
 
 ## Conventions a linter cannot see
 
