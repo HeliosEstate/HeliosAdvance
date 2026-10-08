@@ -164,10 +164,10 @@
 // # Untrusted input and oracles
 //
 // Untrusted inputs: the bootstrap file (the header before anything is verified, the records after
-// it unseals); the key file; the Swarm secret; the credential folder's file; what systemd-creds decrypt and the Windows key store return. Each
-// parser among them is a fuzz target: the header reader, the record reader and the base64 key
-// reader, seeded from the kept samples. The fields a caller passes are checked (ErrInvalid), not
-// parsed.
+// it unseals); the key file; the Swarm secret; the credential folder's file; what systemd-creds
+// decrypt and the Windows key store return. Each parser among them is a fuzz target: the header
+// reader, the record reader and the base64 key reader, seeded from the kept samples. The fields a
+// caller passes are checked (ErrInvalid), not parsed.
 //
 // What proves each part:
 //
