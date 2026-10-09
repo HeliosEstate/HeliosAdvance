@@ -15,8 +15,12 @@ uses
 
 const
   MagicLength = 8;
-  HeaderLength = MagicLength + 2 + NonceLength;
+  { Magic, format version, key holder and sealed-key length: the header's fixed start. The
+    sealed key follows it, then the nonce. }
+  HeaderStartLength = MagicLength + 2 + 1 + 2;
   FormatVersion = 1;
+  { The key file: no sealed key, so a list that names nothing writes the simplest file. }
+  DefaultKeyHolder = 4;
   { A token that makes bytes (zeros:, random:) stops here: a typo of a few digits should
     fail, not fill the disk. Four times the format's whole-file limit is room enough for
     every oversized case. }
@@ -35,6 +39,11 @@ type
   TFilePlan = record
     Magic: TBytes;
     Version: Word;
+    KeyHolder: Byte;
+    SealedKey: TBytes;
+    { The 2-byte length written before the sealed key; given, it can lie. }
+    SealedLengthGiven: Boolean;
+    SealedLength: Word;
     NonceGiven: Boolean;
     Nonce: TNonce;
     Plaintext: TBytes;
@@ -415,13 +424,17 @@ end;
 function ParseRecordList(const Text: string): TFilePlan;
 var
   Lines: TStringArray;
-  LineIndex: Integer;
+  LineIndex, Index: Integer;
   Line, Directive: string;
   Tokens: TTokenList;
   Value: TBytes;
 begin
   Result.Magic := BytesOf('HADVBOOT');
   Result.Version := FormatVersion;
+  Result.KeyHolder := DefaultKeyHolder;
+  Result.SealedKey := nil;
+  Result.SealedLengthGiven := False;
+  Result.SealedLength := 0;
   Result.NonceGiven := False;
   FillChar(Result.Nonce, SizeOf(Result.Nonce), 0);
   Result.Plaintext := nil;
@@ -452,6 +465,29 @@ begin
     begin
       RequireTokenCount(Tokens, 2, 2, LineIndex + 1);
       Result.Version := Word(ParseNumber(Tokens[1].Text, High(Word), LineIndex + 1));
+    end
+    else if Directive = 'holder' then
+    begin
+      RequireTokenCount(Tokens, 2, 2, LineIndex + 1);
+      Result.KeyHolder := Byte(ParseNumber(Tokens[1].Text, High(Byte), LineIndex + 1));
+    end
+    else if Directive = 'sealed' then
+    begin
+      { Several values are joined, so a Windows key's name and wrap fit on one line. }
+      if Length(Tokens) < 2 then
+        raise ERecordList.CreateFmt('line %d: sealed takes one value or more', [LineIndex + 1]);
+      Result.SealedKey := nil;
+      for Index := 1 to High(Tokens) do
+        AppendBytes(Result.SealedKey, ParseValue(Tokens[Index], LineIndex + 1));
+      if Length(Result.SealedKey) > GeneratedByteLimit then
+        raise ERecordList.CreateFmt('line %d: the sealed key is more than %d bytes',
+          [LineIndex + 1, GeneratedByteLimit]);
+    end
+    else if Directive = 'sealed-length' then
+    begin
+      RequireTokenCount(Tokens, 2, 2, LineIndex + 1);
+      Result.SealedLength := Word(ParseNumber(Tokens[1].Text, High(Word), LineIndex + 1));
+      Result.SealedLengthGiven := True;
     end
     else if Directive = 'nonce' then
     begin

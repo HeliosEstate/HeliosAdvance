@@ -6,6 +6,7 @@ docs/architecture.md
 docs/behavior.md
 features/*
 oracle/*
+internal/bootstrap/testdata/*
 .github/*
 */contract.go
 CLAUDE.md
