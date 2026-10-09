@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,15 +30,21 @@ import (
 
 const image = "heliosestate/lrzsz-oracle:0.1"
 
+// oracleContainers numbers the oracle's containers, so each has a name of its own.
+var oracleContainers atomic.Int64
+
 // oracle runs one lrzsz command in the container with dir mounted as /data and the
 // working directory, and returns the far end of the line plus a wait that reports the
-// command's exit and stderr. Closing the writer is how a test hangs up.
+// command's exit and stderr. Closing the writer is how a test hangs up. The test's cleanup
+// removes the container by its name: ending the docker client leaves the container
+// running, and a sender with data still to send runs on.
 func oracle(t *testing.T, dir string, args ...string) (*line, func() (string, error)) {
 	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatal("docker is required: the oracle is lrzsz in a container, and a skipped oracle is a vacuous pass")
 	}
-	full := []string{"run", "--rm", "-i", "-v", dir + ":/data", "-w", "/data"}
+	name := fmt.Sprintf("helios-oracle-%d-%d", os.Getpid(), oracleContainers.Add(1))
+	full := []string{"run", "--rm", "-i", "--name", name, "-v", dir + ":/data", "-w", "/data"}
 	if uid := os.Getuid(); uid >= 0 {
 		// On Unix the container would otherwise write as root into our temp dir, and we
 		// could not read what rz stored. Windows mounts are open and Getuid is -1 there.
@@ -64,7 +71,15 @@ func oracle(t *testing.T, dir string, args ...string) (*line, func() (string, er
 		err := cmd.Wait()
 		return stderr.String(), err
 	}
-	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		// The test's context has ended by now, so the removal gets a context of its own.
+		removal, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 30*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(removal, "docker", "rm", "-f", name).Run()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
 	return farEnd, wait
 }
 

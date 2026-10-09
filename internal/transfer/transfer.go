@@ -23,6 +23,7 @@ var (
 	ErrTimeout       = errors.New("transfer: timeout")
 	ErrRemoteCommand = errors.New("transfer: remote command refused")
 	ErrProtocol      = errors.New("transfer: protocol error")
+	ErrTooLarge      = errors.New("transfer: file too large")
 )
 
 // Protocol selects the transfer protocol. The zero value is ZMODEM.
