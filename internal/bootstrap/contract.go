@@ -104,8 +104,8 @@
 //   - The bootstrap package shall read at most 46 bytes from the key file or the Swarm secret,
 //     and at most 33 bytes from the credential folder's hadv-bootstrap-key or from the output of
 //     systemd-creds decrypt.
-//   - If systemd-creds encrypt gives more than 4,096 bytes, then create shall return ErrKey,
-//     having read at most 4,097 bytes of it.
+//   - If systemd-creds encrypt gives nothing or more than 4,096 bytes, then create shall return
+//     ErrKey, having read at most 4,097 bytes of it.
 //   - When create seals under systemd credentials, create shall give systemd-creds encrypt the
 //     bootstrap key's 32 raw bytes on standard input.
 //
