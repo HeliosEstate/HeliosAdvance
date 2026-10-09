@@ -93,8 +93,8 @@
 //     bootstrap package shall return ErrKey.
 //   - If the Windows key the sealed key names is in neither provider, or unwrapping the
 //     bootstrap key under it fails, then open shall return ErrKey.
-//   - If systemd-creds decrypt fails, or CREDENTIALS_DIRECTORY is set and holds no
-//     hadv-bootstrap-key, then open shall return ErrKey.
+//   - If systemd-creds decrypt fails, or CREDENTIALS_DIRECTORY is set and reading
+//     hadv-bootstrap-key from it fails, then open shall return ErrKey.
 //   - If the key file or the Swarm secret is not there, or reading it fails, then the bootstrap
 //     package shall return ErrKey.
 //   - If making the Windows key, setting its access list, wrapping the bootstrap key under it or
