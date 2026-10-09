@@ -32,6 +32,11 @@
 // machine key named hadv- plus 32 lowercase hex digits (16 random bytes), in Microsoft's TPM
 // provider where the machine has a TPM, in the software key store provider where it does not.
 //
+//   - If the bootstrap folder is there and opening it fails, then the bootstrap package shall
+//     return ErrUnreadable with the OS's cause beneath it.
+//   - When the bootstrap package returns ErrNotFound or ErrUnreadable, the error shall name
+//     whether the bootstrap folder or bootstrap.hadv is the cause.
+//
 // # The key holders
 //
 // By the number the header carries:
@@ -86,6 +91,23 @@
 //     bootstrap package shall return ErrKey.
 //   - If the caller or the header names a key holder the platform does not have, then the
 //     bootstrap package shall return ErrKey.
+//   - If the Windows key the sealed key names is in neither provider, or unwrapping the
+//     bootstrap key under it fails, then open shall return ErrKey.
+//   - If systemd-creds decrypt fails, or CREDENTIALS_DIRECTORY is set and reading
+//     hadv-bootstrap-key from it fails, then open shall return ErrKey.
+//   - If the key file or the Swarm secret is not there, or reading it fails, then the bootstrap
+//     package shall return ErrKey.
+//   - If making the Windows key, setting its access list, wrapping the bootstrap key under it or
+//     running systemd-creds encrypt fails, then create shall return ErrKey.
+//   - If a key holder gives a bootstrap key that is not 32 bytes, then the bootstrap package
+//     shall return ErrKey.
+//   - The bootstrap package shall read at most 46 bytes from the key file or the Swarm secret,
+//     and at most 33 bytes from the credential folder's hadv-bootstrap-key or from the output of
+//     systemd-creds decrypt.
+//   - If systemd-creds encrypt gives nothing or more than 4,096 bytes, then create shall return
+//     ErrKey, having read at most 4,097 bytes of it.
+//   - When create seals under systemd credentials, create shall give systemd-creds encrypt the
+//     bootstrap key's 32 raw bytes on standard input.
 //
 // # The bootstrap file, format version 1
 //
@@ -108,7 +130,8 @@
 // The header is the first 13 + n bytes. Each part of it is checked against this table before it
 // is used; anything else gets ErrFormat, a format version above 1 included, as does a file too
 // short for its header, nonce and tag. The whole file is at most 65,536 bytes; a larger one gets
-// ErrFormat unread. Nothing after the header is trusted until the tag verifies.
+// ErrFormat, and open reads no more than one byte past that limit. Nothing after the header is
+// trusted until the tag verifies.
 //
 // Once unsealed, the records follow one another to the end of the plaintext:
 //
@@ -222,7 +245,7 @@ import (
 const (
 	Magic                = "HADVBOOT"
 	FormatVersion        = 1
-	MaxSize              = 65536 // bytes; a larger file gets ErrFormat, unread
+	MaxSize              = 65536 // bytes; a larger file gets ErrFormat, read no further
 	HeaderStartSize      = 13    // magic, format version, key holder, sealed-key length
 	NonceSize            = 12
 	TagSize              = 16
@@ -269,13 +292,13 @@ const (
 // systemd.
 type ServiceAccount string
 
-// The codes, one per cause of failure, never prose. The returned error wraps the code and, where
-// there is one, the OS's own error beneath it: errors.Is finds the code, errors.As the OS's
-// error. Neither carries a secret.
+// The codes, one per cause of failure, never prose. The returned error is an Error, holding the
+// code and, where there is one, the OS's own error beneath it.
 var (
 	// ErrNotFound: the bootstrap folder or the bootstrap file is not there.
 	ErrNotFound = errors.New("bootstrap: not found")
-	// ErrUnreadable: the bootstrap file is there and reading it fails.
+	// ErrUnreadable: the bootstrap folder or the bootstrap file is there and opening or reading
+	// it fails.
 	ErrUnreadable = errors.New("bootstrap: unreadable")
 	// ErrFormat: the header does not match format version 1's layout, the format version is
 	// newer, or the file is over 64 KiB.
@@ -294,6 +317,61 @@ var (
 	ErrWrite = errors.New("bootstrap: write")
 )
 
+// Place is which one a code is about, for ErrNotFound and ErrUnreadable: the bootstrap folder
+// or bootstrap.hadv. When the folder is not there, hadv-setup makes it again; when only the file
+// is not there, it offers create or restore.
+type Place uint8
+
+// The places. PlaceNone goes with every other code.
+const (
+	PlaceNone Place = iota
+	PlaceFolder
+	PlaceFile
+)
+
+// Error is the error every operation returns when it fails, as a value, never a pointer, so it
+// is never a nil pointer inside a non-nil error. errors.Is finds its code; errors.As with a
+// target of type Error finds it, with its place, and the OS's own error beneath it. None of them
+// carries a secret.
+type Error struct {
+	Code  error // one of the codes above
+	Place Place // PlaceNone unless Code is ErrNotFound or ErrUnreadable
+	Err   error // the OS's own error, or nil
+}
+
+// Error gives the code, the place and the OS's error as text, for the caller's local log.
+// Declared here so that errors.As has one type to find. A code left unset reads as "bootstrap"
+// alone rather than panicking.
+func (failure Error) Error() string {
+	text := "bootstrap"
+	if failure.Code != nil {
+		text = failure.Code.Error()
+	}
+	switch failure.Place {
+	case PlaceFolder:
+		text += ": folder"
+	case PlaceFile:
+		text += ": " + FileName
+	}
+	if failure.Err != nil {
+		text += ": " + failure.Err.Error()
+	}
+	return text
+}
+
+// Unwrap gives whichever of the code and the OS's error are set, so errors.Is and errors.As
+// reach both.
+func (failure Error) Unwrap() []error {
+	var wrapped []error
+	if failure.Code != nil {
+		wrapped = append(wrapped, failure.Code)
+	}
+	if failure.Err != nil {
+		wrapped = append(wrapped, failure.Err)
+	}
+	return wrapped
+}
+
 // Key256 is a 256-bit key held as a value: assigning or returning it copies the 32 bytes, so no
 // two holders share them. The bootstrap key and each vault key are one.
 type Key256 [32]byte
@@ -311,6 +389,14 @@ type VaultKey struct {
 // own stuff"). Go's garbage collector may leave the bytes elsewhere in memory, so zeroing is best
 // effort (runtime/secret to be revisited once it is stable). Unknown records never cross: the
 // handle keeps them and writes them back.
+//
+//   - If the fields create or save is passed, or the fields open reads from a file, break a rule
+//     the Fields type gives, then the bootstrap package shall return ErrInvalid.
+//   - If the fields create or save is passed, with the handle's unknown records, would make a
+//     bootstrap file larger than 65,536 bytes, then the bootstrap package shall return ErrInvalid
+//     before it writes a file.
+//   - The bootstrap package shall zero every buffer it fills with the bootstrap key or the
+//     unsealed records before create, open or save returns, except the handle's own. [read]
 //
 // A file read or fields saved get ErrInvalid when:
 //
@@ -331,8 +417,8 @@ type Fields struct {
 	SigningKey      []byte     // the private half; opaque here
 }
 
-// Zero zeroes every secret in this copy of the fields. The one body in this contract: small,
-// and the same for every holder.
+// Zero zeroes every secret in this copy of the fields. With Error's two methods, the only bodies
+// in this contract: small, and the same for every holder.
 func (fields *Fields) Zero() {
 	clear(fields.AccountPassword)
 	for i := range fields.VaultKeys {
@@ -358,8 +444,10 @@ type File interface {
 	// Save seals the fields under the handle's bootstrap key, with the same header and a new
 	// nonce, unknown records in their places, through the write path. The key holder is not
 	// asked again. The handle keeps its own copy of what it saved; the caller's stays the
-	// caller's to zero. Results: ErrNotFound, ErrInvalid, ErrWrite.
+	// caller's to zero. Results: ErrNotFound, ErrUnreadable, ErrInvalid, ErrWrite.
 	//
+	//   - If the bootstrap folder or bootstrap.hadv is not there, then save shall return
+	//     ErrNotFound before it writes bootstrap.hadv.new.
 	//   - When save is called, save shall write the header the file was opened with and seal
 	//     under the handle's bootstrap key, without asking the key holder.
 	//   - If save fails, then the handle shall keep the fields it held before the save.
@@ -388,8 +476,17 @@ type Bootstrap interface {
 	// key it made.
 	//
 	// After a failure it returns the name of the Windows key it made and could not delete, beside
-	// the code, or "" for none. Results: ErrNotFound, ErrExists, ErrInvalid, ErrKey, ErrWrite.
+	// the code, or "" for none. Results: ErrNotFound, ErrUnreadable, ErrExists, ErrInvalid,
+	// ErrKey, ErrWrite.
 	//
+	//   - If the bootstrap folder is not there, then create shall return ErrNotFound.
+	//   - If create is called with overwrite false and bootstrap.hadv is present, then create
+	//     shall return ErrExists before it makes a bootstrap key or writes a file.
+	//   - If create returns ErrNotFound, ErrUnreadable, ErrExists, ErrInvalid, or ErrKey for a key
+	//     holder the platform does not have, then create shall return it before it makes a
+	//     bootstrap key or writes a file.
+	//   - When more than one of those causes applies, create shall return the code that comes
+	//     first in the order ErrNotFound, ErrUnreadable, ErrExists, ErrInvalid, ErrKey.
 	//   - If create fails after it makes a Windows key, then create shall delete that key.
 	//   - If create fails and deleting the Windows key it made fails, then create shall return
 	//     that key's name with the failure's code.
@@ -400,6 +497,18 @@ type Bootstrap interface {
 	// names, unseals it and closes it before returning. account is used only by key holder 2.
 	// Results: ErrNotFound, ErrUnreadable, ErrFormat, ErrKey, ErrDecrypt, ErrInvalid.
 	//
+	//   - If the bootstrap folder or bootstrap.hadv is not there, then open shall return
+	//     ErrNotFound.
+	//   - If bootstrap.hadv is there and opening or reading it fails, then open shall return
+	//     ErrUnreadable with the OS's cause beneath it.
+	//   - If bootstrap.hadv holds more than 65,536 bytes, then open shall return ErrFormat, having
+	//     read at most 65,537 bytes of it.
+	//   - If a part of the header does not match the table the package comment gives for format
+	//     version 1, or the file is too short for its header, nonce and tag, then open shall
+	//     return ErrFormat before it asks the key holder.
+	//   - If the GCM tag does not verify under the bootstrap key, then open shall return
+	//     ErrDecrypt and no handle.
+	//   - If open fails, then open shall return no handle.
 	//   - When open returns a handle, the handle shall give the file's fields, its key holder and
 	//     its sealed key.
 	Open(ctx context.Context, folder string, account ServiceAccount) (File, error)
