@@ -50,9 +50,10 @@ jobs:
   # and compiles every test: its runners cannot run Linux containers, so the oracle rows
   # cannot run there, and the race detector would need a C compiler installed every run.
   # Database tests will be Linux-only for the same reason (developer, 2026-10-02). Windows
-  # does run TestWindowsElevated and every test named from it, the rows that need an
-  # administrator's elevated process, which GitHub's runner is and no loop's machine is
-  # (developer, 2026-10-05).
+  # does run every test whose name starts with TestWindows. These are TestWindowsElevated and
+  # every test named from it, the rows that need an administrator's elevated process, which
+  # GitHub's runner is and no loop's machine is (developer, 2026-10-05), and the Windows-only
+  # rows that need no oracle, such as a reserved device name (developer, 2026-10-09).
   run:
     needs: changes
     if: needs.changes.outputs.skip == '0'
@@ -100,7 +101,7 @@ jobs:
         env:
           RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
           COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
-          TESTRUN: ${{ runner.os == 'Windows' && '^TestWindowsElevated' || '' }}
+          TESTRUN: ${{ runner.os == 'Windows' && '^TestWindows' || '' }}
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
