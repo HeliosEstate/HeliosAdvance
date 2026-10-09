@@ -8,6 +8,7 @@ linters:
     - bodyclose
     - contextcheck
     - depguard
+    - dupl
     - errorlint
     - forbidigo
     - gochecknoinits
@@ -180,6 +181,10 @@ linters:
           # gosec's own "#nosec" comment silences a finding without the word nolint, past every
           # check on nolint; with this set, gosec ignores it and reports the finding anyway.
           nosec: true
+    # A copied block of 100 tokens or more fails: shared code is a helper, not a second copy.
+    # Stricter than the linter's default of 150.
+    dupl:
+      threshold: 100
     nolintlint:
       require-explanation: true
       require-specific: true
@@ -231,6 +236,10 @@ linters:
       - path: tools/
         linters: [forbidigo, gosec]
         text: fmt\.Print|G204|G703
+      # Copied code is judged in production code only: approved tests are locked, so a finding
+      # there is one no session could fix.
+      - path: _test\.go
+        linters: [dupl]
       # The sleep ban is for tests; production code may sleep on a context.
       - path-except: _test\.go
         linters: [forbidigo]
