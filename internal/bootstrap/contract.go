@@ -317,8 +317,8 @@ var (
 )
 
 // Place is which one a code is about, for ErrNotFound and ErrUnreadable: the bootstrap folder
-// or bootstrap.hadv. hadv-setup makes a missing folder again, but offers create or restore for a
-// missing file.
+// or bootstrap.hadv. When the folder is not there, hadv-setup makes it again; when only the file
+// is not there, it offers create or restore.
 type Place uint8
 
 // The places. PlaceNone goes with every other code.
@@ -337,28 +337,28 @@ type Error struct {
 	Err   error // the OS's own error, or nil
 }
 
-// Error gives the code, the place and the OS's error as text, for a log. Declared here so that
-// errors.As has one type to find.
-func (e *Error) Error() string {
-	s := e.Code.Error()
-	switch e.Place {
+// Error gives the code, the place and the OS's error as text, for the caller's local log.
+// Declared here so that errors.As has one type to find.
+func (failure *Error) Error() string {
+	text := failure.Code.Error()
+	switch failure.Place {
 	case PlaceFolder:
-		s += ": folder"
+		text += ": folder"
 	case PlaceFile:
-		s += ": " + FileName
+		text += ": " + FileName
 	}
-	if e.Err != nil {
-		s += ": " + e.Err.Error()
+	if failure.Err != nil {
+		text += ": " + failure.Err.Error()
 	}
-	return s
+	return text
 }
 
 // Unwrap gives the code and the OS's error, so errors.Is and errors.As reach both.
-func (e *Error) Unwrap() []error {
-	if e.Err == nil {
-		return []error{e.Code}
+func (failure *Error) Unwrap() []error {
+	if failure.Err == nil {
+		return []error{failure.Code}
 	}
-	return []error{e.Code, e.Err}
+	return []error{failure.Code, failure.Err}
 }
 
 // Key256 is a 256-bit key held as a value: assigning or returning it copies the 32 bytes, so no
