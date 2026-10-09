@@ -491,6 +491,7 @@ type Bootstrap interface {
 	//     return ErrFormat before it asks the key holder.
 	//   - If the GCM tag does not verify under the bootstrap key, then open shall return
 	//     ErrDecrypt and no handle.
+	//   - If open fails, then open shall return no handle.
 	//   - When open returns a handle, the handle shall give the file's fields, its key holder and
 	//     its sealed key.
 	Open(ctx context.Context, folder string, account ServiceAccount) (File, error)
