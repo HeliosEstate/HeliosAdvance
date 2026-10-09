@@ -130,7 +130,8 @@
 // The header is the first 13 + n bytes. Each part of it is checked against this table before it
 // is used; anything else gets ErrFormat, a format version above 1 included, as does a file too
 // short for its header, nonce and tag. The whole file is at most 65,536 bytes; a larger one gets
-// ErrFormat unread. Nothing after the header is trusted until the tag verifies.
+// ErrFormat, and open reads no more than one byte past that limit. Nothing after the header is
+// trusted until the tag verifies.
 //
 // Once unsealed, the records follow one another to the end of the plaintext:
 //
@@ -244,7 +245,7 @@ import (
 const (
 	Magic                = "HADVBOOT"
 	FormatVersion        = 1
-	MaxSize              = 65536 // bytes; a larger file gets ErrFormat, unread
+	MaxSize              = 65536 // bytes; a larger file gets ErrFormat, read no further
 	HeaderStartSize      = 13    // magic, format version, key holder, sealed-key length
 	NonceSize            = 12
 	TagSize              = 16
@@ -328,8 +329,9 @@ const (
 	PlaceFile
 )
 
-// Error is the error every operation returns when it fails. errors.Is finds its code;
-// errors.As finds the Error, with its place, and the OS's own error beneath it. None of them
+// Error is the error every operation returns when it fails, as a value, never a pointer, so it
+// is never a nil pointer inside a non-nil error. errors.Is finds its code; errors.As with a
+// target of type Error finds it, with its place, and the OS's own error beneath it. None of them
 // carries a secret.
 type Error struct {
 	Code  error // one of the codes above
@@ -338,9 +340,13 @@ type Error struct {
 }
 
 // Error gives the code, the place and the OS's error as text, for the caller's local log.
-// Declared here so that errors.As has one type to find.
-func (failure *Error) Error() string {
-	text := failure.Code.Error()
+// Declared here so that errors.As has one type to find. A missing code reads as "bootstrap"
+// alone rather than panicking.
+func (failure Error) Error() string {
+	text := "bootstrap"
+	if failure.Code != nil {
+		text = failure.Code.Error()
+	}
 	switch failure.Place {
 	case PlaceFolder:
 		text += ": folder"
@@ -353,12 +359,17 @@ func (failure *Error) Error() string {
 	return text
 }
 
-// Unwrap gives the code and the OS's error, so errors.Is and errors.As reach both.
-func (failure *Error) Unwrap() []error {
-	if failure.Err == nil {
-		return []error{failure.Code}
+// Unwrap gives the code and the OS's error, those that are set, so errors.Is and errors.As
+// reach both.
+func (failure Error) Unwrap() []error {
+	var wrapped []error
+	if failure.Code != nil {
+		wrapped = append(wrapped, failure.Code)
 	}
-	return []error{failure.Code, failure.Err}
+	if failure.Err != nil {
+		wrapped = append(wrapped, failure.Err)
+	}
+	return wrapped
 }
 
 // Key256 is a 256-bit key held as a value: assigning or returning it copies the 32 bytes, so no
