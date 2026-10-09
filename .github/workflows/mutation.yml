@@ -34,8 +34,22 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # The same cache as check.yml's, for the same reason: Docker Hub's 429.
+      - name: Restore the oracle images
+        id: oracle-images
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/oracle-images
+          key: oracle-images-${{ runner.arch }}-${{ hashFiles('oracle/**') }}
+          restore-keys: oracle-images-${{ runner.arch }}-
       - name: Build the oracles
-        run: for d in oracle/*/; do docker build -q -t "heliosestate/$(basename "$d")-oracle:0.1" "$d"; done
+        run: bash .github/oracle-images.sh ~/oracle-images
+      - name: Save the oracle images
+        if: steps.oracle-images.outputs.cache-hit != 'true' && hashFiles('oracle/**') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ~/oracle-images
+          key: ${{ steps.oracle-images.outputs.cache-primary-key }}
       - name: Mutate the last day's changes
         env:
           RACE: -race
