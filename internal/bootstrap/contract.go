@@ -392,6 +392,9 @@ type VaultKey struct {
 //
 //   - If the fields create or save is passed, or the fields open reads from a file, break a rule
 //     the Fields type gives, then the bootstrap package shall return ErrInvalid.
+//   - If the fields create or save is passed, with the handle's unknown records, would make a
+//     bootstrap file larger than 65,536 bytes, then the bootstrap package shall return ErrInvalid
+//     before it writes a file.
 //   - The bootstrap package shall zero every buffer it fills with the bootstrap key or the
 //     unsealed records before create, open or save returns, except the handle's own. [read]
 //
