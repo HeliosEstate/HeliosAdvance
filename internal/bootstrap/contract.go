@@ -340,7 +340,7 @@ type Error struct {
 }
 
 // Error gives the code, the place and the OS's error as text, for the caller's local log.
-// Declared here so that errors.As has one type to find. A missing code reads as "bootstrap"
+// Declared here so that errors.As has one type to find. A code left unset reads as "bootstrap"
 // alone rather than panicking.
 func (failure Error) Error() string {
 	text := "bootstrap"
@@ -359,7 +359,7 @@ func (failure Error) Error() string {
 	return text
 }
 
-// Unwrap gives the code and the OS's error, those that are set, so errors.Is and errors.As
+// Unwrap gives whichever of the code and the OS's error are set, so errors.Is and errors.As
 // reach both.
 func (failure Error) Unwrap() []error {
 	var wrapped []error
