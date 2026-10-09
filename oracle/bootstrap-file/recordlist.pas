@@ -479,9 +479,10 @@ begin
       Result.SealedKey := nil;
       for Index := 1 to High(Tokens) do
         AppendBytes(Result.SealedKey, ParseValue(Tokens[Index], LineIndex + 1));
-      if Length(Result.SealedKey) > GeneratedByteLimit then
-        raise ERecordList.CreateFmt('line %d: the sealed key is more than %d bytes',
-          [LineIndex + 1, GeneratedByteLimit]);
+      { The one bound on the sealed key: what its 2-byte length can say. }
+      if Length(Result.SealedKey) > High(Word) then
+        raise ERecordList.CreateFmt('line %d: the sealed key is %d bytes; its 2-byte length ' +
+          'holds at most %d', [LineIndex + 1, Length(Result.SealedKey), High(Word)]);
     end
     else if Directive = 'sealed-length' then
     begin

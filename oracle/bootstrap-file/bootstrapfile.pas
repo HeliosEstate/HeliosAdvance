@@ -173,9 +173,6 @@ begin
     FillRandom(Nonce, NonceLength);
   if Plan.SealedLengthGiven then
     SealedLength := Plan.SealedLength
-  else if Length(Plan.SealedKey) > High(Word) then
-    raise EUsage.CreateFmt('the sealed key is %d bytes; its 2-byte length holds at most %d',
-      [Length(Plan.SealedKey), High(Word)])
   else
     SealedLength := Length(Plan.SealedKey);
   { The header, then the nonce: every byte before the records. }
@@ -221,13 +218,16 @@ var
   Raw: TBytes;
   Plan: TFilePlan;
 begin
-  Key := LoadKey(KeyPath);
   Raw := ReadBounded(ListPath, RecordListLimit);
   if Length(Raw) > RecordListLimit then
     raise EUsage.CreateFmt('%s: more than %d bytes', [ListPath, RecordListLimit]);
   Plan := ParseRecordList(NameText(Raw));
-  WriteWhole(OutputPath, SealPlan(Key, Plan));
-  FillChar(Key, SizeOf(Key), 0);
+  Key := LoadKey(KeyPath);
+  try
+    WriteWhole(OutputPath, SealPlan(Key, Plan));
+  finally
+    FillChar(Key, SizeOf(Key), 0);
+  end;
 end;
 
 type
@@ -393,8 +393,9 @@ begin
   Result := True;
 end;
 
-{ Each part of the header against the format's table, in the order it lies in the file. Every
-  refusal here comes before the key is used. }
+{ Each part of the header against the format's table: the whole file's size, the fixed start,
+  then each field in the order it lies in the file, then the length the sealed key needs, then
+  a Windows key's name. Every refusal here comes before the key is loaded. }
 procedure CheckHeader(const Whole: TBytes; out Version: Integer; out KeyHolder: Byte;
   out SealedLength: Integer);
 begin
@@ -455,16 +456,21 @@ var
   Problems: TStringList;
   Problem: string;
 begin
-  Key := LoadKey(KeyPath);
+  { The header's verdict comes before the key is even loaded, as the engine's does before it
+    asks the key holder. }
   Whole := ReadBounded(FilePath, WholeFileLimit);
   CheckHeader(Whole, Version, KeyHolder, SealedLength);
   NonceOffset := HeaderStartLength + SealedLength;
   Authenticated := Copy(Whole, 0, NonceOffset + NonceLength);
   Move(Whole[NonceOffset], Nonce, NonceLength);
   Sealed := Copy(Whole, NonceOffset + NonceLength, Length(Whole) - NonceOffset - NonceLength);
-  if not Open(Key, Nonce, Authenticated, Sealed, Plaintext) then
-    raise ERefusal.CreateRefusal(ExitDecrypt, 'the GCM tag does not verify');
-  FillChar(Key, SizeOf(Key), 0);
+  Key := LoadKey(KeyPath);
+  try
+    if not Open(Key, Nonce, Authenticated, Sealed, Plaintext) then
+      raise ERefusal.CreateRefusal(ExitDecrypt, 'the GCM tag does not verify');
+  finally
+    FillChar(Key, SizeOf(Key), 0);
+  end;
   Entries := SplitRecords(Plaintext);
   WriteLn('magic "HADVBOOT"');
   WriteLn('version ', Version);

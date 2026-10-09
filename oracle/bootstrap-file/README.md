@@ -144,8 +144,9 @@ reads the old header: build it again.
 ## The kept samples
 
 In `internal/bootstrap/testdata/format-1/`, kept for good, so every later engine shows it
-still reads format 1. Each `.records` file is what `read` prints for the `.hadv` beside it,
-so `write` with `test.key` rebuilds that file byte for byte.
+still reads format 1. Each `.records` file is what `read` prints in the image for the
+`.hadv` beside it, so `write` with `test.key` rebuilds that file byte for byte. Built on
+Windows, `read` ends its lines with CR LF; `write` takes either.
 
     test.key                       the test key, in the key file's form
     keyholder-1.hadv               the Windows key store: a made-up hadv- name and 256 random
