@@ -108,8 +108,12 @@ if [ -n "$pkgs" ]; then
   # Every module the engine is built from, indirect ones included, carries a licence that can
   # be combined with AGPL-3.0-only; the engine's own module is the AGPL-3.0 one.
   licences=MIT,BSD-2-Clause,BSD-3-Clause,ISC,Apache-2.0,MPL-2.0
+  # When go.mod asks for a newer Go than the one installed, go switches to a downloaded toolchain,
+  # and go-licenses, which looks for the standard library under the installed Go's root, then
+  # fails on every standard package. The root of the Go in use is passed to it.
+  goroot=$(go env GOROOT)
   for os in windows linux; do
-    GOOS=$os go-licenses check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
+    GOROOT=$goroot GOOS=$os go-licenses check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
       fail "a module's licence ($os build) is not one AGPL-3.0-only can carry: $licences"
   done
   go build ./...
