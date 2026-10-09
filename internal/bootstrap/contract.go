@@ -32,6 +32,9 @@
 // machine key named hadv- plus 32 lowercase hex digits (16 random bytes), in Microsoft's TPM
 // provider where the machine has a TPM, in the software key store provider where it does not.
 //
+//   - If the bootstrap folder is there and opening it fails, then the bootstrap package shall
+//     return ErrUnreadable with the OS's cause beneath it.
+//
 // # The key holders
 //
 // By the number the header carries:
@@ -96,6 +99,13 @@
 //     running systemd-creds encrypt fails, then create shall return ErrKey.
 //   - If a key holder gives a bootstrap key that is not 32 bytes, then the bootstrap package
 //     shall return ErrKey.
+//   - The bootstrap package shall read at most 46 bytes from the key file or the Swarm secret,
+//     and at most 33 bytes from the credential folder's hadv-bootstrap-key or from the output of
+//     systemd-creds decrypt.
+//   - If systemd-creds encrypt gives more than 4,096 bytes, then create shall return ErrKey,
+//     having read at most 4,097 bytes of it.
+//   - When create seals under systemd credentials, create shall give systemd-creds encrypt the
+//     bootstrap key's 32 raw bytes on standard input.
 //
 // # The bootstrap file, format version 1
 //
@@ -325,6 +335,8 @@ type VaultKey struct {
 //
 //   - If the fields create or save is passed, or the fields open reads from a file, break a rule
 //     the Fields type gives, then the bootstrap package shall return ErrInvalid.
+//   - The bootstrap package shall zero every buffer it fills with the bootstrap key or the
+//     unsealed records before create, open or save returns, except the handle's own. [read]
 //
 // A file read or fields saved get ErrInvalid when:
 //
@@ -372,7 +384,7 @@ type File interface {
 	// Save seals the fields under the handle's bootstrap key, with the same header and a new
 	// nonce, unknown records in their places, through the write path. The key holder is not
 	// asked again. The handle keeps its own copy of what it saved; the caller's stays the
-	// caller's to zero. Results: ErrNotFound, ErrInvalid, ErrWrite.
+	// caller's to zero. Results: ErrNotFound, ErrUnreadable, ErrInvalid, ErrWrite.
 	//
 	//   - If the bootstrap folder or bootstrap.hadv is not there, then save shall return
 	//     ErrNotFound before it writes bootstrap.hadv.new.
@@ -404,7 +416,8 @@ type Bootstrap interface {
 	// key it made.
 	//
 	// After a failure it returns the name of the Windows key it made and could not delete, beside
-	// the code, or "" for none. Results: ErrNotFound, ErrExists, ErrInvalid, ErrKey, ErrWrite.
+	// the code, or "" for none. Results: ErrNotFound, ErrUnreadable, ErrExists, ErrInvalid,
+	// ErrKey, ErrWrite.
 	//
 	//   - If the bootstrap folder is not there, then create shall return ErrNotFound.
 	//   - If create is called with overwrite false and bootstrap.hadv is present, then create
@@ -421,10 +434,10 @@ type Bootstrap interface {
 	//
 	//   - If the bootstrap folder or bootstrap.hadv is not there, then open shall return
 	//     ErrNotFound.
-	//   - If the bootstrap folder or bootstrap.hadv is there and opening or reading it fails, then
-	//     open shall return ErrUnreadable with the OS's cause beneath it.
-	//   - If bootstrap.hadv is larger than 65,536 bytes, then open shall return ErrFormat without
-	//     reading its contents.
+	//   - If bootstrap.hadv is there and opening or reading it fails, then open shall return
+	//     ErrUnreadable with the OS's cause beneath it.
+	//   - If bootstrap.hadv holds more than 65,536 bytes, then open shall return ErrFormat, having
+	//     read at most 65,537 bytes of it.
 	//   - If a part of the header does not match the table the package comment gives for format
 	//     version 1, or the file is too short for its header, nonce and tag, then open shall
 	//     return ErrFormat before it asks the key holder.
