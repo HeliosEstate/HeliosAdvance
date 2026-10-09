@@ -34,6 +34,8 @@
 //
 //   - If the bootstrap folder is there and opening it fails, then the bootstrap package shall
 //     return ErrUnreadable with the OS's cause beneath it.
+//   - When the bootstrap package returns ErrNotFound or ErrUnreadable, the error shall name
+//     whether the bootstrap folder or bootstrap.hadv is the cause.
 //
 // # The key holders
 //
@@ -289,9 +291,8 @@ const (
 // systemd.
 type ServiceAccount string
 
-// The codes, one per cause of failure, never prose. The returned error wraps the code and, where
-// there is one, the OS's own error beneath it: errors.Is finds the code, errors.As the OS's
-// error. Neither carries a secret.
+// The codes, one per cause of failure, never prose. The returned error is an Error, holding the
+// code and, where there is one, the OS's own error beneath it.
 var (
 	// ErrNotFound: the bootstrap folder or the bootstrap file is not there.
 	ErrNotFound = errors.New("bootstrap: not found")
@@ -314,6 +315,51 @@ var (
 	// ErrWrite: writing the new file, opening it, or putting it in place of the old one fails.
 	ErrWrite = errors.New("bootstrap: write")
 )
+
+// Place is which one a code is about, for ErrNotFound and ErrUnreadable: the bootstrap folder
+// or bootstrap.hadv. hadv-setup makes a missing folder again, but offers create or restore for a
+// missing file.
+type Place uint8
+
+// The places. PlaceNone goes with every other code.
+const (
+	PlaceNone Place = iota
+	PlaceFolder
+	PlaceFile
+)
+
+// Error is the error every operation returns when it fails. errors.Is finds its code;
+// errors.As finds the Error, with its place, and the OS's own error beneath it. None of them
+// carries a secret.
+type Error struct {
+	Code  error // one of the codes above
+	Place Place // PlaceNone unless Code is ErrNotFound or ErrUnreadable
+	Err   error // the OS's own error, or nil
+}
+
+// Error gives the code, the place and the OS's error as text, for a log. Declared here so that
+// errors.As has one type to find.
+func (e *Error) Error() string {
+	s := e.Code.Error()
+	switch e.Place {
+	case PlaceFolder:
+		s += ": folder"
+	case PlaceFile:
+		s += ": " + FileName
+	}
+	if e.Err != nil {
+		s += ": " + e.Err.Error()
+	}
+	return s
+}
+
+// Unwrap gives the code and the OS's error, so errors.Is and errors.As reach both.
+func (e *Error) Unwrap() []error {
+	if e.Err == nil {
+		return []error{e.Code}
+	}
+	return []error{e.Code, e.Err}
+}
 
 // Key256 is a 256-bit key held as a value: assigning or returning it copies the 32 bytes, so no
 // two holders share them. The bootstrap key and each vault key are one.
@@ -357,8 +403,8 @@ type Fields struct {
 	SigningKey      []byte     // the private half; opaque here
 }
 
-// Zero zeroes every secret in this copy of the fields. The one body in this contract: small,
-// and the same for every holder.
+// Zero zeroes every secret in this copy of the fields. With Error's two methods, the only bodies
+// in this contract: small, and the same for every holder.
 func (fields *Fields) Zero() {
 	clear(fields.AccountPassword)
 	for i := range fields.VaultKeys {
