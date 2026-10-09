@@ -18,13 +18,19 @@ const
   KeyFileLimit = 1024;
 
   ExitUsage = 1;
-  { The engine's causes: 2 and 3 are both FileNotUnsealed, split here by where the file
-    fails; 4 is NewerFormat. }
-  ExitNotUnsealed = 2;
-  ExitRecordsRefused = 3;
-  ExitNewerFormat = 4;
+  { The engine's codes for a file: 2 is ErrFormat, 3 ErrInvalid, 4 ErrDecrypt. }
+  ExitFormat = 2;
+  ExitInvalid = 3;
+  ExitDecrypt = 4;
 
   VaultKeyPrefix = 'vault.key.';
+
+  { The key holders the header may name, and the sealed key each carries. }
+  WindowsKeyStore = 1;
+  SwarmSecret = 5;
+  WindowsKeyNameLength = 37;
+  WindowsSealedLength = WindowsKeyNameLength + 256;
+  SystemdCredentialMax = 4096;
 
 type
   EUsage = class(Exception);
@@ -159,18 +165,29 @@ var
   Nonce: TNonce;
   Edit: TFileEdit;
   OldLength: SizeInt;
+  SealedLength: Word;
 begin
   if Plan.NonceGiven then
     Nonce := Plan.Nonce
   else
     FillRandom(Nonce, NonceLength);
-  SetLength(Header, HeaderLength);
+  if Plan.SealedLengthGiven then
+    SealedLength := Plan.SealedLength
+  else
+    SealedLength := Length(Plan.SealedKey);
+  { The header, then the nonce: every byte before the records. }
+  SetLength(Header, HeaderStartLength + Length(Plan.SealedKey) + NonceLength);
   Move(Plan.Magic[0], Header[0], MagicLength);
   Header[MagicLength] := Byte(Plan.Version shr 8);
   Header[MagicLength + 1] := Byte(Plan.Version and $FF);
-  Move(Nonce, Header[MagicLength + 2], NonceLength);
-  { The additional data is the header as written, wrong magic or version included, so a
-    file with a bad header still carries a tag that verifies. }
+  Header[MagicLength + 2] := Plan.KeyHolder;
+  Header[MagicLength + 3] := Byte(SealedLength shr 8);
+  Header[MagicLength + 4] := Byte(SealedLength and $FF);
+  if Length(Plan.SealedKey) > 0 then
+    Move(Plan.SealedKey[0], Header[HeaderStartLength], Length(Plan.SealedKey));
+  Move(Nonce, Header[HeaderStartLength + Length(Plan.SealedKey)], NonceLength);
+  { The additional data is every byte before the records as written, a wrong header
+    included, so a file with a bad header still carries a tag that verifies. }
   Sealed := Seal(Key, Nonce, Header, Plan.Plaintext);
   Result := Concat(Header, Sealed);
   for Edit in Plan.Edits do
@@ -201,13 +218,16 @@ var
   Raw: TBytes;
   Plan: TFilePlan;
 begin
-  Key := LoadKey(KeyPath);
   Raw := ReadBounded(ListPath, RecordListLimit);
   if Length(Raw) > RecordListLimit then
     raise EUsage.CreateFmt('%s: more than %d bytes', [ListPath, RecordListLimit]);
   Plan := ParseRecordList(NameText(Raw));
-  WriteWhole(OutputPath, SealPlan(Key, Plan));
-  FillChar(Key, SizeOf(Key), 0);
+  Key := LoadKey(KeyPath);
+  try
+    WriteWhole(OutputPath, SealPlan(Key, Plan));
+  finally
+    FillChar(Key, SizeOf(Key), 0);
+  end;
 end;
 
 type
@@ -238,38 +258,38 @@ begin
   while Offset < Length(Plaintext) do
   begin
     if Length(Plaintext) - Offset < 2 then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its name length runs past the end', [Length(Result) + 1]));
     NameLength := ReadNumber(Plaintext, Offset, 2);
     Inc(Offset, 2);
     if Length(Plaintext) - Offset < NameLength then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its name runs past the end', [Length(Result) + 1]));
     Entry.Name := Copy(Plaintext, Offset, NameLength);
     Inc(Offset, NameLength);
     if Length(Plaintext) - Offset < 4 then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its data length runs past the end', [Length(Result) + 1]));
     DataLength := ReadNumber(Plaintext, Offset, 4);
     Inc(Offset, 4);
     if Length(Plaintext) - Offset < DataLength then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its data runs past the end', [Length(Result) + 1]));
     Entry.Data := Copy(Plaintext, Offset, DataLength);
     Inc(Offset, DataLength);
     if NameLength = 0 then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its name is empty', [Length(Result) + 1]));
     if NameLength > 255 then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its name is %d bytes; the most is 255', [Length(Result) + 1, NameLength]));
     if not IsValidUtf8(Entry.Name) then
-      raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+      raise ERefusal.CreateRefusal(ExitInvalid, Format(
         'record %d: its name is not UTF-8', [Length(Result) + 1]));
     for Other := 0 to High(Result) do
       if (Length(Result[Other].Name) = NameLength)
         and CompareMem(@Result[Other].Name[0], @Entry.Name[0], NameLength) then
-        raise ERefusal.CreateRefusal(ExitRecordsRefused, Format(
+        raise ERefusal.CreateRefusal(ExitInvalid, Format(
           'record %d: its name %s is also record %d''s',
           [Length(Result) + 1, FormatValue(Entry.Name), Other + 1]));
     SetLength(Result, Length(Result) + 1);
@@ -335,7 +355,7 @@ begin
     if (Name = 'server') and (Length(Entry.Data) <> 4) then
       Result.Add(Format('server is %d bytes, not 4', [Length(Entry.Data)]))
     { The rules in the table on Fields hold on read too: a server ID of 0, an empty
-      connection or account name, an empty receiving or signing key. }
+      connection or account name, an empty password, an empty receiving or signing key. }
     else if (Name = 'server') and (Entry.Data[0] or Entry.Data[1] or Entry.Data[2]
       or Entry.Data[3] = 0) then
       Result.Add('server is 0')
@@ -343,7 +363,8 @@ begin
       and not IsValidUtf8(Entry.Data) then
       Result.Add(Format('%s is not UTF-8', [Name]))
     else if ((Name = 'database.connection') or (Name = 'database.account.name')
-      or (Name = 'receiving.key') or (Name = 'signing.key')) and (Length(Entry.Data) = 0) then
+      or (Name = 'database.account.password') or (Name = 'receiving.key')
+      or (Name = 'signing.key')) and (Length(Entry.Data) = 0) then
       Result.Add(Format('%s is empty', [Name]))
     else if IsVaultKeyName(Name) then
     begin
@@ -359,43 +380,103 @@ begin
     Result.Add(Format('%d vault keys; a file holds one or two', [VaultKeyCount]));
 end;
 
+{ A Windows key's name: hadv- and 32 lowercase hex digits, read as bytes, never as a path. }
+function IsWindowsKeyName(const Name: TBytes): Boolean;
+var
+  Index: Integer;
+begin
+  if (Length(Name) <> WindowsKeyNameLength) or (NameText(Copy(Name, 0, 5)) <> 'hadv-') then
+    Exit(False);
+  for Index := 5 to High(Name) do
+    if not (Chr(Name[Index]) in ['0'..'9', 'a'..'f']) then
+      Exit(False);
+  Result := True;
+end;
+
+{ Each part of the header against the format's table: the whole file's size, the fixed start,
+  then each field in the order it lies in the file, then the length the sealed key needs, then
+  a Windows key's name. Every refusal here comes before the key is loaded. }
+procedure CheckHeader(const Whole: TBytes; out Version: Integer; out KeyHolder: Byte;
+  out SealedLength: Integer);
+begin
+  if Length(Whole) > WholeFileLimit then
+    raise ERefusal.CreateRefusal(ExitFormat,
+      Format('the file is larger than %d bytes', [WholeFileLimit]));
+  if Length(Whole) < HeaderStartLength then
+    raise ERefusal.CreateRefusal(ExitFormat, Format(
+      'the file is %d bytes, shorter than the header''s first %d', [Length(Whole),
+      HeaderStartLength]));
+  if NameText(Copy(Whole, 0, MagicLength)) <> 'HADVBOOT' then
+    raise ERefusal.CreateRefusal(ExitFormat, 'the file does not begin with HADVBOOT');
+  Version := ReadNumber(Whole, MagicLength, 2);
+  if Version = 0 then
+    raise ERefusal.CreateRefusal(ExitFormat, 'the format version is 0');
+  if Version > FormatVersion then
+    raise ERefusal.CreateRefusal(ExitFormat, Format(
+      'the format version is %d; this oracle reads version 1', [Version]));
+  KeyHolder := Whole[MagicLength + 2];
+  if (KeyHolder < WindowsKeyStore) or (KeyHolder > SwarmSecret) then
+    raise ERefusal.CreateRefusal(ExitFormat, Format(
+      'the key holder is %d; the format has 1 to 5', [KeyHolder]));
+  SealedLength := ReadNumber(Whole, MagicLength + 3, 2);
+  case KeyHolder of
+    WindowsKeyStore:
+      if SealedLength <> WindowsSealedLength then
+        raise ERefusal.CreateRefusal(ExitFormat, Format(
+          'the sealed key is %d bytes; key holder 1 has exactly %d',
+          [SealedLength, WindowsSealedLength]));
+    2, 3:
+      if (SealedLength < 1) or (SealedLength > SystemdCredentialMax) then
+        raise ERefusal.CreateRefusal(ExitFormat, Format(
+          'the sealed key is %d bytes; key holder %d has 1 to %d',
+          [SealedLength, KeyHolder, SystemdCredentialMax]));
+  else
+    if SealedLength <> 0 then
+      raise ERefusal.CreateRefusal(ExitFormat, Format(
+        'the sealed key is %d bytes; key holder %d has none', [SealedLength, KeyHolder]));
+  end;
+  if Length(Whole) < HeaderStartLength + SealedLength + NonceLength + TagLength then
+    raise ERefusal.CreateRefusal(ExitFormat, Format(
+      'the file is %d bytes, shorter than its header, nonce and tag', [Length(Whole)]));
+  if (KeyHolder = WindowsKeyStore) and not IsWindowsKeyName(
+    Copy(Whole, HeaderStartLength, WindowsKeyNameLength)) then
+    raise ERefusal.CreateRefusal(ExitFormat,
+      'the sealed key does not begin with hadv- and 32 lowercase hex digits');
+end;
+
 procedure RunRead(const KeyPath, FilePath: string);
 var
   Key: TAesKey;
-  Whole, Header, Sealed, Plaintext: TBytes;
+  Whole, Authenticated, Sealed, Plaintext: TBytes;
   Nonce: TNonce;
-  Version: Integer;
+  Version, SealedLength, NonceOffset: Integer;
+  KeyHolder: Byte;
   Entries: specialize TArray<TRecordEntry>;
   Entry: TRecordEntry;
   Problems: TStringList;
   Problem: string;
 begin
-  Key := LoadKey(KeyPath);
+  { The header's verdict comes before the key is even loaded, as the engine's does before it
+    asks the key holder. }
   Whole := ReadBounded(FilePath, WholeFileLimit);
-  if Length(Whole) > WholeFileLimit then
-    raise ERefusal.CreateRefusal(ExitNotUnsealed,
-      Format('the file is larger than %d bytes', [WholeFileLimit]));
-  if Length(Whole) < HeaderLength + TagLength then
-    raise ERefusal.CreateRefusal(ExitNotUnsealed, Format(
-      'the file is %d bytes, shorter than its header and tag', [Length(Whole)]));
-  if NameText(Copy(Whole, 0, MagicLength)) <> 'HADVBOOT' then
-    raise ERefusal.CreateRefusal(ExitNotUnsealed, 'the file does not begin with HADVBOOT');
-  Version := ReadNumber(Whole, MagicLength, 2);
-  if Version = 0 then
-    raise ERefusal.CreateRefusal(ExitNotUnsealed, 'the format version is 0');
-  if Version > 1 then
-    raise ERefusal.CreateRefusal(ExitNewerFormat, Format(
-      'the format version is %d; this oracle reads version 1', [Version]));
-  Header := Copy(Whole, 0, HeaderLength);
-  Move(Whole[MagicLength + 2], Nonce, NonceLength);
-  Sealed := Copy(Whole, HeaderLength, Length(Whole) - HeaderLength);
-  if not Open(Key, Nonce, Header, Sealed, Plaintext) then
-    raise ERefusal.CreateRefusal(ExitNotUnsealed, 'the GCM tag does not verify');
-  FillChar(Key, SizeOf(Key), 0);
+  CheckHeader(Whole, Version, KeyHolder, SealedLength);
+  NonceOffset := HeaderStartLength + SealedLength;
+  Authenticated := Copy(Whole, 0, NonceOffset + NonceLength);
+  Move(Whole[NonceOffset], Nonce, NonceLength);
+  Sealed := Copy(Whole, NonceOffset + NonceLength, Length(Whole) - NonceOffset - NonceLength);
+  Key := LoadKey(KeyPath);
+  try
+    if not Open(Key, Nonce, Authenticated, Sealed, Plaintext) then
+      raise ERefusal.CreateRefusal(ExitDecrypt, 'the GCM tag does not verify');
+  finally
+    FillChar(Key, SizeOf(Key), 0);
+  end;
   Entries := SplitRecords(Plaintext);
   WriteLn('magic "HADVBOOT"');
   WriteLn('version ', Version);
-  WriteLn('nonce ', FormatValue(Copy(Whole, MagicLength + 2, NonceLength)));
+  WriteLn('holder ', KeyHolder);
+  WriteLn('sealed ', FormatValue(Copy(Whole, HeaderStartLength, SealedLength)));
+  WriteLn('nonce ', FormatValue(Copy(Whole, NonceOffset, NonceLength)));
   for Entry in Entries do
     WriteLn('record ', FormatValue(Entry.Name), ' ', FormatValue(Entry.Data));
   Problems := JudgeKnownFields(Entries);
@@ -404,7 +485,7 @@ begin
     begin
       for Problem in Problems do
         WriteLn(StdErr, 'bootstrap-file: ', Problem);
-      ExitCode := ExitRecordsRefused;
+      ExitCode := ExitInvalid;
     end;
   finally
     Problems.Free;

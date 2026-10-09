@@ -1,0 +1,12 @@
+magic "HADVBOOT"
+version 1
+holder 5
+sealed ""
+nonce hex:08137279ec224476dd1a314c
+record "server" hex:00000001
+record "database.connection" "host=db.example.invalid port=5432 dbname=helios"
+record "database.account.name" "helios_server_1"
+record "database.account.password" hex:5a2a382921ab223bf070eb6a7c1909b7a2ed09be9de95cf9
+record "vault.key.1" hex:2756ac39b0ce68b138e49e42deecc62f234d9b994973417e5663d52cb64d176c
+record "receiving.key" hex:fea5231ca66fe0fccc1aeb12bc3090be3577c79c0f898f1387f0b7d676e24fc66ce4325914c61b0f5ae319f99191ef0a2cb830597e3086e67f9d2c3e4c2bff6b
+record "signing.key" hex:364378fe4293efee183c32df696ed7a7746165e448137003de3d479ec1bc1d17c87ff69c07dcb8ced8a218aee533bee7be82117dfc0f6377ca212abbcbe4d59c
