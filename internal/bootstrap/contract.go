@@ -468,6 +468,8 @@ type Bootstrap interface {
 	//   - If the bootstrap folder is not there, then create shall return ErrNotFound.
 	//   - If create is called with overwrite false and bootstrap.hadv is present, then create
 	//     shall return ErrExists before it makes a bootstrap key or writes a file.
+	//   - If create returns ErrNotFound or ErrInvalid, then create shall return it before it makes
+	//     a bootstrap key or writes a file.
 	//   - If create fails after it makes a Windows key, then create shall delete that key.
 	//   - If create fails and deleting the Windows key it made fails, then create shall return
 	//     that key's name with the failure's code.
