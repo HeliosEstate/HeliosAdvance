@@ -60,8 +60,8 @@
 // The key file and the Swarm secret each hold exactly 44 characters of RFC 4648's standard base64
 // alphabet with its padding, with one trailing newline allowed, and each key has one spelling:
 // the bits after its last byte are zero. Neither makes nor deletes a key: create seals under the
-// key they hold. Windows has key holder 1; Linux has 2 to 5. A systemd too old for a key holder
-// fails at systemd-creds and gets ErrKey.
+// key they hold. Windows has key holder 1; Linux has 2 to 5; no platform has any other number. A
+// systemd too old for a key holder fails at systemd-creds and gets ErrKey.
 //
 //   - When create makes a Windows key, create shall make a 2048-bit RSA machine key named hadv-
 //     followed by 32 lowercase hex digits from 16 random bytes.
