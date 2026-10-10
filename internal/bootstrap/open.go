@@ -88,10 +88,11 @@ func (entry) Open(ctx context.Context, folder string, account ServiceAccount) (F
 		return nil, err
 	}
 	key, err := keyHolding.key(ctx, root, sealedKey, account)
+	// Cleared before the error is checked: a holder may return part of a key with its error.
+	defer clear(key[:])
 	if err != nil {
 		return nil, err
 	}
-	defer clear(key[:])
 
 	plaintext, err := unseal(&key, content, HeaderStartSize+len(sealedKey))
 	if err != nil {
@@ -110,8 +111,10 @@ func (entry) Open(ctx context.Context, folder string, account ServiceAccount) (F
 	return &handle{fields: fields, keyHolder: keyHolder, sealedKey: bytes.Clone(sealedKey)}, nil
 }
 
-// unseal takes the key by pointer so it makes no copy of its own; Open owns the key and clears it,
-// and Save will need it after unsealing. The header and the nonce, headerSize plus NonceSize
+// unseal takes the key by pointer so it copies nothing itself; Open owns the key and clears it, and
+// Save will need it after unsealing. aes.NewCipher does copy it, into a key schedule the cipher
+// holds, and the GCM tables are built from that; Go gives no way to clear either, so zeroing is
+// the best effort the contract calls it. The header and the nonce, headerSize plus NonceSize
 // bytes, are the authenticated data.
 func unseal(key *Key256, content []byte, headerSize int) ([]byte, error) {
 	failure := Error{Code: ErrDecrypt}
@@ -155,7 +158,7 @@ func fieldsFrom(records []record) (Fields, error) {
 	var fields Fields
 	vaultKeyCount := 0
 	for _, item := range records {
-		if strings.HasPrefix(item.name, FieldVaultKeyPrefix) {
+		if isVaultKey(item.name) {
 			vaultKeyCount++
 		}
 	}
@@ -180,28 +183,34 @@ func fieldsFrom(records []record) (Fields, error) {
 			fields.ReceivingKey = bytes.Clone(item.data)
 		case item.name == FieldSigningKey:
 			fields.SigningKey = bytes.Clone(item.data)
-		case strings.HasPrefix(item.name, FieldVaultKeyPrefix):
-			vaultKey, err := vaultKeyFrom(item)
-			if err != nil {
+		case isVaultKey(item.name):
+			// Filled in place: a key built elsewhere and appended would leave a copy uncleared.
+			fields.VaultKeys = append(fields.VaultKeys, VaultKey{})
+			if err := vaultKeyFrom(item, &fields.VaultKeys[len(fields.VaultKeys)-1]); err != nil {
 				fields.Zero()
 				return Fields{}, err
 			}
-			fields.VaultKeys = append(fields.VaultKeys, vaultKey)
 		}
 	}
 	return fields, nil
 }
 
-// vaultKeyFrom reads a vault.key.<version> record: a version in decimal from 1 to 4,294,967,295
-// with no leading zero, and 32 bytes.
-func vaultKeyFrom(item record) (VaultKey, error) {
+// isVaultKey is the one test of a record's name that the count and the switch in fieldsFrom share,
+// so they cannot disagree about which records are vault keys.
+func isVaultKey(name string) bool { return strings.HasPrefix(name, FieldVaultKeyPrefix) }
+
+// vaultKeyFrom reads a vault.key.<version> record into vaultKey: a version in decimal from 1 to
+// 4,294,967,295 with no leading zero, and 32 bytes.
+func vaultKeyFrom(item record, vaultKey *VaultKey) error {
 	digits := strings.TrimPrefix(item.name, FieldVaultKeyPrefix)
 	if digits == "" || digits[0] == '0' {
-		return VaultKey{}, Error{Code: ErrInvalid}
+		return Error{Code: ErrInvalid}
 	}
 	version, err := strconv.ParseUint(digits, 10, 32)
 	if err != nil || version > math.MaxUint32 || len(item.data) != KeySize {
-		return VaultKey{}, Error{Code: ErrInvalid}
+		return Error{Code: ErrInvalid}
 	}
-	return VaultKey{Version: uint32(version), Key: Key256(item.data)}, nil
+	vaultKey.Version = uint32(version)
+	copy(vaultKey.Key[:], item.data)
+	return nil
 }
