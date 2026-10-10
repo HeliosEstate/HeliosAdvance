@@ -388,16 +388,20 @@ type VaultKey struct {
 // handle's own memory; whoever holds a copy is responsible for zeroing it with Zero (the
 // developer: "Everything that touches something security sensitive has to be responsible for its
 // own stuff"). Go's garbage collector may leave the bytes elsewhere in memory, so zeroing is best
-// effort (runtime/secret to be revisited once it is stable). Unknown records never cross: the
-// handle keeps them and writes them back.
+// effort (runtime/secret to be revisited once it is stable). Go also copies values on its own: in
+// registers, on the stack when a value is passed or returned, and inside the cipher as its key
+// schedule. Those copies are out of reach until runtime/secret, so the zeroing line covers only
+// the buffers the package allocates and the variables it declares. Unknown records never cross:
+// the handle keeps them and writes them back.
 //
 //   - If the fields create or save is passed, or the fields open reads from a file, break a rule
 //     the Fields type gives, then the bootstrap package shall return ErrInvalid.
 //   - If the fields create or save is passed, with the handle's unknown records, would make a
 //     bootstrap file larger than 65,536 bytes, then the bootstrap package shall return ErrInvalid
 //     before it writes a file.
-//   - The bootstrap package shall zero every buffer it fills with the bootstrap key or the
-//     unsealed records before create, open or save returns, except the handle's own. [read]
+//   - The bootstrap package shall zero each buffer it allocates for the plaintext of the records
+//     and each variable it declares for the bootstrap key before create, open or save returns,
+//     except the handle's own. [read]
 //
 // A file read or fields saved get ErrInvalid when:
 //
