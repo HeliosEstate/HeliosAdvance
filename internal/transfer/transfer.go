@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -87,16 +88,33 @@ type Received struct {
 // carries none) or gives one that is empty, "." or only a separator.
 const unnamed = "unnamed"
 
-// openReceived opens base in root for writing and turns the root's refusal of the name
-// into ErrNameRefused. os exports no value for that refusal; it is the one failure here
+// openReceived opens the file a far end named, in root, for writing. It flattens name to
+// its last element, falls back to unnamed, and returns that base with its path under root.
+// flags gets the base before the open, for a resume check. A failed open calls cancel (when
+// not nil) once, since a started far end is waiting; the root's refusal of the name comes
+// back as ErrNameRefused. os exports no value for that refusal; it is the one failure here
 // with no errno beneath it, since every failure the system reports carries one.
-func openReceived(root *os.Root, base string, flag int) (*os.File, error) {
-	file, err := root.OpenFile(base, flag, 0o600)
-	if err != nil && !errors.As(err, new(syscall.Errno)) {
-		return nil, ErrNameRefused
+func openReceived(root *os.Root, name string, flags func(base string) int, cancel func()) (file *os.File, base, dest string, err error) {
+	base = filepath.Base(name)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = unnamed
 	}
-	return file, err
+	dest = filepath.Join(root.Name(), base)
+	file, err = root.OpenFile(base, flags(base), 0o600)
+	if err == nil {
+		return file, base, dest, nil
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if !errors.As(err, new(syscall.Errno)) {
+		err = ErrNameRefused
+	}
+	return nil, base, dest, err
 }
+
+// truncateFlags is the open mode of a file received whole, with no resume.
+func truncateFlags(string) int { return os.O_CREATE | os.O_WRONLY | os.O_TRUNC }
 
 // Send offers the named files to the far end on rw by the chosen Protocol, in order, and
 // ends the session cleanly after the last. It returns on the far end's cancel
@@ -115,8 +133,8 @@ func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) er
 // modification time its protocol carries (XMODEM carries no name: it stores under
 // Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run. A
 // name that would reach outside dir (by "..", by a symbolic link, or on Windows a reserved
-// device name) is refused with ErrNameRefused, after cancelling a transfer the far end has
-// started.
+// device name; on Windows also a name containing a colon) is refused with ErrNameRefused,
+// after cancelling a transfer the far end has started.
 func Receive(ctx context.Context, rw io.ReadWriter, dir string, opt Options) ([]Received, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {

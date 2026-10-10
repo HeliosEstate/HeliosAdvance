@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 )
 
 // receive drives the receiver side of a ZMODEM batch: advertise readiness, accept each
@@ -75,27 +74,19 @@ func (conversation *session) receiveFile(root *os.Root, crc32mode bool) (Receive
 		return Received{}, ErrProtocol
 	}
 	name, size, mtime := decodeFileInfo(info)
-	base := filepath.Base(name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = unnamed
-	}
-	dest := filepath.Join(root.Name(), base)
-
 	var offset int64
-	flags := os.O_CREATE | os.O_WRONLY
-	if conversation.opt.Resume {
-		if stat, err := root.Stat(base); err == nil && stat.Size() <= size {
-			offset = stat.Size()
+	file, base, dest, err := openReceived(root, name, func(base string) int {
+		flags := os.O_CREATE | os.O_WRONLY
+		if conversation.opt.Resume {
+			if stat, err := root.Stat(base); err == nil && stat.Size() <= size {
+				offset = stat.Size()
+			}
 		}
-	}
-	if offset == 0 {
-		flags |= os.O_TRUNC
-	}
-	file, err := openReceived(root, base, flags)
-	if errors.Is(err, ErrNameRefused) {
-		conversation.cancelPeer()
-		return Received{}, err
-	}
+		if offset == 0 {
+			flags |= os.O_TRUNC
+		}
+		return flags
+	}, conversation.cancelPeer)
 	if err != nil {
 		return Received{}, err
 	}

@@ -255,12 +255,7 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 // carries no name. It keeps the last block's padding, since XMODEM carries no size
 // either and there is nothing to trim to.
 func (conversation *xysession) receiveXMODEM(root *os.Root) ([]Received, error) {
-	base := filepath.Base(conversation.opt.Name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = unnamed
-	}
-	dest := filepath.Join(root.Name(), base)
-	file, err := openReceived(root, base, os.O_CREATE|os.O_WRONLY|os.O_TRUNC)
+	file, base, dest, err := openReceived(root, conversation.opt.Name, truncateFlags, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -476,16 +471,7 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 // a length leaves every byte that arrived.
 func (conversation *xysession) receiveOneYMODEMFile(root *os.Root, open byte, header []byte) (Received, error) {
 	name, size, mtime := decodeFileInfo(header)
-	base := filepath.Base(name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = unnamed
-	}
-	dest := filepath.Join(root.Name(), base)
-	file, err := openReceived(root, base, os.O_CREATE|os.O_WRONLY|os.O_TRUNC)
-	if errors.Is(err, ErrNameRefused) {
-		conversation.cancelPeer()
-		return Received{}, err
-	}
+	file, base, dest, err := openReceived(root, name, truncateFlags, conversation.cancelPeer)
 	if err != nil {
 		return Received{}, err
 	}
