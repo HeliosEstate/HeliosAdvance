@@ -596,28 +596,6 @@ func removeSwarmSecret(t *testing.T) {
 	}
 }
 
-// copySample copies a kept sample into folder as bootstrap.hadv.
-func copySample(t *testing.T, folder, sample string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(folder, FileName), sampleBytes(t, sample+".hadv"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func sampleBytes(t *testing.T, name string) []byte {
-	t.Helper()
-	return sampleBytesAt(t, filepath.Join(samples, name))
-}
-
-func sampleBytesAt(t *testing.T, path string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
-}
-
 // linkOutFolder is a bootstrap folder in which name is a symbolic link to a file outside it
 // holding data.
 func linkOutFolder(t *testing.T, name string, data []byte) string {

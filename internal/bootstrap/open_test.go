@@ -65,6 +65,14 @@ const (
 // run as the account nobody, through setpriv.
 func TestOpenLinuxRowsInContainer(t *testing.T) {
 	t.Parallel()
+	linuxRowsInContainer(t, "TestOpenLinuxAsRoot", "TestOpenLinuxAsNobody")
+}
+
+// linuxRowsInContainer builds the package's tests for Linux and runs, in the bootstrap file
+// oracle's image, the test named asRoot as root, then the test named asNobody as the account
+// nobody, through setpriv. Every issue's Linux rows run through it.
+func linuxRowsInContainer(t *testing.T, asRoot, asNobody string) {
+	t.Helper()
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Fatalf("docker is required for the Linux rows: %v", err)
 	}
@@ -86,8 +94,8 @@ func TestOpenLinuxRowsInContainer(t *testing.T) {
 	// nobody, into /tmp, where nobody can run it.
 	script := `status=0
 cp /rows-binary/bootstrap.test /tmp/rows.test && chmod 755 /tmp/rows.test || exit 1
-/tmp/rows.test -test.v -test.count=1 -test.run '^TestOpenLinuxAsRoot$' -bootstrap.container || status=1
-setpriv --reuid=65534 --regid=65534 --clear-groups /tmp/rows.test -test.v -test.count=1 -test.run '^TestOpenLinuxAsNobody$' -bootstrap.container || status=1
+/tmp/rows.test -test.v -test.count=1 -test.run '^` + asRoot + `$' -bootstrap.container || status=1
+setpriv --reuid=65534 --regid=65534 --clear-groups /tmp/rows.test -test.v -test.count=1 -test.run '^` + asNobody + `$' -bootstrap.container || status=1
 exit $status`
 	out, err := exec.CommandContext(t.Context(), "docker", "run", "--rm",
 		"-v", dir+":/rows-binary:ro", "-v", testdata+":/rows/testdata:ro", "-w", "/rows",
@@ -227,6 +235,28 @@ func folderForFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return folder
+}
+
+// copySample copies a kept sample into folder as bootstrap.hadv.
+func copySample(t *testing.T, folder, sample string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(folder, FileName), sampleBytes(t, sample+".hadv"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sampleBytes(t *testing.T, name string) []byte {
+	t.Helper()
+	return sampleBytesAt(t, filepath.Join(samples, name))
+}
+
+func sampleBytesAt(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 // open opens the bootstrap file in folder, as both programs do.
