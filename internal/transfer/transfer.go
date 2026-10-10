@@ -14,6 +14,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -23,6 +26,7 @@ var (
 	ErrTimeout       = errors.New("transfer: timeout")
 	ErrRemoteCommand = errors.New("transfer: remote command refused")
 	ErrProtocol      = errors.New("transfer: protocol error")
+	ErrNameRefused   = errors.New("transfer: file name refused")
 )
 
 // Protocol selects the transfer protocol. The zero value is ZMODEM.
@@ -81,8 +85,36 @@ type Received struct {
 }
 
 // unnamed is the name a Receive stores under when the far end names no file (XMODEM
-// carries none) or gives one that resolves outside dir.
+// carries none) or gives one that is empty, "." or only a separator.
 const unnamed = "unnamed"
+
+// openReceived opens the file a far end named, in root, for writing. It flattens name to
+// its last element, falls back to unnamed, and returns that base with its path under root.
+// flags gets the base before the open, for a resume check. A failed open calls cancel (when
+// not nil) once, since a started far end is waiting; the root's refusal of the name comes
+// back as ErrNameRefused. os exports no value for that refusal; it is the one failure here
+// with no errno beneath it, since every failure the system reports carries one.
+func openReceived(root *os.Root, name string, flags func(base string) int, cancel func()) (file *os.File, base, dest string, err error) {
+	base = filepath.Base(name)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = unnamed
+	}
+	dest = filepath.Join(root.Name(), base)
+	file, err = root.OpenFile(base, flags(base), 0o600)
+	if err == nil {
+		return file, base, dest, nil
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if !errors.As(err, new(syscall.Errno)) {
+		err = ErrNameRefused
+	}
+	return nil, base, dest, err
+}
+
+// truncateFlags is the open mode of a file received whole, with no resume.
+func truncateFlags(string) int { return os.O_CREATE | os.O_WRONLY | os.O_TRUNC }
 
 // Send offers the named files to the far end on rw by the chosen Protocol, in order, and
 // ends the session cleanly after the last. It returns on the far end's cancel
@@ -99,10 +131,25 @@ func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) er
 // Receive accepts a batch from the far end on rw into dir by the chosen Protocol and
 // returns what it stored, in the order received, each with the name, size and
 // modification time its protocol carries (XMODEM carries no name: it stores under
-// Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run.
+// Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run. A
+// name that would reach outside dir (by "..", by a symbolic link, or on Windows a reserved
+// device name; on Windows also a name containing a colon) is refused with ErrNameRefused,
+// after cancelling a transfer the far end has started. A dir that cannot be opened also
+// cancels the far end, except for XMODEM, whose far end has not started.
 func Receive(ctx context.Context, rw io.ReadWriter, dir string, opt Options) ([]Received, error) {
-	if opt.Protocol != ZMODEM {
-		return newXYSession(ctx, rw, opt).receive(dir)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		switch opt.Protocol {
+		case ZMODEM:
+			newSession(ctx, rw, opt).cancelPeer()
+		case YMODEM:
+			newXYSession(ctx, rw, opt).cancelPeer()
+		}
+		return nil, err
 	}
-	return newSession(ctx, rw, opt).receive(dir)
+	defer func() { _ = root.Close() }() //nolint:errcheck // best-effort; files are closed and checked where written
+	if opt.Protocol != ZMODEM {
+		return newXYSession(ctx, rw, opt).receive(root)
+	}
+	return newSession(ctx, rw, opt).receive(root)
 }

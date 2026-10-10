@@ -182,11 +182,11 @@ func (conversation *xysession) send(paths []string) error {
 	return conversation.sendYMODEM(paths)
 }
 
-func (conversation *xysession) receive(dir string) ([]Received, error) {
+func (conversation *xysession) receive(root *os.Root) ([]Received, error) {
 	if conversation.opt.Protocol == XMODEM {
-		return conversation.receiveXMODEM(dir)
+		return conversation.receiveXMODEM(root)
 	}
-	return conversation.receiveYMODEM(dir)
+	return conversation.receiveYMODEM(root)
 }
 
 // blocks drives the block phase shared by an XMODEM transfer and one file of a YMODEM
@@ -252,17 +252,11 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 	}
 }
 
-// receiveXMODEM accepts one file from the far end into dir, under Options.Name: XMODEM
+// receiveXMODEM accepts one file from the far end into the download folder, under Options.Name: XMODEM
 // carries no name. It keeps the last block's padding, since XMODEM carries no size
 // either and there is nothing to trim to.
-func (conversation *xysession) receiveXMODEM(dir string) ([]Received, error) {
-	base := filepath.Base(conversation.opt.Name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = unnamed
-	}
-	dest := filepath.Join(dir, base)
-	//nolint:gosec // G304: dest is dir joined with filepath.Base(opt.Name), so it cannot escape dir
-	file, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+func (conversation *xysession) receiveXMODEM(root *os.Root) ([]Received, error) {
+	file, base, dest, err := openReceived(root, conversation.opt.Name, truncateFlags, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +279,7 @@ func (conversation *xysession) receiveXMODEM(dir string) ([]Received, error) {
 	if err := file.Close(); err != nil {
 		return nil, err
 	}
-	stat, err := os.Stat(dest)
+	stat, err := root.Stat(base)
 	if err != nil {
 		return nil, err
 	}
@@ -396,10 +390,10 @@ func (conversation *xysession) sendEOT() error {
 	return ErrTimeout
 }
 
-// receiveYMODEM accepts a batch from the far end into dir: block 0 names each file in
+// receiveYMODEM accepts a batch from the far end into the download folder: block 0 names each file in
 // turn, then its data follows as XMODEM blocks under a fresh open, until a block 0 with
 // an empty name ends the batch.
-func (conversation *xysession) receiveYMODEM(dir string) ([]Received, error) {
+func (conversation *xysession) receiveYMODEM(root *os.Root) ([]Received, error) {
 	open := byte(xcrc)
 	switch {
 	case conversation.opt.Streaming:
@@ -416,7 +410,7 @@ func (conversation *xysession) receiveYMODEM(dir string) ([]Received, error) {
 		if header == nil {
 			return out, nil
 		}
-		rec, err := conversation.receiveOneYMODEMFile(dir, open, header)
+		rec, err := conversation.receiveOneYMODEMFile(root, open, header)
 		if err != nil {
 			return out, mapErr(err)
 		}
@@ -476,15 +470,9 @@ func (conversation *xysession) receiveHeaderBlock(open byte) ([]byte, error) {
 // data as XMODEM blocks, and stores it trimmed to size: unlike XMODEM, YMODEM carries
 // the size, so the last block's padding is not part of the stored file. A block 0 without
 // a length leaves every byte that arrived.
-func (conversation *xysession) receiveOneYMODEMFile(dir string, open byte, header []byte) (Received, error) {
+func (conversation *xysession) receiveOneYMODEMFile(root *os.Root, open byte, header []byte) (Received, error) {
 	name, size, mtime := decodeFileInfo(header)
-	base := filepath.Base(name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = unnamed
-	}
-	dest := filepath.Join(dir, base)
-	//nolint:gosec // G304: dest is dir joined with filepath.Base(name), so it cannot escape dir
-	file, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	file, base, dest, err := openReceived(root, name, truncateFlags, conversation.cancelPeer)
 	if err != nil {
 		return Received{}, err
 	}
@@ -499,17 +487,17 @@ func (conversation *xysession) receiveOneYMODEMFile(dir string, open byte, heade
 	if werr != nil {
 		return Received{}, werr
 	}
-	if err := file.Close(); err != nil {
-		return Received{}, err
-	}
 	if hasFileLength(header) && size >= 0 && size < written {
-		if err := os.Truncate(dest, size); err != nil {
+		if err := file.Truncate(size); err != nil {
 			return Received{}, err
 		}
 		written = size
 	}
+	if err := file.Close(); err != nil {
+		return Received{}, err
+	}
 	if !mtime.IsZero() {
-		if err := os.Chtimes(dest, mtime, mtime); err != nil {
+		if err := root.Chtimes(base, mtime, mtime); err != nil {
 			return Received{}, err
 		}
 	}

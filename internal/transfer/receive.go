@@ -7,12 +7,11 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 )
 
 // receive drives the receiver side of a ZMODEM batch: advertise readiness, accept each
 // file the far end offers, and stop cleanly at ZFIN.
-func (conversation *session) receive(dir string) ([]Received, error) {
+func (conversation *session) receive(root *os.Root) ([]Received, error) {
 	var out []Received
 	flags := byte(canfdx | canovio | canfc32)
 	if conversation.opt.Escape {
@@ -42,7 +41,7 @@ func (conversation *session) receive(dir string) ([]Received, error) {
 		}
 		switch head.typ {
 		case zfile:
-			rec, err := conversation.receiveFile(dir, crc32mode)
+			rec, err := conversation.receiveFile(root, crc32mode)
 			if err != nil {
 				return out, err
 			}
@@ -66,7 +65,7 @@ func (conversation *session) receive(dir string) ([]Received, error) {
 
 // receiveFile reads one file's info subpacket, tells the far end where to start (0, or
 // the size already on disk when resuming), and writes the data it sends until ZEOF.
-func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, error) {
+func (conversation *session) receiveFile(root *os.Root, crc32mode bool) (Received, error) {
 	info, _, ok, err := readSubpacket(conversation.ctx, conversation.src, conversation.timeout, maxSubpacket, crc32mode)
 	if err != nil {
 		return Received{}, mapErr(err)
@@ -75,24 +74,19 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 		return Received{}, ErrProtocol
 	}
 	name, size, mtime := decodeFileInfo(info)
-	base := filepath.Base(name)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = unnamed
-	}
-	dest := filepath.Join(dir, base)
-
 	var offset int64
-	flags := os.O_CREATE | os.O_WRONLY
-	if conversation.opt.Resume {
-		if stat, err := os.Stat(dest); err == nil && stat.Size() <= size {
-			offset = stat.Size()
+	file, base, dest, err := openReceived(root, name, func(base string) int {
+		flags := os.O_CREATE | os.O_WRONLY
+		if conversation.opt.Resume {
+			if stat, err := root.Stat(base); err == nil && stat.Size() <= size {
+				offset = stat.Size()
+			}
 		}
-	}
-	if offset == 0 {
-		flags |= os.O_TRUNC
-	}
-	//nolint:gosec // G304: dest is dir joined with filepath.Base(name), so it cannot escape dir
-	file, err := os.OpenFile(dest, flags, 0o600)
+		if offset == 0 {
+			flags |= os.O_TRUNC
+		}
+		return flags
+	}, conversation.cancelPeer)
 	if err != nil {
 		return Received{}, err
 	}
@@ -133,7 +127,7 @@ func (conversation *session) receiveFile(dir string, crc32mode bool) (Received, 
 			if err := file.Close(); err != nil {
 				return Received{}, err
 			}
-			if err := os.Chtimes(dest, mtime, mtime); err != nil {
+			if err := root.Chtimes(base, mtime, mtime); err != nil {
 				return Received{}, err
 			}
 			return Received{Name: base, Path: dest, Size: offset, ModTime: mtime}, nil
