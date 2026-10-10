@@ -86,11 +86,6 @@ const (
 	limitAck     = 0x06
 )
 
-// limitDiskRows runs one at a time the rows that write a byte near the end of a 4 GiB file:
-// on Windows the file system fills the gap before that byte, so each row holds 4 GiB of disk
-// until its temporary folder is removed.
-var limitDiskRows sync.Mutex
-
 // withinLimitRow is the row's context, ending at limitRowDeadline.
 func withinLimitRow(t *testing.T) context.Context {
 	t.Helper()
@@ -99,22 +94,19 @@ func withinLimitRow(t *testing.T) context.Context {
 	return ctx
 }
 
-// holdDisk takes limitDiskRows until the row and its temporary folders are gone: a cleanup
-// registered before the row's first t.TempDir runs after that folder is removed.
-func holdDisk(t *testing.T) {
-	t.Helper()
-	limitDiskRows.Lock()
-	t.Cleanup(limitDiskRows.Unlock)
-}
-
-// mustSparse makes dir/name a file of size bytes, all zeros, by setting its length alone: a
-// file system that keeps sparse files stores none of them.
+// mustSparse makes dir/name a sparse file of size bytes, all zeros, by marking it sparse and
+// then setting its length alone, so it takes almost no disk, even after a byte is written
+// near its end.
 func mustSparse(t *testing.T, dir, name string, size int64) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := markSparse(file); err != nil {
+		_ = file.Close()
+		t.Fatalf("marking %s sparse: %v", name, err)
 	}
 	if err := file.Truncate(size); err != nil {
 		_ = file.Close()
@@ -574,7 +566,6 @@ func TestZMODEMDataTooLarge(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				t.Parallel()
-				holdDisk(t)
 				download := t.TempDir()
 				mustSparse(t, download, limitBigName, zmodemLargest)
 				var small []byte
@@ -609,7 +600,6 @@ func TestZMODEMWithinLimit(t *testing.T) {
 		t.Parallel()
 		t.Run("sz -r resumes a file to us at exactly the limit", func(t *testing.T) {
 			t.Parallel()
-			holdDisk(t)
 			far, download := t.TempDir(), t.TempDir()
 			mustSparse(t, far, limitBigName, zmodemLargest)
 			mustSparse(t, download, limitBigName, zmodemLargest-1)
@@ -628,7 +618,6 @@ func TestZMODEMWithinLimit(t *testing.T) {
 		})
 		t.Run("we resume a file to rz -r at exactly the limit", func(t *testing.T) {
 			t.Parallel()
-			holdDisk(t)
 			ourFolder, far := t.TempDir(), t.TempDir()
 			path := mustSparse(t, ourFolder, limitBigName, zmodemLargest)
 			mustSparse(t, far, limitBigName, zmodemLargest-1)
