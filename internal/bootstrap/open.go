@@ -93,7 +93,7 @@ func (entry) Open(ctx context.Context, folder string, account ServiceAccount) (F
 	}
 	defer clear(key[:])
 
-	plaintext, err := unseal(key, content, HeaderStartSize+len(sealedKey))
+	plaintext, err := unseal(&key, content, HeaderStartSize+len(sealedKey))
 	if err != nil {
 		return nil, err
 	}
@@ -110,9 +110,10 @@ func (entry) Open(ctx context.Context, folder string, account ServiceAccount) (F
 	return &handle{fields: fields, keyHolder: keyHolder, sealedKey: bytes.Clone(sealedKey)}, nil
 }
 
-// unseal opens the records of content under key; the header and the nonce, headerSize plus
+// unseal takes the key by pointer so no second copy of it exists; the header and the nonce, headerSize plus
 // NonceSize bytes, are the authenticated data.
-func unseal(key Key256, content []byte, headerSize int) ([]byte, error) {
+func unseal(key *Key256, content []byte, headerSize int) ([]byte, error) {
+	defer clear(key[:])
 	failure := Error{Code: ErrDecrypt}
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
@@ -131,16 +132,17 @@ func unseal(key Key256, content []byte, headerSize int) ([]byte, error) {
 }
 
 // holderFor is the key holder the platform has for a number in a header. A holder the platform
-// has but is not built yet is errNotBuilt; any other number is ErrKey.
+// has but is not built yet is errNotBuilt; any other number, and every number on a platform that
+// is neither Windows nor Linux, is ErrKey.
 func holderFor(number KeyHolder) (holder, error) {
-	onWindows := runtime.GOOS == "windows"
+	onLinux := runtime.GOOS == "linux"
 	switch {
-	case onWindows && number == WindowsKeyStore,
-		!onWindows && (number == SystemdByService || number == SystemdAtStart):
+	case runtime.GOOS == "windows" && number == WindowsKeyStore,
+		onLinux && (number == SystemdByService || number == SystemdAtStart):
 		return nil, Error{Code: errNotBuilt}
-	case !onWindows && number == KeyFile:
+	case onLinux && number == KeyFile:
 		return fileKeyHolder{openFile: openKeyFile}, nil
-	case !onWindows && number == SwarmSecret:
+	case onLinux && number == SwarmSecret:
 		return fileKeyHolder{openFile: openSwarmSecret}, nil
 	default:
 		return nil, Error{Code: ErrKey}
@@ -155,6 +157,7 @@ func fieldsFrom(records []record) (Fields, error) {
 		switch {
 		case item.name == FieldServer:
 			if len(item.data) != 4 {
+				fields.Zero()
 				return Fields{}, Error{Code: ErrInvalid}
 			}
 			fields.Server = board.ServerID(binary.BigEndian.Uint32(item.data))
