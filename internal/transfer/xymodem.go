@@ -251,7 +251,7 @@ func (conversation *xysession) blocks(open byte, write func([]byte) error) error
 	}
 }
 
-// receiveXMODEM accepts one file from the far end into dir, under Options.Name: XMODEM
+// receiveXMODEM accepts one file from the far end into the download folder, under Options.Name: XMODEM
 // carries no name. It keeps the last block's padding, since XMODEM carries no size
 // either and there is nothing to trim to.
 func (conversation *xysession) receiveXMODEM(root *os.Root) ([]Received, error) {
@@ -389,7 +389,7 @@ func (conversation *xysession) sendEOT() error {
 	return ErrTimeout
 }
 
-// receiveYMODEM accepts a batch from the far end into dir: block 0 names each file in
+// receiveYMODEM accepts a batch from the far end into the download folder: block 0 names each file in
 // turn, then its data follows as XMODEM blocks under a fresh open, until a block 0 with
 // an empty name ends the batch.
 func (conversation *xysession) receiveYMODEM(root *os.Root) ([]Received, error) {

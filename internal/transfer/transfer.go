@@ -134,10 +134,17 @@ func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) er
 // Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run. A
 // name that would reach outside dir (by "..", by a symbolic link, or on Windows a reserved
 // device name; on Windows also a name containing a colon) is refused with ErrNameRefused,
-// after cancelling a transfer the far end has started.
+// after cancelling a transfer the far end has started. A dir that cannot be opened also
+// cancels the far end, except for XMODEM, whose far end has not started.
 func Receive(ctx context.Context, rw io.ReadWriter, dir string, opt Options) ([]Received, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
+		switch opt.Protocol {
+		case ZMODEM:
+			newSession(ctx, rw, opt).cancelPeer()
+		case YMODEM:
+			newXYSession(ctx, rw, opt).cancelPeer()
+		}
 		return nil, err
 	}
 	defer func() { _ = root.Close() }() //nolint:errcheck // best-effort; files are closed and checked where written
