@@ -5,6 +5,7 @@ package transfer
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"time"
 )
@@ -44,8 +45,8 @@ type header struct {
 func posHeader(typ byte, pos int64) header {
 	var head header
 	head.typ = typ
-	raw := uint32(pos)                                                                                             //nolint:gosec // G115: a ZMODEM position is a protocol-defined 32-bit field
-	head.data[0], head.data[1], head.data[2], head.data[3] = byte(raw), byte(raw>>8), byte(raw>>16), byte(raw>>24) //nolint:gosec // G115: serializing the 32-bit field byte by byte
+	// A ZMODEM position is a 32-bit field, so a position at 4 GiB or past it wraps, as it always has on the wire.
+	binary.LittleEndian.PutUint32(head.data[:], uint32(pos&0xFFFFFFFF))
 	return head
 }
 
@@ -63,7 +64,7 @@ func writeHex(writer *zwriter, head header) error {
 	}
 	buf := append([]byte{head.typ}, head.data[:]...)
 	crc := crc16(buf)
-	buf = append(buf, byte(crc>>8), byte(crc)) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
+	buf = binary.BigEndian.AppendUint16(buf, crc)
 	hex := make([]byte, 0, len(buf)*2)
 	for _, value := range buf {
 		hex = append(hex, hexDigits[value>>4], hexDigits[value&0xf])
@@ -90,10 +91,10 @@ func writeBinary(writer *zwriter, head header, useCRC32 bool) error {
 	buf := append([]byte{head.typ}, head.data[:]...)
 	if useCRC32 {
 		crc := crc32sum(buf)
-		buf = append(buf, byte(crc), byte(crc>>8), byte(crc>>16), byte(crc>>24)) //nolint:gosec // G115: serializing a 32-bit CRC byte by byte
+		buf = binary.LittleEndian.AppendUint32(buf, crc)
 	} else {
 		crc := crc16(buf)
-		buf = append(buf, byte(crc>>8), byte(crc)) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
+		buf = binary.BigEndian.AppendUint16(buf, crc)
 	}
 	return writer.putAll(buf)
 }
@@ -202,10 +203,10 @@ func writeSubpacket(writer *zwriter, data []byte, term byte, useCRC32 bool) erro
 	buf := append(append([]byte{}, data...), term)
 	if useCRC32 {
 		crc := crc32sum(buf)
-		return writer.putAll([]byte{byte(crc), byte(crc >> 8), byte(crc >> 16), byte(crc >> 24)}) //nolint:gosec // G115: serializing a 32-bit CRC byte by byte
+		return writer.putAll(binary.LittleEndian.AppendUint32(nil, crc))
 	}
 	crc := crc16(buf)
-	return writer.putAll([]byte{byte(crc >> 8), byte(crc)}) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
+	return writer.putAll(binary.BigEndian.AppendUint16(nil, crc))
 }
 
 // readSubpacket reads one data subpacket up to max bytes, returning the data, the

@@ -6,6 +6,7 @@ package transfer
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -162,7 +163,7 @@ func xywriteBlock(dst io.Writer, blk byte, data []byte, useCRC bool) error {
 	buf = append(buf, data...)
 	if useCRC {
 		crc := crc16(data)
-		buf = append(buf, byte(crc>>8), byte(crc)) //nolint:gosec // G115: serializing a 16-bit CRC byte by byte
+		buf = binary.BigEndian.AppendUint16(buf, crc)
 	} else {
 		var sum byte
 		for _, value := range data {
