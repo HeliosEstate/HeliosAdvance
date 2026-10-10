@@ -18,7 +18,8 @@ type fileKeyHolder struct {
 // openKeyFile opens bootstrap.key through the folder's root, which refuses a link out of it.
 func openKeyFile(folder *os.Root) (*os.File, error) { return folder.Open(KeyFileName) }
 
-// openSwarmSecret opens the Swarm secret by its fixed path, without the folder.
+// openSwarmSecret ignores the folder because the secret sits at a fixed path outside it. It uses
+// OpenInRoot, not os.Open (forbidigo refuses that here), so a link leaving that directory fails.
 func openSwarmSecret(_ *os.Root) (*os.File, error) {
 	return os.OpenInRoot(path.Dir(SwarmSecretPath), path.Base(SwarmSecretPath))
 }

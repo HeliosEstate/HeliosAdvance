@@ -21,7 +21,7 @@ import (
 // 5.
 var errNotBuilt = errors.New("bootstrap: not built")
 
-// New returns the Bootstrap.
+// New is how the locked tests reach the package, since the contract has no constructor.
 func New() Bootstrap { return entry{} }
 
 type entry struct{}

@@ -21,8 +21,8 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/board"
 )
 
-// handle is an opened bootstrap file. It holds no root and no open file: the folder is opened
-// for each operation and never kept between them.
+// handle keeps no root and no open file because the contract opens the folder for each
+// operation; a root held here would leave the folder open between them.
 type handle struct {
 	fields    Fields
 	keyHolder KeyHolder
@@ -110,10 +110,10 @@ func (entry) Open(ctx context.Context, folder string, account ServiceAccount) (F
 	return &handle{fields: fields, keyHolder: keyHolder, sealedKey: bytes.Clone(sealedKey)}, nil
 }
 
-// unseal takes the key by pointer so no second copy of it exists; the header and the nonce, headerSize plus
-// NonceSize bytes, are the authenticated data.
+// unseal takes the key by pointer so it makes no copy of its own; Open owns the key and clears it,
+// and Save will need it after unsealing. The header and the nonce, headerSize plus NonceSize
+// bytes, are the authenticated data.
 func unseal(key *Key256, content []byte, headerSize int) ([]byte, error) {
-	defer clear(key[:])
 	failure := Error{Code: ErrDecrypt}
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
@@ -153,6 +153,15 @@ func holderFor(number KeyHolder) (holder, error) {
 // not checked here. The data is copied because the plaintext it slices is cleared.
 func fieldsFrom(records []record) (Fields, error) {
 	var fields Fields
+	vaultKeyCount := 0
+	for _, item := range records {
+		if strings.HasPrefix(item.name, FieldVaultKeyPrefix) {
+			vaultKeyCount++
+		}
+	}
+	// Sized up front so append never moves the keys to a new array and leaves the old one
+	// holding them uncleared.
+	fields.VaultKeys = slices.Grow(fields.VaultKeys, vaultKeyCount)
 	for _, item := range records {
 		switch {
 		case item.name == FieldServer:
@@ -187,8 +196,11 @@ func fieldsFrom(records []record) (Fields, error) {
 // with no leading zero, and 32 bytes.
 func vaultKeyFrom(item record) (VaultKey, error) {
 	digits := strings.TrimPrefix(item.name, FieldVaultKeyPrefix)
+	if digits == "" || digits[0] == '0' {
+		return VaultKey{}, Error{Code: ErrInvalid}
+	}
 	version, err := strconv.ParseUint(digits, 10, 32)
-	if err != nil || digits[0] == '0' || version > math.MaxUint32 || len(item.data) != KeySize {
+	if err != nil || version > math.MaxUint32 || len(item.data) != KeySize {
 		return VaultKey{}, Error{Code: ErrInvalid}
 	}
 	return VaultKey{Version: uint32(version), Key: Key256(item.data)}, nil
