@@ -5,7 +5,8 @@
 # only reading proves. A review label comes off when its trigger no longer holds.
 # needs-developer, on the issue the pull request closes: it adds a line that silences a linter
 # (nolint or #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision
-# for the developer by name (developer, 2026-10-07: "fail loud"). The loop takes no work and no CI
+# for the developer by name (developer, 2026-10-07: "fail loud"), and a comment on both quoting
+# those lines, so the label never comes on unexplained. The loop takes no work and no CI
 # round on an issue with that label, so it waits for him; only he takes the label off. The
 # pull request's body lists those lines under a heading "For the developer", or this job fails.
 #
@@ -72,9 +73,24 @@ jobs:
             printf '%s\n' "$for_developer"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$developer" = yes ]; then
-            # Added, never removed here: taking it off is the developer's decision.
+            # Added, never removed here: taking it off is the developer's decision. Whatever puts
+            # needs-developer on also says why (developer, 2026-10-10: "It must always leave a
+            # comment for why it's putting it back on needs-developer"), once each time the pull
+            # request gains the label, not again on every push while it has it.
+            labeled=$(gh pr view "$PR" --json labels -q '[.labels[].name] | index("needs-developer") != null')
             if [ -n "$issue" ]; then gh issue edit "$issue" --add-label needs-developer; fi
             gh pr edit "$PR" --add-label needs-developer
+            if [ "$labeled" != true ]; then
+              {
+                echo "Pull request #$PR adds lines that are the developer's decision by name (a silenced linter, a skipped test, a build tag, unsafe or C), so it and its issue wait on needs-developer until he has read them:"
+                echo
+                echo '~~~'
+                printf '%s\n' "$for_developer" | sed 's/^+//' | head -20
+                echo '~~~'
+              } > "$RUNNER_TEMP/needs-developer.md"
+              if [ -n "$issue" ]; then gh issue comment "$issue" --body-file "$RUNNER_TEMP/needs-developer.md"; fi
+              gh pr comment "$PR" --body-file "$RUNNER_TEMP/needs-developer.md"
+            fi
           fi
           if [ "$developer" = yes ] && ! printf '%s\n' "$BODY" | grep -qiE '^#+[[:space:]]*For the developer'; then
             echo "::error::this pull request adds lines that are the developer's decision (above); list each under a heading \"For the developer\" in its body"
