@@ -42,9 +42,10 @@
 // By the number the header carries:
 //
 //	1  Windows key store. Create makes a 2048-bit RSA key, sets its access list to the service
-//	   account, SYSTEM and Administrators, and wraps the bootstrap key with RSA-OAEP (SHA-256,
-//	   MGF1 with SHA-256, no label). Open looks for the key by its name in the TPM provider,
-//	   then in software.
+//	   account with read only, which unwraps but cannot delete the key or change its access
+//	   list, and SYSTEM and Administrators with full control, and wraps the bootstrap key with
+//	   RSA-OAEP (SHA-256, MGF1 with SHA-256, no label). Open looks for the key by its name in
+//	   the TPM provider, then in software.
 //	2  systemd, decrypted by the service. Create runs systemd-creds encrypt with --uid= the
 //	   service account, --with-key=auto and --tpm2-pcrs= with no PCR, so a firmware or Secure
 //	   Boot change never locks the server out. Open runs systemd-creds decrypt with --uid= the
@@ -68,7 +69,7 @@
 //   - Where the server has a TPM, create shall make the Windows key in Microsoft's TPM provider,
 //     and in the software key store provider where it has none. [run]
 //   - When create makes a Windows key, create shall set the key's access list to the service
-//     account, SYSTEM and Administrators. [run]
+//     account with read only, and SYSTEM and Administrators with full control. [run]
 //   - When create makes a Windows key, create shall wrap the bootstrap key under it with
 //     RSA-OAEP, SHA-256 and MGF1 with SHA-256, and no label.
 //   - When open gets the bootstrap key from a Windows key, open shall look for the key by its
@@ -407,6 +408,9 @@ type VaultKey struct {
 //	VaultKeys                   it holds none, more than two, two of one version, or a key of
 //	                            version 0
 //	ReceivingKey, SigningKey    it is empty
+//
+// For key holders 2 and 3, create counts the sealed key at its largest, 4,096 bytes, so a file
+// too large is refused before the key is made; save counts the sealed key its header holds.
 type Fields struct {
 	Server          board.ServerID
 	Connection      string // the database connection, with no account in it
@@ -489,7 +493,7 @@ type Bootstrap interface {
 	//     first in the order ErrNotFound, ErrUnreadable, ErrExists, ErrInvalid, ErrKey.
 	//   - If create fails after it makes a Windows key, then create shall delete that key.
 	//   - If create fails and deleting the Windows key it made fails, then create shall return
-	//     that key's name with the failure's code.
+	//     that key's name with the failure's code. [read]
 	Create(ctx context.Context, folder string, holder KeyHolder, account ServiceAccount,
 		fields Fields, overwrite bool) (undeleted string, err error)
 

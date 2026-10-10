@@ -50,9 +50,10 @@ jobs:
   # and compiles every test: its runners cannot run Linux containers, so the oracle rows
   # cannot run there, and the race detector would need a C compiler installed every run.
   # Database tests will be Linux-only for the same reason (developer, 2026-10-02). Windows
-  # does run TestWindowsElevated and every test named from it, the rows that need an
-  # administrator's elevated process, which GitHub's runner is and no loop's machine is
-  # (developer, 2026-10-05).
+  # does run every test whose name starts with TestWindows. These are TestWindowsElevated and
+  # every test named from it, the rows that need an administrator's elevated process, which
+  # GitHub's runner is and no loop's machine is (developer, 2026-10-05), and the Windows-only
+  # rows that need no oracle, such as a reserved device name (developer, 2026-10-09).
   run:
     needs: changes
     if: needs.changes.outputs.skip == '0'
@@ -84,10 +85,28 @@ jobs:
           go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
           go install github.com/google/go-licenses/v2@v2.0.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      # Every oracle the tree holds, none on a tree without any: main is the skeleton.
+      # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
+      # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's
+      # "429 Too Many Requests" (developer, 2026-10-09). A partial match restores the images of
+      # the folders that did not change.
+      - name: Restore the oracle images
+        if: runner.os == 'Linux'
+        id: oracle-images
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/oracle-images
+          key: oracle-images-${{ runner.arch }}-${{ hashFiles('oracle/**') }}
+          restore-keys: oracle-images-${{ runner.arch }}-
       - name: Build the oracles
         if: runner.os == 'Linux'
-        run: for d in oracle/*/; do [ -d "$d" ] && docker build -q -t "heliosestate/$(basename "$d")-oracle:0.1" "$d"; done; true
+        run: bash .github/oracle-images.sh ~/oracle-images
+      # Saved straight after the build, not at the job's end, so a red run still saves them.
+      - name: Save the oracle images
+        if: runner.os == 'Linux' && steps.oracle-images.outputs.cache-hit != 'true' && hashFiles('oracle/**') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ~/oracle-images
+          key: ${{ steps.oracle-images.outputs.cache-primary-key }}
       # The elevated rows skip in a process that is not elevated, so a runner that stopped
       # being elevated would pass them unseen: it fails here instead.
       - name: The runner is elevated
@@ -100,7 +119,7 @@ jobs:
         env:
           RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
           COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
-          TESTRUN: ${{ runner.os == 'Windows' && '^TestWindowsElevated' || '' }}
+          TESTRUN: ${{ runner.os == 'Windows' && '^TestWindows' || '' }}
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
