@@ -14,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"syscall"
 	"time"
 )
 
@@ -82,8 +84,19 @@ type Received struct {
 }
 
 // unnamed is the name a Receive stores under when the far end names no file (XMODEM
-// carries none) or gives one that resolves outside dir.
+// carries none) or gives one that is empty, "." or only a separator.
 const unnamed = "unnamed"
+
+// openReceived opens base in root for writing and turns the root's refusal of the name
+// into ErrNameRefused. os exports no value for that refusal; it is the one failure here
+// with no errno beneath it, since every failure the system reports carries one.
+func openReceived(root *os.Root, base string, flag int) (*os.File, error) {
+	file, err := root.OpenFile(base, flag, 0o600)
+	if err != nil && !errors.As(err, new(syscall.Errno)) {
+		return nil, ErrNameRefused
+	}
+	return file, err
+}
 
 // Send offers the named files to the far end on rw by the chosen Protocol, in order, and
 // ends the session cleanly after the last. It returns on the far end's cancel
@@ -100,10 +113,18 @@ func Send(ctx context.Context, rw io.ReadWriter, paths []string, opt Options) er
 // Receive accepts a batch from the far end on rw into dir by the chosen Protocol and
 // returns what it stored, in the order received, each with the name, size and
 // modification time its protocol carries (XMODEM carries no name: it stores under
-// Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run.
+// Options.Name). A ZCOMMAND frame is refused with ErrRemoteCommand and nothing is run. A
+// name that would reach outside dir (by "..", by a symbolic link, or on Windows a reserved
+// device name) is refused with ErrNameRefused, after cancelling a transfer the far end has
+// started.
 func Receive(ctx context.Context, rw io.ReadWriter, dir string, opt Options) ([]Received, error) {
-	if opt.Protocol != ZMODEM {
-		return newXYSession(ctx, rw, opt).receive(dir)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
 	}
-	return newSession(ctx, rw, opt).receive(dir)
+	defer func() { _ = root.Close() }() //nolint:errcheck // best-effort; files are closed and checked where written
+	if opt.Protocol != ZMODEM {
+		return newXYSession(ctx, rw, opt).receive(root)
+	}
+	return newSession(ctx, rw, opt).receive(root)
 }
