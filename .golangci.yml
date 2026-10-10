@@ -140,7 +140,7 @@ linters:
         - pattern: ^log\.(Print|Printf|Println|Fatal|Fatalf|Fatalln|Panic|Panicf|Panicln)$
           msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
-          msg: bound the read (io.LimitReader) before draining it
+          msg: read into a fixed-size buffer with io.ReadFull; no read drains a reader, bounded or not
         - pattern: ^os\.(Getenv|LookupEnv)$
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
