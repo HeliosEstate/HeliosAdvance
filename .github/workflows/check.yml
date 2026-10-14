@@ -145,7 +145,7 @@ jobs:
             awk 'NR>1{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); t[d]+=$2; if($3>0) c[d]+=$2} END{for(k in t) printf "| %s | %.1f%% (%d of %d) |\n", k, (t[k] ? 100*c[k]/t[k] : 0), c[k], t[k]}' coverage.out | sort
           } > coverage.md
           cat coverage.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && runner.os == 'Linux'
         with:
           name: coverage-${{ matrix.os }}
