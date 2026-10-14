@@ -1,0 +1,15 @@
+# Dependabot keeps two things current, each as a pull request from its bot that the check
+# workflow judges and the developer merges like any other: the versions of the GitHub Actions the
+# workflows use, and the Go module's dependencies. It cannot reach the four tool pins inside the
+# workflows' shell steps; the weekly tool-pins workflow watches those. New releases wait out
+# Dependabot's default three-day cooldown before a pull request (developer, 2026-10-14).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
