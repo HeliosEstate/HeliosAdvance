@@ -75,15 +75,17 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # The versions are pinned in .github/tool-versions, one place for every workflow.
+      # The versions are pinned in .github/tool-versions, one place for every workflow. The linter
+      # is the released binary on every runner: its own documentation says a go install build is
+      # not guaranteed to work. Its install script serves Windows (a zip, unpacked with unzip, an
+      # .exe) and wants a POSIX path, which cygpath gives from Go's Windows-form GOPATH.
       - name: Install gates
         run: |
           source .github/tool-versions
-          if [ "$RUNNER_OS" = Windows ]; then
-            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@"$GOLANGCI_LINT"
-          else
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT"
-          fi
+          bin="$(go env GOPATH)/bin"
+          [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$bin" "$GOLANGCI_LINT"
+          golangci-lint --version
           go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
           go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
           go install github.com/google/go-licenses/v2@"$GO_LICENSES"
