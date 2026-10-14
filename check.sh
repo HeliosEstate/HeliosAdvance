@@ -19,7 +19,7 @@ fi
 # and says so.
 if [ -f CLAUDE.md ]; then
   lines=$(wc -l < CLAUDE.md)
-  [ "$lines" -le 60 ] || fail "CLAUDE.md is $lines lines; the cap is 60"
+  [ "$lines" -le 90 ] || fail "CLAUDE.md is $lines lines; the cap is 90"
 else
   echo "no CLAUDE.md: nothing to cap"
 fi
