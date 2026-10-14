@@ -1,0 +1,4 @@
+# Every pull request needs the developer's approval: the development ruleset requires a code
+# owner's review, so no App can merge its own work, and a change to check.sh, whose locks CI
+# runs from the branch itself, cannot land unseen.
+* @Paswaru
