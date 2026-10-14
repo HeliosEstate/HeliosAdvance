@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash check.sh*)",
+      "Bash(make check)",
+      "Bash(go build *)",
+      "Bash(go vet *)",
+      "Bash(go test *)",
+      "Bash(golangci-lint run *)",
+      "Bash(govulncheck *)",
+      "Bash(git fetch *)",
+      "Bash(gh pr checks *)"
+    ]
+  }
+}
