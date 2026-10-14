@@ -15,9 +15,14 @@ if [ "$MUTATION" = 0 ]; then
   git rev-parse -q --verify "$BASE" >/dev/null 2>&1 || fail "$BASE does not resolve, so the gates that judge this branch against it cannot run: fetch it, or set BASE to the commit to judge from"
 fi
 
-# 1. The standing instructions stay short.
-lines=$(wc -l < CLAUDE.md)
-[ "$lines" -le 60 ] || fail "CLAUDE.md is $lines lines; the cap is 60"
+# 1. The standing instructions stay short. A repository with no CLAUDE.md yet has none to cap,
+# and says so.
+if [ -f CLAUDE.md ]; then
+  lines=$(wc -l < CLAUDE.md)
+  [ "$lines" -le 60 ] || fail "CLAUDE.md is $lines lines; the cap is 60"
+else
+  echo "no CLAUDE.md: nothing to cap"
+fi
 
 # 2. Specs are language-neutral.
 if [ -d docs/spec ]; then
