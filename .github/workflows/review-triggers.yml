@@ -1,0 +1,89 @@
+# Labels a pull request with the reviews it needs before the developer signs off, from what a
+# script can read (developer, 2026-10-05). needs-security-review: it touches a package in
+# security-paths, or adds an import of crypto, os/exec, net, unsafe, syscall or golang.org/x/sys
+# outside a test. needs-code-review: it touches a security path and its issue has a [read] line,
+# which only reading proves. A review label comes off when its trigger no longer holds.
+# The run's summary also lists each line the pull request adds that silences a linter (nolint or
+# #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision for the
+# developer by name (developer, 2026-10-07: "fail loud"); a line from a QA commit, which he read
+# when he approved the tests, does not count. The list is for the session that reviews the pull
+# request, which brings each line to him explained, with its file, the line it replaces and why,
+# before the merge. The workflow neither labels nor comments for them: a label and a comment
+# that quoted bare lines, on the pull request and on whatever issue it closed, stopped the loop
+# and gave him nothing to decide on (developer, 2026-10-11: "I can't say yes or no because
+# there's no context").
+#
+# pull_request, never pull_request_target: a stranger's pull request runs with a read-only
+# token and cannot use this workflow's rights; its labels are then the developer's to set. The
+# pull request's body and its issue are data: only the issue number is taken from the body.
+name: review-triggers
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [development, main]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+jobs:
+  label:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: origin/${{ github.base_ref }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' security-paths | grep . || true)
+          touched=""
+          [ "${#paths[@]}" -gt 0 ] && touched=$(git diff --name-only "$BASE...HEAD" -- "${paths[@]}")
+          imports=$(git diff -U0 "$BASE...HEAD" -- '*.go' ':!*_test.go' |
+            grep -E '^\+[[:space:]]*(import[[:space:]]+)?([[:alnum:]_.]+[[:space:]]+)?"(crypto(/[^"]*)?|os/exec|net(/[^"]*)?|unsafe|syscall|golang\.org/x/sys(/[^"]*)?)"' || true)
+          issue=$(printf '%s\n' "$BODY" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          read_lines=""
+          [ -n "$issue" ] && read_lines=$(gh issue view "$issue" --json body -q .body | grep -F '[read]' || true)
+
+          set_label() { # label, wanted
+            if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
+          }
+          security=no; code=no
+          [ -n "$touched$imports" ] && security=yes
+          [ -n "$touched" ] && [ -n "$read_lines" ] && code=yes
+          {
+            echo "security paths touched: ${touched:-none}"
+            echo "imports added outside tests: ${imports:-none}"
+            echo "issue: ${issue:-none}; [read] lines: $(printf '%s' "$read_lines" | grep -c . || true)"
+            echo "needs-security-review: $security; needs-code-review: $code"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          set_label needs-security-review "$security"
+          set_label needs-code-review "$code"
+
+          # A line a QA commit (Helios-Role: qa) added was his to read when he approved the tests,
+          # so it is not counted again here (developer, 2026-10-10). Lines are matched with their
+          # file, so the same text added by the build still counts.
+          added() { awk '/^\+\+\+ /{file = substr($0, 7); next} /^\+/{print file "\t" $0}'; }
+          # Found as check.sh's lock gate finds them: the trailer is a paragraph of its own, so
+          # git's trailer parsing does not see it.
+          qa_lines=$(git log --format=%H --grep='^Helios-Role: qa$' "$BASE..HEAD" |
+            while read -r commit; do git show -U0 --format= "$commit" -- '*.go' | added; done)
+          # Each line as the summary lists it: its file, then the line as added. The file ends at
+          # the first tab; the line keeps its own, Go's indentation.
+          flagged=$(git diff -U0 "$BASE...HEAD" -- '*.go' | added |
+            { grep -vxF -f <(printf '%s\n' "$qa_lines" | grep . || true) || true; } |
+            awk '{ tab = index($0, "\t"); file = substr($0, 1, tab - 1); line = substr($0, tab + 1) }
+              line ~ /\/\/[[:space:]]*nolint|#nosec|\.Skip(f|Now)?\(|^\+\/\/go:build|"unsafe"|import[[:space:]]+"C"/ {
+                sub(/^\+/, "", line); print file ": " line }' || true)
+          {
+            echo "lines for the developer, brought to him explained before the merge: $(printf '%s' "$flagged" | grep -c . || true)"
+            printf '%s\n' "$flagged"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
