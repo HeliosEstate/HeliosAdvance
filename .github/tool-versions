@@ -1,0 +1,9 @@
+# The versions of the tools the workflows install, in one place: check.yml and mutation.yml read
+# this file (`source .github/tool-versions`) and the weekly tool-pins workflow compares each pin
+# with the newest release the Go module proxy knows, opening an issue when one is behind. A pin
+# moves here, by the developer's hand, in a pull request he reads: a gate's tools change only when
+# we change something (developer, 2026-10-14). A change to this file runs the full check matrix.
+GOLANGCI_LINT=v2.14.0
+GOVULNCHECK=v1.9.0
+GREMLINS=v0.6.0
+GO_LICENSES=v2.0.1

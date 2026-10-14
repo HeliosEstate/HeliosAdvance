@@ -20,9 +20,9 @@ jobs:
   # One Linux runner reads the change set and runs the cheap gates, which need no Go. A
   # docs-only change set stops here: only Markdown, files under docs/, the three list files
   # (developer-owned-paths, security-paths, loop-identities, which the cheap gates read), and
-  # files under .github/ other than this one. Anything else, a file nobody listed
-  # included, starts the full matrix below. A change to this file always runs in full, since
-  # it is the CI being changed.
+  # files under .github/ other than this one and .github/tool-versions. Anything else, a file
+  # nobody listed included, starts the full matrix below. A change to this file or to the tool
+  # pins always runs in full, since it is the CI being changed.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -38,7 +38,7 @@ jobs:
           files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
           printf '%s\n' "$files"
           rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
-          full=$(printf '%s\n' "$files" | grep -xF '.github/workflows/check.yml' || true)
+          full=$(printf '%s\n' "$files" | grep -xE '\.github/workflows/check\.yml|\.github/tool-versions' || true)
           if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
       - name: Cheap gates
         env:
@@ -75,16 +75,18 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # The versions are pinned in .github/tool-versions, one place for every workflow.
       - name: Install gates
         run: |
+          source .github/tool-versions
           if [ "$RUNNER_OS" = Windows ]; then
-            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@"$GOLANGCI_LINT"
           else
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT"
           fi
-          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
-          go install github.com/google/go-licenses/v2@v2.0.1
+          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
+          go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
+          go install github.com/google/go-licenses/v2@"$GO_LICENSES"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
       # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's

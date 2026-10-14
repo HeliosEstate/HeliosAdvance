@@ -1,0 +1,53 @@
+# Opens an issue when a tool the workflows pin (.github/tool-versions) has a newer release, so the
+# developer decides whether to move the pin. It never moves one itself: a pin is a line the
+# workflows read, and it moves by his hand in a pull request (developer, 2026-10-14). Dependabot
+# cannot see these pins, since they are version strings inside shell steps, not a package
+# manifest; it keeps the Actions versions and the Go module current instead. Versions come from
+# the Go module proxy, the same source `go install` reads; pre-releases do not count. One issue per
+# tool at a time: an open issue carrying the tool's marker is not opened twice.
+name: tool-pins
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Compare each pin with the newest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          source .github/tool-versions
+          check() { # name pinned module
+            local name=$1 pinned=$2 module=$3 newest marker existing
+            newest=$(GOFLAGS=-mod=mod go list -m -versions "$module" | tr ' ' '\n' | tail -n +2 | grep -v -- '-' | tail -n 1)
+            [ -n "$newest" ] || { echo "::error::the module proxy lists no release of $module"; exit 1; }
+            if [ "$newest" = "$pinned" ]; then echo "$name $pinned: current"; return; fi
+            echo "$name $pinned: $newest is out"
+            marker="<!-- tool-pin: $name -->"
+            existing=$(gh issue list --label needs-developer --state open --limit 200 --json number,body -q ".[] | select(.body | contains(\"$marker\")) | .number" | head -n 1)
+            if [ -n "$existing" ]; then echo "  already open: #$existing"; return; fi
+            {
+              printf 'The pin for %s in `.github/tool-versions` is %s. The newest release the Go module proxy knows is %s.\n\n' "$name" "$pinned" "$newest"
+              printf 'A pin moves by the developer'"'"'s hand, in a pull request he reads: a gate'"'"'s tools change only when we change something. Decide here: move it, or leave it and say why.\n\n'
+              printf '%s\n' "$marker"
+            } | gh issue create --title "Tool pin behind: $name $pinned, newest $newest" --label needs-developer --body-file - > /dev/null
+            echo "  opened an issue"
+          }
+          check golangci-lint "$GOLANGCI_LINT" github.com/golangci/golangci-lint/v2
+          check govulncheck "$GOVULNCHECK" golang.org/x/vuln
+          check gremlins "$GREMLINS" github.com/go-gremlins/gremlins
+          check go-licenses "$GO_LICENSES" github.com/google/go-licenses/v2
