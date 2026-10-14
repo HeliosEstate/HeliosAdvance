@@ -1,0 +1,49 @@
+# Opens an issue labeled noticed for each item of a "Noticed, not touched" list in a pull
+# request's body or in a plan written into an issue's body, so that no item depends on a
+# session reading every list (developer, 2026-10-10). .github/noticed.sh says how; the
+# developer decides each issue, and no merge is handed to him while its pull request or its
+# issue has one still labeled noticed.
+#
+# The bodies are data: they reach the script only through the environment and stdin. A pull
+# request from a fork, and an issue edited by anyone but the developer, the interactive
+# session's App or a loop, open nothing. An issue event runs this file as it is on the default
+# branch, development, so the plan half works once this reaches it; the pull request half works
+# from the branch.
+name: noticed
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+    branches: [development, main]
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+# One run at a time for each pull request or issue: an issue just opened is missing from
+# GitHub's issue list for about ten seconds (seen 2026-10-10), so two runs on one body side by
+# side could open an item twice. GitHub keeps one waiting run per group and drops older
+# waiting ones, so the group is per body, and the run kept has that body's latest text.
+concurrency:
+  group: noticed-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  open:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-lampetia[bot]", "helios-phaethusa[bot]"]'), github.event.sender.login))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BODY: ${{ github.event_name == 'pull_request' && github.event.pull_request.body || github.event.issue.body }}
+          SOURCE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('issue-{0}', github.event.issue.number) }}
+        run: printf '%s\n' "$BODY" | bash .github/noticed.sh "$SOURCE"
+      # Holds the concurrency group until an issue this run opened shows in the list (about
+      # ten seconds, measured 2026-10-10), so the next run finds it and opens no second one.
+      - run: sleep 20
