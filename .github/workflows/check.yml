@@ -1,0 +1,213 @@
+name: check
+
+on:
+  pull_request:
+    branches: [development, main]
+  push:
+    branches: [development, main]
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the run in flight: a stale run can post a
+# stale green, and attempt one paid for every superseded run in full.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # One Linux runner reads the change set and runs the cheap gates, which need no Go. A
+  # docs-only change set stops here: only Markdown, files under docs/, the three list files
+  # (developer-owned-paths, security-paths, loop-identities, which the cheap gates read), and
+  # files under .github/ other than this one. Anything else, a file nobody listed
+  # included, starts the full matrix below. A change to this file always runs in full, since
+  # it is the CI being changed.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.changes.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Change set
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"; else base="HEAD^"; fi
+          files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
+          printf '%s\n' "$files"
+          rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
+          full=$(printf '%s\n' "$files" | grep -xF '.github/workflows/check.yml' || true)
+          if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
+      - name: Cheap gates
+        env:
+          SKIP_GO: "1"
+          BASE: origin/${{ github.base_ref || 'development' }}
+        run: bash check.sh
+
+  # The two Linux architectures the engine ships on, ARM64 the deployment target, run every
+  # gate with the race detector and the oracles. Windows runs build, vet, lint, namecheck
+  # and compiles every test: its runners cannot run Linux containers, so the oracle rows
+  # cannot run there, and the race detector would need a C compiler installed every run.
+  # Database tests will be Linux-only for the same reason (developer, 2026-10-02). Windows
+  # does run every test whose name starts with TestWindows. These are TestWindowsElevated and
+  # every test named from it, the rows that need an administrator's elevated process, which
+  # GitHub's runner is and no loop's machine is (developer, 2026-10-05), and the Windows-only
+  # rows that need no oracle, such as a reserved device name (developer, 2026-10-09).
+  run:
+    needs: changes
+    if: needs.changes.outputs.skip == '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Windows checks out CRLF by default, and gofmt reads CRLF as unformatted.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install gates
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          else
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+          fi
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+          go install github.com/google/go-licenses/v2@v2.0.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
+      # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's
+      # "429 Too Many Requests" (developer, 2026-10-09). A partial match restores the images of
+      # the folders that did not change.
+      - name: Restore the oracle images
+        if: runner.os == 'Linux'
+        id: oracle-images
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/oracle-images
+          key: oracle-images-${{ runner.arch }}-${{ hashFiles('oracle/**') }}
+          restore-keys: oracle-images-${{ runner.arch }}-
+      - name: Build the oracles
+        if: runner.os == 'Linux'
+        run: bash .github/oracle-images.sh ~/oracle-images
+      # Saved straight after the build, not at the job's end, so a red run still saves them.
+      - name: Save the oracle images
+        if: runner.os == 'Linux' && steps.oracle-images.outputs.cache-hit != 'true' && hashFiles('oracle/**') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: ~/oracle-images
+          key: ${{ steps.oracle-images.outputs.cache-primary-key }}
+      # The elevated rows skip in a process that is not elevated, so a runner that stopped
+      # being elevated would pass them unseen: it fails here instead.
+      - name: The runner is elevated
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $principal = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'the Windows runner is not elevated: TestWindowsElevated would skip' }
+      - name: check.sh
+        env:
+          RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
+          COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
+          TESTRUN: ${{ runner.os == 'Windows' && '^TestWindows' || '' }}
+          BASE: origin/${{ github.base_ref || 'development' }}
+        run: bash check.sh
+      # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
+      # the gate on test strength.
+      - name: Coverage report
+        if: always() && runner.os == 'Linux'
+        run: |
+          [ -f coverage.out ] || { echo "no coverage profile: the tests did not run" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          go tool cover -html=coverage.out -o coverage.html
+          {
+            echo "## Coverage on ${{ matrix.os }}: $(go tool cover -func=coverage.out | awk '$1=="total:"{print $NF}')"
+            echo
+            echo '| Package | Statements covered |'
+            echo '|---|---|'
+            # Statements, counted from the profile itself: each line after the mode is a block,
+            # its statement count and how often it ran. Averaging -func's per-function figures
+            # weighted a two-line function like a two-hundred-line one and read high.
+            awk 'NR>1{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); t[d]+=$2; if($3>0) c[d]+=$2} END{for(k in t) printf "| %s | %.1f%% (%d of %d) |\n", k, (t[k] ? 100*c[k]/t[k] : 0), c[k], t[k]}' coverage.out | sort
+          } > coverage.md
+          cat coverage.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: coverage-${{ matrix.os }}
+          path: |
+            coverage.out
+            coverage.html
+            coverage.md
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The coverage table on the pull request itself, as one comment updated on every run. The
+  # only job that can write to the pull request, and it runs nothing from the branch: it reads
+  # the run job's tables and posts them. It never fails the run, since the loop reads any red
+  # check as a red PR; a fork's pull request, whose token cannot write, is skipped.
+  coverage:
+    needs: run
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.run.result != 'skipped'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+      - name: Post the coverage comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            echo '<!-- coverage -->'
+            echo "Coverage at ${SHA:0:7}, statements per package. A report, never a gate."
+            echo
+            for f in coverage-*/coverage.md; do [ -f "$f" ] && { cat "$f"; echo; }; done
+          } | head -c 60000 > body.md
+          grep -q '^## Coverage' body.md || echo "No coverage table: the tests did not run." >> body.md
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- coverage -->"))) | .id' | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@body.md > /dev/null
+          fi
+
+  # The ruleset requires this one job. It passes when the cheap gates passed and the matrix
+  # either passed or was skipped for a docs-only change set; a skipped matrix on any other
+  # change set fails it, so a required check never sits unreported.
+  check:
+    needs: [changes, run]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # main holds releases and what GitHub reads from the default branch, nothing else: a
+      # pull request into it comes from development, a release or hotfix branch, or a
+      # github/* branch carrying .github/ into step. A stranger's PR defaults to main and
+      # is refused here, not merged by accident.
+      - if: github.base_ref == 'main' && !(github.head_ref == 'development' || startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/') || startsWith(github.head_ref, 'github/'))
+        run: |
+          echo "::error::a pull request into main comes from development, release/*, hotfix/* or github/*, not ${{ github.head_ref }}"
+          exit 1
+      - run: |
+          test "${{ needs.changes.result }}" = success
+          if [ "${{ needs.changes.outputs.skip }}" = 1 ]; then
+            test "${{ needs.run.result }}" = skipped
+          else
+            test "${{ needs.run.result }}" = success
+          fi
