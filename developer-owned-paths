@@ -1,6 +1,6 @@
 # Developer-owned paths: a loop session may not write them (the loop's edit lock reads this
-# file) and a bot-authored commit may not touch them (check.sh reads it too). One pattern a
-# line, a shell glob that is also a git pathspec.
+# file) and a commit a loop authored may not touch them (check.sh reads it too, with the loops
+# named in loop-identities). One pattern a line, a shell glob that is also a git pathspec.
 .github/*
 */contract.go
 CLAUDE.md
@@ -9,3 +9,4 @@ check.sh
 .claude/*
 developer-owned-paths
 security-paths
+loop-identities

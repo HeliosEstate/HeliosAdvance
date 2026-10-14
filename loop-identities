@@ -1,0 +1,7 @@
+# Loop identities: the GitHub App logins the loops commit as. A commit by one of them may not
+# touch a developer-owned path (check.sh gate 3 reads this file). The interactive session's App,
+# helios-aegle, is not a loop: its changes to owned paths land by pull request on the developer's
+# code-owner review (developer, 2026-10-14). One login a line, as it appears in a commit's
+# author address before the @.
+helios-lampetia[bot]
+helios-phaethusa[bot]

@@ -30,13 +30,20 @@ if [ -d docs/spec ]; then
   [ -z "$hits" ] || { echo "$hits"; fail "docs/spec names the implementation"; }
 fi
 
-# 3. The paths in developer-owned-paths are not touched by a bot-authored commit. .github/ is
-# the CI that judges the loop's work: a session may not change it. The loop's edit lock reads
-# the same file, so the commit lock and the edit lock cannot disagree.
+# 3. The paths in developer-owned-paths are not touched by a commit a loop authored. .github/ is
+# the CI that judges the loop's work: a loop session may not change it. The loop's edit lock
+# reads the same file, so the commit lock and the edit lock cannot disagree. The loops are the
+# App logins in loop-identities; the interactive session's App is not one, and its changes to
+# owned paths land by pull request on the developer's code-owner review.
 # Gates 3 and 4a judge a branch's commits before it merges; --mutation's range is already merged.
 [ -f developer-owned-paths ] || fail "developer-owned-paths is missing"
 mapfile -t owned < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' developer-owned-paths | grep . || true)
 [ "${#owned[@]}" -gt 0 ] || fail "developer-owned-paths names no path"
+[ -f loop-identities ] || fail "loop-identities is missing"
+mapfile -t loops < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' loop-identities | grep . || true)
+[ "${#loops[@]}" -gt 0 ] || fail "loop-identities names no identity"
+# A loop's commit: its author address is <id>+<login>@ or <login>@ for a login on the list.
+is_loop() { local id; for id in "${loops[@]}"; do case "$1" in *"+$id@"*|"$id@"*) return 0 ;; esac; done; return 1; }
 if [ "$MUTATION" = 0 ]; then
   # On a pull request CI checks out GitHub's merge of the branch into the base, which GitHub
   # authors as whoever opened the PR, and which a branch behind the base shows as touching
@@ -45,23 +52,23 @@ if [ "$MUTATION" = 0 ]; then
   if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     tip=$(git rev-parse -q --verify 'HEAD^2') || fail "a pull request's checkout is not GitHub's merge"
   fi
-  bot=$(git log --no-merges --format='%h %ae' "$BASE..$tip" -- "${owned[@]}" | grep '\[bot\]@' || true)
-  [ -z "$bot" ] || { echo "$bot"; fail "a bot-authored commit touched a developer-owned path"; }
+  loop=$(git log --no-merges --format='%h %ae' "$BASE..$tip" -- "${owned[@]}" | while read -r h e; do is_loop "$e" && echo "$h $e"; done || true)
+  [ -z "$loop" ] || { echo "$loop"; fail "a loop-authored commit touched a developer-owned path"; }
   # A loop catches up by merging the base in, which shows the base's owned edits as its own. A
-  # bot's merge passes when its second side is already in the base and each owned path is as a
+  # loop's merge passes when its second side is already in the base and each owned path is as a
   # clean merge leaves it: the base's copy, or the branch's where the base has not changed it
   # since the two sides parted. Keeping the branch's older copy would undo the base's edit.
   while read -r merge email; do
-    case "$email" in *'[bot]@'*) ;; *) continue ;; esac
+    is_loop "$email" || continue
     if git rev-parse -q --verify "$merge^3" >/dev/null; then
-      fail "the bot's merge ${merge:0:7} has more than two parents"
+      fail "the loop's merge ${merge:0:7} has more than two parents"
     fi
     git merge-base --is-ancestor "$merge^2" "$BASE" ||
-      fail "the bot's merge ${merge:0:7} merges a commit the base does not have"
+      fail "the loop's merge ${merge:0:7} merges a commit the base does not have"
     parted=$(git merge-base "$merge^1" "$merge^2")
     while read -r path; do
       git diff --quiet "$parted" "$merge^2" -- "$path" && git diff --quiet "$merge^1" "$merge" -- "$path" ||
-        fail "the bot's merge ${merge:0:7} has $path as no clean merge leaves it"
+        fail "the loop's merge ${merge:0:7} has $path as no clean merge leaves it"
     done < <(git diff --name-only "$merge^2" "$merge" -- "${owned[@]}")
   done < <(git log --merges --format='%H %ae' "$BASE..$tip")
 fi
