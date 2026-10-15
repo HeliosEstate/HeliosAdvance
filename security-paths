@@ -4,3 +4,4 @@
 # that is also a git pathspec.
 internal/bootstrap/*
 internal/transfer/*
+internal/telnet/*

@@ -42,8 +42,8 @@ greeting and hangs up.
   and request no other Telnet option.
 - When the caller has answered both requests with DO or DONT, or 3 seconds after sending them,
   whichever comes first, the engine shall end negotiation.
-- If the caller asks for a Telnet option the engine does not offer, then the engine shall refuse
-  it as the table below gives.
+- If the caller asks, during negotiation, for a Telnet option the engine does not offer, then the
+  engine shall refuse it as the table below gives.
 - If the caller sends an option request, then the engine shall send at most one reply to it.
 - If the caller sends a byte that is not part of an option request, such as typed text or a
   subnegotiation, then the engine shall discard it without reply.
@@ -60,8 +60,8 @@ greeting and hangs up.
 - When the greeting is written, the engine shall shut down its sending side of the connection.
 - When the caller closes the connection, or 3 seconds after the engine shut down its sending
   side, whichever comes first, the engine shall close the connection.
-- If the caller sends anything after the engine shut down its sending side, then the engine shall
-  discard it without reply.
+- If the caller sends anything after negotiation ends, then the engine shall discard it without
+  reply.
 - If the caller drops the connection before the engine closes it, then the engine shall close its
   end of the connection and shall not write to it again.
 

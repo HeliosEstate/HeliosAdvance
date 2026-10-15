@@ -132,6 +132,11 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance/internal/transfer
+        telnet:
+          files: ["**/internal/telnet/**"]
+          list-mode: strict
+          allow:
+            - $gostd
     forbidigo:
       analyze-types: true
       forbid:
