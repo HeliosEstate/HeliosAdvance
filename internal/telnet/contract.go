@@ -63,7 +63,7 @@
 //
 // # Calls
 //
-// New, Receive and Answered make no call that can fail. Negotiate's calls, the same on Linux and
+// New and Receive make no call that can fail. Negotiate's calls, the same on Linux and
 // Windows, each read with go doc on Go 1.27.1:
 //
 //	Call                   Why                                        Documented failures
@@ -163,14 +163,14 @@ var (
 	// included.
 	ErrConnectionFailed = errors.New("telnet: the connection failed")
 	// ErrDeadlineEnded means the context ended first: the 10-second hard deadline or a forced
-	// stop, also when it had ended before anything was written. It is returned wrapping the
-	// context's own error, so errors.Is matches it and context.DeadlineExceeded or
-	// context.Canceled.
+	// stop, also when it had ended before anything was written. It is returned wrapping
+	// context.DeadlineExceeded or context.Canceled, so errors.Is matches it and the one wrapped.
 	ErrDeadlineEnded = errors.New("telnet: the deadline ended first")
 )
 
 // Negotiation is the negotiation of one connection: bytes in, replies out. It has no connection,
-// clock or goroutine of its own, so it is tested and fuzzed without a socket.
+// clock or goroutine of its own, so it is tested and fuzzed without a socket. A Negotiation not
+// made by New behaves as one New returned; only New hands out the opening requests.
 type Negotiation struct {
 	state negotiationState
 }
@@ -184,7 +184,9 @@ type Negotiation struct {
 //   - New shall return a negotiation with ECHO and SGA both in the WANTYES state.
 //   - New shall return a negotiation that shares no state with any other negotiation.
 //   - New shall not fail. [read]
-func New() (*Negotiation, []byte) {
+//   - A Negotiation not made by New shall behave as one New returned, with ECHO and SGA both in
+//     the WANTYES state.
+func New() (*Negotiation, [6]byte) {
 	return newNegotiation()
 }
 
@@ -221,33 +223,33 @@ func New() (*Negotiation, []byte) {
 //
 // Lines:
 //
-//   - When Input holds IAC, then WILL, WONT, DO or DONT, then one more byte, Receive shall read
+//   - When input holds IAC, then WILL, WONT, DO or DONT, then one more byte, Receive shall read
 //     those three bytes as one option request.
-//   - When Input holds IAC IAC outside a subnegotiation, Receive shall discard both bytes without
+//   - When input holds IAC IAC outside a subnegotiation, Receive shall discard both bytes without
 //     reply.
-//   - When Input holds IAC SB, Receive shall discard every byte up to and including the next IAC
+//   - When input holds IAC SB, Receive shall discard every byte up to and including the next IAC
 //     SE without reply.
 //   - While it is inside a subnegotiation, Receive shall read IAC IAC as one data byte, so that
 //     IAC IAC SE does not end the subnegotiation.
-//   - When Input holds IAC and then a byte other than WILL, WONT, DO, DONT, SB or IAC, Receive
+//   - When input holds IAC and then a byte other than WILL, WONT, DO, DONT, SB or IAC, Receive
 //     shall discard both bytes without reply.
-//   - When Input holds a byte that is not part of a sequence starting with IAC, Receive shall
+//   - When input holds a byte that is not part of a sequence starting with IAC, Receive shall
 //     discard it without reply.
 //   - When a sequence is split across calls, Receive shall reply to it and end negotiation as it
 //     would had the sequence come in one call.
 //   - When the byte that completes the caller's second answer arrives, Receive shall return true.
 //   - After the byte that completes the caller's second answer, Receive shall append no reply and
-//     change no state, for the rest of that Input and every later call.
+//     change no state, for the rest of that input and every later call.
 //   - After it has returned true, Receive shall return true on every later call.
-//   - Receive shall append its replies after the bytes already in Replies and leave those bytes
+//   - Receive shall append its replies after the bytes already in replies and leave those bytes
 //     unchanged.
 //   - Receive shall append at most one reply per option request.
-//   - Receive shall append at most the length of Input plus 2 bytes to Replies in one call.
+//   - Receive shall append at most the length of input plus 2 bytes to replies in one call.
 //   - Receive shall append, over all its calls on one negotiation, no more bytes than all their
-//     Input held.
-//   - If Input is empty, then Receive shall append nothing and return what it returned on the
+//     input held.
+//   - If input is empty, then Receive shall append nothing and return what it returned on the
 //     call before, or false on the first call.
-//   - Receive shall return for every Input without failing or panicking.
+//   - Receive shall return for every input without failing or panicking.
 //   - While negotiation lasts, when the caller sends DO for ECHO or SGA while that Telnet option
 //     is in WANTYES, Receive shall move it to YES and append no reply.
 //   - While negotiation lasts, when the caller sends DONT for ECHO or SGA while that Telnet
@@ -272,23 +274,16 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 	return negotiation.receive(input, replies)
 }
 
-// Answered is how Negotiate tells answered from timed out: true once ECHO and SGA have both left
-// WANTYES, false before that.
-//
-//   - Answered shall return true once ECHO and SGA have both left the WANTYES state.
-//   - Answered shall return false while ECHO or SGA is in the WANTYES state.
-//   - Answered shall not fail. [read]
-func (negotiation *Negotiation) Answered() bool {
-	return negotiation.answered()
-}
-
 // Negotiate is the one call the Listener makes per connection. It writes the opening requests,
 // then reads into a fixed buffer of ReadBufferSize, hands the bytes to Receive and writes its
 // replies from a fixed buffer of ReplyBufferSize, until Receive reports the end or
-// NegotiationSeconds after the opening write. On return, with an outcome or an error, it leaves
-// the connection's read and write deadlines at the context's deadline, cleared if it has none,
-// and nothing of its own running. Results: ErrCallerClosed, ErrConnectionFailed,
-// ErrDeadlineEnded.
+// NegotiationSeconds after the opening write. When two things happen at once, the context ending
+// wins, then any read or write failure, whose replies are not written; Answered only when nothing
+// failed. A read or write that gives up on a passed deadline is told apart by the clock, not by
+// whether the context reports it has ended: ErrDeadlineEnded if the context's deadline had passed
+// by then, else TimedOut. On return, with an outcome or an error, it leaves nothing behind: the
+// connection's read and write deadlines at the context's deadline, cleared if it has none, and
+// nothing of its own running. Results: ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
 //
 //   - If the context has ended when Negotiate is called, then Negotiate shall return
 //     ErrDeadlineEnded without writing to the connection.
@@ -297,11 +292,11 @@ func (negotiation *Negotiation) Answered() bool {
 //   - Negotiate shall read into a buffer of ReadBufferSize bytes and write its replies from a
 //     buffer of ReplyBufferSize bytes, and keep no other copy of the caller's bytes. [read]
 //   - Negotiate shall hand the bytes a read returns to Receive before it looks at that read's
-//     error.
+//     error. [read]
 //   - When Receive appends replies and returns false, Negotiate shall write those replies before
 //     its next read.
-//   - When Receive returns true, Negotiate shall write that call's replies and return Answered
-//     with no error, whatever error that read returned.
+//   - When Receive returns true, Negotiate shall write that call's replies and, if neither that
+//     read nor that write returned an error, return Answered with no error.
 //   - If NegotiationSeconds pass after Negotiate begins the opening write, before the context's
 //     deadline, while a read or a write is waiting, then Negotiate shall return TimedOut with no
 //     error.
@@ -309,17 +304,24 @@ func (negotiation *Negotiation) Answered() bool {
 //     began, while a read or a write is waiting, then Negotiate shall return ErrDeadlineEnded.
 //   - If the context is cancelled while a read or a write is waiting, then Negotiate shall stop
 //     waiting and return ErrDeadlineEnded.
-//   - Negotiate shall return ErrDeadlineEnded wrapping the context's own error, so that errors.Is
+//   - Negotiate shall return ErrDeadlineEnded wrapping context.DeadlineExceeded when the
+//     context's deadline passed, and context.Canceled when it was cancelled, so that errors.Is
 //     matches both.
-//   - If a read returns end of file before Receive has returned true, then Negotiate shall return
-//     ErrCallerClosed without writing that read's replies.
+//   - If the context has ended when a read or a write fails, then Negotiate shall return
+//     ErrDeadlineEnded, whatever the failure.
+//   - If a read returns end of file, then Negotiate shall return ErrCallerClosed without writing
+//     that read's replies.
+//   - If a read returns bytes together with an error, then Negotiate shall write none of that
+//     read's replies and return the result that error gives. [read]
 //   - If a read or a write fails other than by end of file or a passed deadline, then Negotiate
 //     shall return ErrConnectionFailed.
 //   - Negotiate shall write nothing to the connection but the opening requests and the replies
 //     Receive appends.
 //   - When it returns, Negotiate shall leave the connection's read and write deadlines at the
-//     context's deadline, or cleared if the context has none.
-//   - When it returns, Negotiate shall leave no goroutine of its own running.
+//     context's deadline.
+//   - If the context has no deadline, then Negotiate shall leave the connection's read and write
+//     deadlines cleared when it returns. [read]
+//   - When it returns, Negotiate shall leave no goroutine of its own running. [read]
 //   - If any failure not named above occurs, then Negotiate shall return ErrConnectionFailed and
 //     leave nothing behind.
 func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {

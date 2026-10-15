@@ -18,16 +18,12 @@ var errNotBuilt = errors.New("telnet: not built yet")
 // negotiationState is the state a Negotiation keeps; the build gives it its fields.
 type negotiationState struct{}
 
-func newNegotiation() (*Negotiation, []byte) {
-	return &Negotiation{state: negotiationState{}}, nil
+func newNegotiation() (*Negotiation, [6]byte) {
+	return &Negotiation{state: negotiationState{}}, [6]byte{}
 }
 
 func (negotiation *Negotiation) receive(_, replies []byte) ([]byte, bool) {
 	return replies, false
-}
-
-func (negotiation *Negotiation) answered() bool {
-	return false
 }
 
 func negotiate(_ context.Context, _ Conn) (Outcome, error) {
