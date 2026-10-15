@@ -38,7 +38,8 @@
 // A connection's life, each closing cause and the negotiated line: QA's own scripted Telnet
 // client, written from RFC 854 and RFC 1143 before and apart from this package's code, on real
 // loopback sockets. Its callers read the greeting and close, never close, hang up during
-// negotiation, reset the connection (a close with linger 0), and stay silent past 10 seconds.
+// negotiation after reading the opening requests (a close with unread data sends a reset
+// instead), reset the connection (a close with linger 0), and stay silent past 10 seconds.
 //
 // The cap and connection floods: the same client holding 100 connections open and opening more;
 // each count line checked against the refusals the client counted, and their sum against the
@@ -51,9 +52,10 @@
 // a list. It stands in for the Service at this package's edge and fakes nothing behind it, so it
 // is not a mock.
 //
-// The accept_failed and accept_resumed lines: on Linux, a child process with a low limit on open
-// descriptors, so that Accept really fails and recovers once one frees; on Windows, by reading the
-// code, the path shared with Linux.
+// The accept_failed and accept_resumed lines: on Linux, a child process with both its soft and
+// hard limits on open descriptors lowered (Go raises the soft one to the hard one at startup), so
+// that Accept really fails and recovers once one frees; on Windows, by reading the code, the path
+// shared with Linux.
 //
 // Tests run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user with no admin,
 // root or container, over loopback on a port the operating system picks. A test proving a fixed
@@ -84,11 +86,11 @@
 //	connection_flood         count: refusals in one FloodWindowSeconds span, the first included
 //	connection_flood_ended   none
 //	accept_failed            listener: the listening socket's address and port; error: the
-//	                         operating system's error, never caller bytes
+//	                         innermost system error's text, as Go words it, never caller bytes
 //	accept_resumed           listener
 //
-// The values of how, by precedence when two land together: stopped, then deadline, then failed
-// and hung_up.
+// The values of how. When two land together, stopped and deadline go by whichever ended the
+// connection's context first, as the context reports it, and either beats failed and hung_up.
 //
 //	caller_closed   after the greeting, the caller closed its side
 //	timed_out       ClosingWaitSeconds after the shutdown, it had not
@@ -115,10 +117,13 @@
 //	                                                            protocol error, and pending
 //	                                                            network errors, to be retried
 //	Addr                  the listener field                    none
-//	sync.WaitGroup.Go     counts each loop and connection, so   none
-//	                      Stop waits for it
-//	time.AfterFunc        the pause between tries, and a        none
-//	                      connection flood's spans and end
+//	sync.WaitGroup.Go     counts each loop and connection, and  none
+//	                      the connection flood goroutine, so
+//	                      Stop waits for them
+//	time.NewTimer         the pause between tries, and a        none
+//	                      connection flood's spans and end,
+//	                      each waited on beside Stop's own
+//	                      signal, whichever comes first
 //
 // A connection:
 //
@@ -130,6 +135,10 @@
 //	telnet.Negotiate      negotiation                           ErrCallerClosed,
 //	                                                            ErrConnectionFailed,
 //	                                                            ErrDeadlineEnded
+//	context.AfterFunc     after Negotiate, wakes a waiting      none
+//	                      write or read when the context
+//	                      ends, by deadlines in the past;
+//	                      removed when the connection closes
 //	Write                 the greeting                          an error whenever fewer bytes are
 //	                                                            written; os.ErrDeadlineExceeded;
 //	                                                            net.ErrClosed; any other
@@ -221,7 +230,7 @@ const (
 	KeyHow        = "how"        // how the connection closed
 	KeyCount      = "count"      // refusals in one FloodWindowSeconds span
 	KeyListener   = "listener"   // the listening socket's address and port
-	KeyError      = "error"      // the operating system's error, never caller bytes
+	KeyError      = "error"      // the innermost system error's text, never caller bytes
 )
 
 // The values of result.
@@ -230,8 +239,8 @@ const (
 	ResultTimedOut = "timed_out" // 3 seconds after the opening requests came first
 )
 
-// The values of how, by precedence when two land together: stopped, then deadline, then failed
-// and hung_up.
+// The values of how. When two land together, stopped and deadline go by whichever ended the
+// connection's context first, and either beats failed and hung_up.
 const (
 	HowCallerClosed = "caller_closed" // after the greeting, the caller closed its side
 	HowTimedOut     = "timed_out"     // ClosingWaitSeconds after the shutdown, it had not
@@ -266,7 +275,7 @@ var (
 )
 
 // Listener is one run's accepting: its listening sockets, its cap and its connections. A Listener
-// not made by Start does nothing, and Stop on it returns 0.
+// not made by Start, or nil, does nothing, and Stop on it returns 0.
 type Listener struct {
 	state listenerState
 }
@@ -297,8 +306,8 @@ type Listener struct {
 // with the listener and error fields, and the next Accept that works writes accept_resumed with
 // the listener field.
 //
-// It refuses before it accepts anything, and leaves nothing running. Results: ErrNoListeners,
-// ErrNoLocalLog.
+// It refuses before it accepts anything, leaves nothing running, and returns nil. Results:
+// ErrNoListeners, ErrNoLocalLog.
 //
 // Accepting:
 //
@@ -309,6 +318,7 @@ type Listener struct {
 //   - If Start returns an error, then Start shall leave every listening socket open, accept on
 //     none, and write nothing to the local log.
 //   - If Start returns an error, then Start shall leave no goroutine of its own running. [read]
+//   - If Start returns an error, then Start shall return a nil Listener.
 //   - When it is given at least one listening socket, no nil one, and a LocalLog, Start shall
 //     return a Listener and no error without waiting for a caller.
 //   - After it returns a Listener, Start shall accept callers on every listening socket it was
@@ -324,15 +334,16 @@ type Listener struct {
 //     failure on it, up to AcceptPauseMostMilliseconds.
 //   - When Accept succeeds on a listening socket, Start shall set that socket's pause back to
 //     AcceptPauseFirstMilliseconds.
-//   - When Accept fails on a listening socket for a reason other than Stop, and the Accept before
-//     it on that socket did not fail, Start shall write one accept_failed line with the listener
-//     field and the error field.
+//   - When Accept fails on a listening socket for a reason other than Stop, and no Accept on that
+//     socket has failed since Start or since its last Accept that worked, Start shall write one
+//     accept_failed line with the listener field and the error field.
 //   - While Accept on a listening socket keeps failing, Start shall write no further accept_failed
 //     line for that socket.
 //   - When Accept succeeds on a listening socket whose last Accept failed, Start shall write one
 //     accept_resumed line with the listener field.
 //   - Start shall give the listener field the listening socket's address and port as the operating
-//     system reports them, and the error field the text of the operating system's error.
+//     system reports them, and the error field the text of the innermost system error, unwrapped
+//     down to the system error, as Go words it.
 //   - Start shall return no error other than ErrNoListeners and ErrNoLocalLog. [read]
 //
 // A connection:
@@ -391,8 +402,9 @@ type Listener struct {
 //     give how deadline, whatever the failure.
 //   - If Stop has ended the connection's context when a read, a write or the shutdown fails, then
 //     Start shall give how stopped, whatever the failure.
-//   - If Stop ends the connection's context at the moment its hard deadline passes, then Start
-//     shall give how stopped. [read]
+//   - If Stop ends the connection's context while the greeting is being written or a read after the
+//     shutdown is waiting, then Start shall stop waiting at once, close the connection, and give
+//     how stopped.
 //   - If the caller drops the connection before Start closes it, then Start shall close its end of
 //     the connection and write nothing more to it.
 //   - If Close fails, then Start shall still write the closed line with the how its cause gave, and
@@ -433,9 +445,10 @@ func Start(listeners []*net.TCPListener, localLog LocalLog) (*Listener, error) {
 // every listening socket, so nothing more is accepted, then waits until every open connection has
 // closed or the context ends; a context with no deadline that is never cancelled waits for every
 // connection, each bounded by its hard deadline. If the context ends first, it closes every open
-// connection at once and returns how many it closed; else it returns 0. A connection flood still
-// running gets its last count, if any refusal came since the last count line, and its end line.
-// On return, nothing of this package's is running. A second or later call, also while the first
+// connection at once, waking any connection waiting on a write or a read, and returns how many of
+// them closed with how stopped; else it returns 0. A connection flood still running gets its last
+// count, if any refusal came since the last count line, and its end line. When the first call
+// returns, nothing of this package's is running. A second or later call, also while the first
 // waits, does nothing and returns 0. It never fails.
 //
 //   - When it is first called on a Listener that Start returned, Stop shall close every listening
@@ -444,9 +457,11 @@ func Start(listeners []*net.TCPListener, localLog LocalLog) (*Listener, error) {
 //     or its context ends, whichever comes first.
 //   - If every open connection closes before its context ends, then Stop shall return 0.
 //   - If its context ends while connections are open, then Stop shall end every open connection's
-//     context at once, wait until each has closed, and return how many it closed this way.
+//     context at once, wait until each has closed, and return how many of them closed with how
+//     stopped.
 //   - If its context has already ended when it is called, then Stop shall close the listening
-//     sockets, end every open connection's context at once, and return how many it closed this way.
+//     sockets, end every open connection's context at once, and return how many of them closed with
+//     how stopped.
 //   - If its context has no deadline and is never cancelled, then Stop shall wait until every open
 //     connection has closed, and return 0.
 //   - If a connection flood lasts when every accept loop has ended, then Stop shall write a last
@@ -454,12 +469,13 @@ func Start(listeners []*net.TCPListener, localLog LocalLog) (*Listener, error) {
 //     then the connection_flood_ended line.
 //   - When it returns, Stop shall have written the closed line of every connection Start accepted
 //     under the cap.
-//   - When it returns, Stop shall leave no goroutine of the Listener's running: no accept loop, no
-//     connection and no connection flood timer. [read]
+//   - When its first call returns, Stop shall leave no goroutine of the Listener's running: no
+//     accept loop, no connection and no connection flood timer. [read]
 //   - If Stop is called a second or later time, also while the first call waits, then Stop shall do
 //     nothing and return 0 at once.
 //   - If Stop is called on a Listener that Start did not return, then Stop shall do nothing and
 //     return 0.
+//   - If Stop is called on a nil Listener, then Stop shall do nothing and return 0.
 //   - If any failure not named above occurs, then Stop shall still close every connection and
 //     return how many it closed at once.
 func (listener *Listener) Stop(ctx context.Context) int {

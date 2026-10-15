@@ -19,10 +19,15 @@ var errNotBuilt = errors.New("listener: not built yet")
 // listenerState is the state a Listener keeps; the build gives it its fields.
 type listenerState struct{}
 
+// The placeholders answer with what no line allows, so that no approved test passes before the
+// build: start fails with errNotBuilt and stop returns -1.
 func start(_ []*net.TCPListener, _ LocalLog) (*Listener, error) {
-	return &Listener{state: listenerState{}}, errNotBuilt
+	return nil, errNotBuilt
 }
 
 func (listener *Listener) stop(_ context.Context) int {
-	return 0
+	if listener != nil {
+		_ = listener.state
+	}
+	return -1
 }

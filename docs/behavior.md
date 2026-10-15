@@ -78,8 +78,9 @@ greeting and hangs up.
 
 - If accepting a caller at a listener fails, then the engine shall keep accepting callers at that
   listener.
-- When accepting a caller at a listener fails, and the accept before it there did not fail, the
-  engine shall write one `accept_failed` line to the local log naming the listener and the error.
+- When accepting a caller at a listener fails, and no accept there has failed since the engine
+  began listening there or since an accept there last worked, the engine shall write one
+  `accept_failed` line to the local log naming the listener and the error.
 - When accepting a caller at a listener succeeds after a failure there, the engine shall write one
   `accept_resumed` line to the local log naming the listener.
 
