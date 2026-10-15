@@ -45,10 +45,6 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance
-            # The Go team's own system-call module, the one the standard library vendors: the
-            # access lists, owners and handles the bootstrap unit judges and sets, and the CNG
-            # key store through DLLs loaded only from System32. Cost-benefit in its PR.
-            - golang.org/x/sys
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -61,77 +57,6 @@ linters:
               desc: cgo brings C's memory safety into the engine; an exception is the developer's decision, by name
         # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
         # A new arrow is a new line here, in the same PR, with its reason.
-        board:
-          files: ["**/internal/board/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-        database:
-          files: ["**/internal/database/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-        audit:
-          files: ["**/internal/audit/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/board
-            - github.com/heliosestate/heliosadvance/internal/database
-        registry:
-          files: ["**/internal/registry/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/audit
-            - github.com/heliosestate/heliosadvance/internal/board
-        lease:
-          files: ["**/internal/lease/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/board
-        nodes:
-          files: ["**/internal/nodes/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/board
-        settings:
-          files: ["**/internal/settings/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/audit
-            - github.com/heliosestate/heliosadvance/internal/board
-        session:
-          files: ["**/internal/session/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/audit
-            - github.com/heliosestate/heliosadvance/internal/board
-            - github.com/heliosestate/heliosadvance/internal/nodes
-        rbac:
-          files: ["**/internal/rbac/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/audit
-            - github.com/heliosestate/heliosadvance/internal/board
-        bootstrap:
-          files: ["**/internal/bootstrap/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/board
-            - golang.org/x/sys
-        transfer:
-          files: ["**/internal/transfer/**"]
-          list-mode: strict
-          allow:
-            - $gostd
-            - github.com/heliosestate/heliosadvance/internal/transfer
         telnet:
           files: ["**/internal/telnet/**"]
           list-mode: strict
@@ -152,29 +77,6 @@ linters:
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
-        # The bootstrap package reaches every file through os.OpenRoot on its folder, never by
-        # a path; these calls take one. Scoped to it below.
-        - pattern: ^os\.(Open|OpenFile|Create|CreateTemp|ReadFile|WriteFile|Rename|Remove|RemoveAll|Stat|Lstat|Chmod|Chown|Lchown|Chtimes|Chdir|ReadDir|Mkdir|MkdirAll|MkdirTemp|Link|Symlink|Readlink|Truncate|DirFS|CopyFS)$
-          msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^ioutil\.
-          pkg: ^io/ioutil$
-          msg: the bootstrap package reaches files only through os.Root
-        - pattern: ^filepath\.(Walk|WalkDir|Glob|EvalSymlinks)$
-          pkg: ^path/filepath$
-          msg: the bootstrap package reaches files only through os.Root
-        # A list of path-taking system calls always leaves a twin out (syscall.Renameat beside
-        # unix.Renameat), so the bootstrap package makes none at all: the folder is flushed by
-        # Sync on the root's own handle and systemd-creds runs through os/exec. Its one file
-        # for the Windows key store calls Windows, exempted below, and still never by a path.
-        - pattern: ^(syscall|unix)\.
-          pkg: ^(syscall|golang\.org/x/sys/unix)$
-          msg: the bootstrap package makes no raw system call
-        - pattern: ^windows\.
-          pkg: ^golang\.org/x/sys/windows$
-          msg: the bootstrap package calls Windows only in keystore_windows.go
-        - pattern: ^windows\.(CreateFile|Open|NtCreateFile|DeleteFile|Unlink|MoveFile|MoveFileEx|Rename|CreateDirectory|Mkdir|RemoveDirectory|Rmdir|SetFileAttributes|GetFileAttributes|GetFileAttributesEx|Chmod|FindFirstFile|CreateHardLink|CreateSymbolicLink|Readlink|SetCurrentDirectory|Chdir|Utimes|UtimesNano|SetNamedSecurityInfo|GetNamedSecurityInfo)$
-          pkg: ^golang\.org/x/sys/windows$
-          msg: the bootstrap package reaches files only through os.Root
         # A DLL is loaded only from System32 (NewLazySystemDLL), never by the search order,
         # where a planted DLL of the same name would run in the engine. Everywhere.
         - pattern: ^(windows|syscall)\.(NewLazyDLL|LoadDLL|MustLoadDLL|LoadLibrary|LoadLibraryEx)$
@@ -203,49 +105,10 @@ linters:
         - name: unused-parameter
   exclusions:
     rules:
-      # The only exception to the unsafe ban: the bootstrap package's one small file for the
-      # Windows key store (NCrypt) and its check for a TPM (TPM Base Services), neither of which
-      # golang.org/x/sys wraps, so its calls take raw pointers. The developer's decision; read
-      # line by line at review.
-      - path: internal/bootstrap/keystore_windows\.go$
-        linters: [depguard]
-        text: import 'unsafe'
-      # gosec's G103 reports every use of unsafe for audit; in this file the audit is the
-      # developer's line-by-line read, and a silenced gosec is refused, so without this line
-      # the file the exception above allows could never pass.
-      - path: internal/bootstrap/keystore_windows\.go$
-        linters: [gosec]
-        text: G103
-      - path: internal/bootstrap/keystore_windows\.go$
-        linters: [forbidigo]
-        text: calls Windows only in keystore_windows\.go
-      # systemd tells a service where its decrypted credentials are by CREDENTIALS_DIRECTORY
-      # (systemd.exec(5)); it is neither a setting nor a secret. This one file reads it.
-      - path: internal/bootstrap/credentials_linux\.go$
-        linters: [forbidigo]
-        text: os\.LookupEnv
-      # How systemd-creds ended is read from the status Go already filled in: whether a signal
-      # ended it, and whether that signal was SIGKILL, the one the context's kill sends. The
-      # type, its two methods that read it, and the constant make no system call. The
-      # developer's decision.
-      - path: internal/bootstrap/systemd\.go$
-        linters: [forbidigo]
-        text: use of .(syscall\.(WaitStatus|SIGKILL)|\w+\.(Signaled|Signal)). forbidden.*makes no raw system call
-      # The bans on calls that take a path and on system calls are the bootstrap package's, and
-      # bind its product code, not its tests, which set up folders to open.
-      - path-except: internal/bootstrap/
-        linters: [forbidigo]
-        text: only through os\.Root|makes no raw system call|calls Windows only in keystore_windows\.go
-      - path: internal/bootstrap/[^/]*_test\.go$
-        linters: [forbidigo]
-        text: only through os\.Root|makes no raw system call|calls Windows only in keystore_windows\.go
       # A contract.go is a unit's whole surface, declared at the owner and locked; the
       # small-interface rule applies to consumers, which declare the slice they call.
       - path: contract\.go
         linters: [interfacebloat]
-      - path: internal/secrets/
-        linters: [forbidigo]
-        text: os\.(Getenv|LookupEnv)
       # A tool under tools/ is a command whose output is its findings and which runs go
       # itself; the print and subprocess rules are for the engine.
       - path: tools/
