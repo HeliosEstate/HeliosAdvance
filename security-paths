@@ -3,3 +3,4 @@
 # untrusted input, in the same pull request as that contract. One pattern a line, a shell glob
 # that is also a git pathspec.
 internal/telnet/*
+internal/listener/*

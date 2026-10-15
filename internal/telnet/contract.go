@@ -13,8 +13,8 @@
 // It does not own accepting, the cap of 100, the connection ID, the 10-second hard deadline, the
 // greeting, shutting down the sending side, reading and discarding after that, closing, or the
 // accepted, negotiated and closed lines of the local log: the Listener owns those. The command
-// line, running as root, stop signals, stopping, and the started, refused and stopped lines belong
-// to the Service. Later layers own any Telnet option other than ECHO and SGA beyond refusing it.
+// line, running as root, stop signals, stopping, and the started and stopped lines belong to the
+// Service. Later layers own any Telnet option other than ECHO and SGA beyond refusing it.
 //
 // It has no files.
 //
