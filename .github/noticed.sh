@@ -15,11 +15,13 @@ source=$1
 
 # items prints each item of the body's noticed list on one line: the list starts at a line
 # that is only the heading (any # or ** around it) and ends at the next heading, the next
-# bold line or the generated-by line. An item's indented continuation lines join it, and
-# "Nothing" is no item.
+# bold line or the generated-by line. An item's indented continuation lines join it, and an
+# item that is only "None", "Nothing" or "N/A", in any case, with or without a full stop, is no
+# item: the template's other headings ask for "None", so a session writes it here too, and each
+# one became an issue (developer, 2026-10-14).
 items() {
   awk '
-    function flush() { if (item != "" && tolower(item) !~ /^nothing\.?$/) print item; item = "" }
+    function flush() { if (item != "" && tolower(item) !~ /^[ \t]*(none|nothing|n\/a)\.?[ \t]*$/) print item; item = "" }
     {
       line = $0; sub(/\r$/, "", line)
       lower = tolower(line)
