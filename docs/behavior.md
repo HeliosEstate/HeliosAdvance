@@ -74,6 +74,16 @@ greeting and hangs up.
   seconds with the count of connections it refused in those 10 seconds.
 - When a connection flood ends, the engine shall write one line to the local log saying so.
 
+#### When accepting fails
+
+- If accepting a caller at a listener fails, then the engine shall keep accepting callers at that
+  listener.
+- When accepting a caller at a listener fails, and no accept there has failed since the engine
+  began listening there or since an accept there last worked, the engine shall write one
+  `accept_failed` line to the local log naming the listener and the error.
+- When accepting a caller at a listener succeeds after a failure there, the engine shall write one
+  `accept_resumed` line to the local log naming the listener.
+
 #### Stopping
 
 - When it receives a stop signal the table below names, the engine shall stop accepting callers.

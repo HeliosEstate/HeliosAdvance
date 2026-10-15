@@ -12,3 +12,4 @@ is in its package's `contract.go`; what the engine does as a whole is in
 | Unit | Package | Owns | Uses |
 |---|---|---|---|
 | Telnet | `internal/telnet` | Telnet negotiation over one accepted connection, from the engine's first option requests to the end of negotiation | the Go standard library only |
+| Listener | `internal/listener` | Accepting callers on the listening sockets the Service opened and serving each one from accept to close: the cap of 100 open connections, connection floods, the connection ID, the 10-second hard deadline, the greeting, the close, and its own lines in the local log | Telnet; the Go standard library |
