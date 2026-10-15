@@ -20,7 +20,7 @@ var errNotBuilt = errors.New("listener: not built yet")
 type listenerState struct{}
 
 func start(_ []*net.TCPListener, _ LocalLog) (*Listener, error) {
-	return nil, errNotBuilt
+	return &Listener{state: listenerState{}}, errNotBuilt
 }
 
 func (listener *Listener) stop(_ context.Context) int {
