@@ -10,11 +10,10 @@
 // byte; and ending negotiation when the caller has answered both requests or 3 seconds pass, saying
 // which. It writes nothing to the local log.
 //
-// It does not own accepting, the cap of 100, the connection ID, the 10-second hard deadline, the
-// greeting, shutting down the sending side, reading and discarding after that, closing, or the
-// accepted, negotiated and closed lines of the local log: the Listener owns those. The command
-// line, running as root, stop signals, stopping, and the started and stopped lines belong to the
-// Service. Later layers own any Telnet option other than ECHO and SGA beyond refusing it.
+// It does not own accepting, the cap of 100, the 10-second hard deadline, the greeting, shutting
+// down the sending side, reading and discarding after that, or closing: the Listener owns those.
+// The command line, running as root, stop signals, stopping and the local log belong to the
+// program. Later layers own any Telnet option other than ECHO and SGA beyond refusing it.
 //
 // It has no files.
 //
@@ -41,7 +40,7 @@
 // # What it needs from its callers
 //
 // A connection with read and write deadlines. A context carrying the connection's 10-second hard
-// deadline, cancelled by a forced stop. One Negotiate per connection, from that connection's own
+// deadline, cancelled by a stop. One Negotiate per connection, from that connection's own
 // goroutine, before anything else is written to it. After Negotiate returns an error, the
 // connection closed without a write. One goroutine per Negotiation: it is not safe for use from
 // two at once.
