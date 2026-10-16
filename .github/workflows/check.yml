@@ -3,8 +3,12 @@ name: check
 on:
   pull_request:
     branches: [development, main]
+  # A push to a QA or build branch runs CI too, so QA proves its rows red and measures the
+  # runners without dispatching a run: the estate's App cannot dispatch, and is not given
+  # Actions: write, which could switch a workflow off (developer, 2026-10-16). Only the App and
+  # the loops push branches here. A branch that has a pull request also gets that run.
   push:
-    branches: [development, main]
+    branches: [development, main, "feature/**", "qa/**"]
   workflow_dispatch:
 
 # A new push to the same branch supersedes the run in flight: a stale run can post a
