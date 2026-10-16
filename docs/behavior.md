@@ -19,7 +19,8 @@ greeting and hangs up.
 - When it starts with no command-line option, the engine shall listen for callers on port 23.
 - When it accepts a caller, the engine shall send WILL ECHO and WILL SGA, and no other option
   request.
-- If the caller asks for a Telnet option other than ECHO and SGA, then the engine shall refuse it.
+- If, during negotiation, the caller asks for a Telnet option other than ECHO and SGA, then the
+  engine shall refuse it.
 - The engine shall send at most one reply to each option request.
 - If the caller sends anything that is not an option request, then the engine shall discard it
   without reply.
@@ -29,6 +30,8 @@ greeting and hangs up.
 - When the caller has answered both option requests, or 3 seconds after the engine sent them,
   whichever comes first, the engine shall write `Hello Helios Advance BBS!` followed by CR LF,
   and no other text.
+- If the caller sends anything after negotiation ends, then the engine shall discard it without
+  reply.
 - When the greeting is written, the engine shall shut down its sending side of the connection.
 - When the caller closes the connection, or 3 seconds after the engine shut down its sending
   side, whichever comes first, the engine shall close the connection.
@@ -44,6 +47,8 @@ greeting and hangs up.
 #### Where it listens
 
 - The engine shall listen for callers at 127.0.0.1 and at ::1, and at no other address.
+- If the engine fails to listen at one of 127.0.0.1 and ::1, then the engine shall listen at the
+  other alone.
 - When the sysop passes a port on the command line, the engine shall listen on that port in place
   of port 23.
 - When the sysop passes port 0, the engine shall listen at each address on a free port the
@@ -57,9 +62,9 @@ greeting and hangs up.
 
 #### The local log
 
-- When it is listening at every address, the engine shall write one `started` line to the local
-  log naming the address and port of every listener.
-- If a command-line option is malformed or the engine fails to listen at an address, then the
+- When it has started listening, the engine shall write one `started` line to the local log
+  naming the address and port of every listener.
+- If a command-line option is malformed or the engine fails to listen at both addresses, then the
   engine shall write one `start_failed` line to the local log saying why, and exit with a
   non-zero code.
 - The engine shall write no line to the local log other than `started` and `start_failed`.

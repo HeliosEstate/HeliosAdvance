@@ -2,7 +2,8 @@
 # The only definition of green. Every gate tolerates an empty repository and says so; a gate that
 # cannot run fails and says so.
 # Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER, EFFICACY,
-#   SKIP_GO=1 (CI, a change set with no Go in it), TESTRUN and TESTSKIP (CI, -run and -skip patterns)
+#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
+#   MCOVER (the mutant-coverage threshold, default 80)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -187,11 +188,18 @@ if [ -n "$pkgs" ]; then
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
   GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
-  go test ${RACE:-} ${COVER:-} ${TESTRUN:+-run "$TESTRUN"} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
+  go test ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
-    gremlins unleash --diff "$BASE" --threshold-efficacy "${EFFICACY:-80}" .
+    # gremlins' own exit code is not trusted alone: a run whose mutants no test reached passed its
+    # thresholds on 2026-10-16. A changed line with a mutant no test reaches is a line no test
+    # proves, so any "Not covered" fails here.
+    mutants=$(gremlins unleash --diff "$BASE" --threshold-efficacy "${EFFICACY:-80}" --threshold-mcover "${MCOVER:-80}" . 2>&1) || { echo "$mutants"; fail "mutation testing: below the thresholds"; }
+    echo "$mutants"
+    uncovered=$(grep -oE 'Not covered: [0-9]+' <<< "$mutants" | grep -oE '[0-9]+$' || true)
+    [ -n "$uncovered" ] || fail "mutation testing: no result line, so it cannot be judged"
+    [ "$uncovered" = 0 ] || fail "mutation testing: $uncovered mutants on changed lines that no test reaches"
   fi
 else
   echo "no Go packages yet; Go gates skipped"

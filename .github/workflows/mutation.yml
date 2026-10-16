@@ -1,7 +1,8 @@
 # Mutation testing, nightly, on what changed in the last day. It proves the approved tests
-# detect broken code, which is the check on the oracle itself. It is not on the PR path
-# because the oracle tests cost twenty-five seconds a run and a package's worth of mutants
-# is hours; a red run here is read the next morning, not waited for.
+# detect broken code, which is the check on the oracle itself. Since 2026-10-16 each pull
+# request also runs it on its own changes, stopped at an hour (check.yml); this nightly run
+# catches what merged in a day, with the race detector, and its five hours allow for oracle
+# tests at twenty-five seconds a run; a red run here is read the next morning.
 name: mutation
 
 on:

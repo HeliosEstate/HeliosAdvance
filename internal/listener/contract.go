@@ -9,15 +9,16 @@
 // a connection over the cap at once without writing to it; and each connection's life, from the
 // 10-second hard deadline at accept, through negotiation (the telnet package), the greeting,
 // shutting down its sending side, reading and discarding until the caller closes or 3 seconds
-// pass, to the close. After a failed accept it pauses and accepts again, and writes nothing.
+// pass, to the close. Each connection's context is made by Start, carries the hard deadline, and
+// is ended at once by Stop. After a failed accept, unless Stop closed that socket, it pauses and
+// accepts again, and writes nothing; after Stop closes a socket, its accept loop ends.
 //
 // It does not own negotiation itself, which is the telnet package's. The command line, opening the
 // listening sockets, the root check, the local log and the stop signals belong to the program.
 // Later layers own the per-source cap, settings and the central audit system. It has no files and
 // writes no local log.
 //
-// What the engine does as a whole, this package included, is in the engine's docs/behavior.md,
-// from the page hadv-service, Part 1.
+// What the engine does as a whole, this package included, is in docs/behavior.md.
 //
 // # Untrusted input
 //
@@ -30,7 +31,7 @@
 // # What it needs from its callers
 //
 // Listening TCP sockets, already open, each handed to one Start only and not used by the caller
-// after it.
+// after a Start that returned a Listener; after a refused Start, the caller closes them.
 //
 // # Lines for the package
 //
@@ -83,7 +84,8 @@ type Listener struct {
 // sending side can be shut down on its own. It starts one accept loop per listening socket and
 // returns at once; each loop runs until Stop. Each accepted connection is served on its own
 // goroutine. It refuses before it accepts anything, leaves nothing running, and returns a nil
-// Listener with ErrNoListeners, its only error.
+// Listener with ErrNoListeners, its only error. When it refuses, it closes none of the sockets
+// it was given: they stay the caller's to close.
 func Start(listeners []*net.TCPListener) (*Listener, error) {
 	return start(listeners)
 }

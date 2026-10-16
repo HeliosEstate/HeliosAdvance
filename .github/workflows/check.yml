@@ -48,14 +48,15 @@ jobs:
 
   # The two Linux architectures the engine ships on, ARM64 the deployment target, run every
   # gate with the race detector and the oracles. Windows runs every gate and every test except
-  # those named TestOracle…: its runners cannot run Linux containers, so the rows that drive a
-  # container oracle cannot run there, and the race detector would need a C compiler installed
-  # every run. Database tests will be Linux-only for the same reason (developer, 2026-10-02).
-  # The Windows runner is elevated, so TestWindowsElevated rows run there, which no loop's
-  # machine can (developer, 2026-10-05). Part 1's page asks for its tests on Windows too
-  # (2026-10-16), and they need no container.
-  # On a pull request, ubuntu-latest also runs mutation testing on the changed code, so a weak
-  # test is found before the developer reviews, not after the merge (PROCESS.md, 2026-10-16).
+  # those named TestOracle… or TestLinux…: its runners cannot run Linux containers, so the rows
+  # that drive a container oracle cannot run there, a Linux-only row is named for it, and the race
+  # detector would need a C compiler installed every run. Database tests will be Linux-only for
+  # the same reason (developer, 2026-10-02). The Windows runner is elevated, so
+  # TestWindowsElevated rows run there, which no loop's machine can (developer, 2026-10-05).
+  # Part 1's tests run on Windows too, by its behavior lines (2026-10-16).
+  # On a pull request, ubuntu-latest also runs check.sh's mutation mode on the changed code, so
+  # a weak test is found before the developer reviews, not after the merge. It stops at an hour,
+  # a limit the developer agreed on 2026-10-16.
   run:
     needs: changes
     if: needs.changes.outputs.skip == '0'
@@ -125,19 +126,15 @@ jobs:
         env:
           RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
           COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
-          TESTSKIP: ${{ runner.os == 'Windows' && '^TestOracle' || '' }}
+          TESTSKIP: ${{ runner.os == 'Windows' && '^(TestOracle|TestLinux)' || '' }}
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
       - name: Mutation testing
         if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        timeout-minutes: 60
         env:
           BASE: origin/${{ github.base_ref }}
-        run: |
-          if git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' | grep -q .; then
-            gremlins unleash --diff "$BASE" --threshold-efficacy 80 .
-          else
-            echo "no non-test Go changed: nothing to mutate"
-          fi
+        run: bash check.sh --mutation
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
       # the gate on test strength.
       - name: Coverage report

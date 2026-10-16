@@ -42,8 +42,11 @@ getting the task done, the rule wins and you stop.
 
 ## Roles, mechanically
 
-- A session commits as the estate's App, `helios-aegle`, never as the developer; his approval is
-  the review and merge he gives on GitHub, and only he gives it.
+- A session opens issues, comments and reviews as the estate's App, `helios-aegle`, never as the
+  developer: the loop takes his account's words as his. A design session may commit specs, docs
+  and CI from his account, each commit and pull request saying a Claude session wrote it; the
+  loop's code never comes from his account. His approval is the review and merge he gives on
+  GitHub, and only he gives it.
 - The paths in `developer-owned-paths` change only by pull request on his review. A loop session
   is refused those edits by its own hooks, and `check.sh` refuses a commit to them by any login in
   `loop-identities`. A QA session's commit carries the trailer `Helios-Role: qa`; from it on,
@@ -71,7 +74,8 @@ file new work.
 
 ## Conventions a linter cannot see
 
-- Every goroutine has an owner and stops when its context ends; shutdown drains. An error is
+- Every goroutine has an owner and stops when its context ends; shutdown drains, unless the
+  behavior lines say a stop closes at once (Part 1 does: the developer, 2026-10-16). An error is
   returned or logged, never both; no panic crosses a package boundary. An interface is declared
   where it is consumed. Anything read from a network or a file has a size bound.
 - A comment says why, never what, never a step or line number, never a bare pointer to a spec.
