@@ -4,7 +4,6 @@
 package listener
 
 import (
-	"context"
 	"errors"
 	"net"
 )
@@ -20,14 +19,13 @@ var errNotBuilt = errors.New("listener: not built yet")
 type listenerState struct{}
 
 // The placeholders answer with what no line allows, so that no approved test passes before the
-// build: start fails with errNotBuilt and stop returns -1.
-func start(_ []*net.TCPListener, _ LocalLog) (*Listener, error) {
+// build: start fails with errNotBuilt.
+func start(_ []*net.TCPListener) (*Listener, error) {
 	return nil, errNotBuilt
 }
 
-func (listener *Listener) stop(_ context.Context) int {
+func (listener *Listener) stop() {
 	if listener != nil {
 		_ = listener.state
 	}
-	return -1
 }

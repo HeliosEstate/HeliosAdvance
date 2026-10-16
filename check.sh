@@ -2,7 +2,7 @@
 # The only definition of green. Every gate tolerates an empty repository and says so; a gate that
 # cannot run fails and says so.
 # Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER, EFFICACY,
-#   SKIP_GO=1 (CI, a change set with no Go in it), TESTRUN (CI, a -run pattern for go test)
+#   SKIP_GO=1 (CI, a change set with no Go in it), TESTRUN and TESTSKIP (CI, -run and -skip patterns)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -187,7 +187,7 @@ if [ -n "$pkgs" ]; then
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
   GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
-  go test ${RACE:-} ${COVER:-} ${TESTRUN:+-run "$TESTRUN"} -count=1 ./...
+  go test ${RACE:-} ${COVER:-} ${TESTRUN:+-run "$TESTRUN"} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
