@@ -40,8 +40,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           BASE: origin/${{ github.base_ref }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
+          # A loop's build waits for QA to replay its broken copies against the built code before
+          # the developer reviews it (agreed with him, 2026-10-16). The label goes on when a loop
+          # opens, reopens or pushes to the pull request; QA takes it off, and the signoff refuses
+          # while it is on. A push by anyone else, a QA commit included, leaves it as it is.
+          loops=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' loop-identities | grep . || true)
+          if [ "$ACTION" != edited ] && grep -qxF -- "$SENDER" <<< "$loops"; then
+            gh pr edit "$PR" --add-label needs-qa-replay
+            echo "needs-qa-replay: on, a loop's build ($SENDER)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           mapfile -t paths < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' security-paths | grep . || true)
           touched=""
           [ "${#paths[@]}" -gt 0 ] && touched=$(git diff --name-only "$BASE...HEAD" -- "${paths[@]}")
