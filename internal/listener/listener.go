@@ -16,8 +16,6 @@ import (
 // The contract's operations hand their work to the unexported functions below, so the contract
 // builds before the package is built and the build never needs to change the contract.
 
-// listenerState is the state a Listener keeps. Stop's cancel comes before the sockets' close so
-// that an accept loop sees the stop before it sees its socket fail.
 type listenerState struct {
 	stopContext context.Context
 	cancel      context.CancelFunc
@@ -95,8 +93,8 @@ func (state *listenerState) givePlace() {
 	state.open--
 }
 
-// serve runs one caller's call. Any failure ends it without a log: Part 1's local log holds only
-// the start and its failure.
+// A failure in a call ends it without a log, since Part 1's local log holds only the start and
+// its failure.
 func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time) {
 	ctx, cancel := context.WithDeadline(state.stopContext,
 		acceptedAt.Add(HardDeadlineSeconds*time.Second))
@@ -132,6 +130,8 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 	}
 }
 
+// stop cancels before it closes the sockets so that an accept loop sees the stop before it sees
+// its socket fail, and does not take the close for a failed accept to pause on.
 func (listener *Listener) stop() {
 	if listener == nil || listener.state.cancel == nil {
 		return

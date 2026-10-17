@@ -25,7 +25,8 @@ const (
 	stateNo
 )
 
-// readPhase is where Receive stopped in the caller's stream. Its zero is plain data.
+// readPhase is kept between calls because a sequence can be split across them, and Receive must
+// then answer as if it had come whole. Its zero is plain data, the state a fresh stream is in.
 type readPhase uint8
 
 const (
@@ -36,7 +37,8 @@ const (
 	phaseSubnegotiationIAC
 )
 
-// negotiationState holds the two options this layer keeps a state for, and nothing for any other.
+// negotiationState has a field for ECHO and SGA only: the contract forbids a state for any other
+// option, so a caller cannot make the engine remember more by asking for more.
 type negotiationState struct {
 	echo     optionState
 	goAhead  optionState
@@ -101,8 +103,9 @@ func (state *negotiationState) readByte(value byte, replies []byte) []byte {
 	return replies
 }
 
-// answer applies RFC 1143 section 7's table for ECHO and SGA and refuses every other option
-// without keeping state for it.
+// answer follows RFC 1143 section 7 so that a caller who repeats or contradicts a request cannot
+// start a reply loop; an option the engine does not offer is refused from the verb alone, so it
+// costs no state.
 func (state *negotiationState) answer(verb, option byte, replies []byte) []byte {
 	var current *optionState
 	switch option {
