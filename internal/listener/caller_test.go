@@ -316,9 +316,11 @@ const floodingCallers = 10
 // engineClosed watches Linux's table of IPv4 TCP sockets for the engine's end of a connection,
 // found by its two ports, and returns when the engine closed it, the socket having lost its
 // owner (its inode 0) or gone, and when the engine shut its sending side, the owned socket
-// having left ESTABLISHED, or the zero time if it did not before the close. It fails if it never
-// saw the socket owned, so a wrong match cannot pass for a close.
-func engineClosed(t *testing.T, engineAddress, callerAddress string, deadline time.Time) (closed, shut time.Time) {
+// having left ESTABLISHED: after the last look that saw it ESTABLISHED and by the first that
+// did not, both zero if it did not before the close. A look can come late on a loaded runner,
+// so the shutdown is known only between the two. It fails if it never saw the socket owned, so
+// a wrong match cannot pass for a close.
+func engineClosed(t *testing.T, engineAddress, callerAddress string, deadline time.Time) (closed, shutAfter, shutBy time.Time) {
 	t.Helper()
 	port := func(address string) string {
 		_, number, err := net.SplitHostPort(address)
@@ -330,7 +332,9 @@ func engineClosed(t *testing.T, engineAddress, callerAddress string, deadline ti
 	}
 	local, remote := port(engineAddress), port(callerAddress)
 	seen := false
+	var lastEstablished time.Time
 	for time.Now().Before(deadline) {
+		looked := time.Now()
 		table, err := os.ReadFile("/proc/net/tcp")
 		if err != nil {
 			t.Fatalf("reading the socket table: %v", err)
@@ -348,13 +352,16 @@ func engineClosed(t *testing.T, engineAddress, callerAddress string, deadline ti
 		}
 		now := time.Now()
 		switch {
+		case present && owned && established:
+			seen = true
+			lastEstablished = looked
 		case present && owned:
 			seen = true
-			if !established && shut.IsZero() {
-				shut = now
+			if shutBy.IsZero() {
+				shutAfter, shutBy = lastEstablished, now
 			}
 		case seen:
-			return now, shut
+			return now, shutAfter, shutBy
 		}
 		wait(t, time.Now().Add(10*time.Millisecond))
 	}
@@ -362,7 +369,7 @@ func engineClosed(t *testing.T, engineAddress, callerAddress string, deadline ti
 		t.Fatalf("the engine's end of %s to %s was never in the socket table", callerAddress, engineAddress)
 	}
 	t.Fatalf("the engine had not closed the connection by the deadline")
-	return time.Time{}, time.Time{}
+	return time.Time{}, time.Time{}, time.Time{}
 }
 
 // awaitReset writes a byte at a time until a write fails with a reset, which is how a caller

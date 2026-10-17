@@ -325,14 +325,24 @@ func TestCall(t *testing.T) {
 				// wait behind a closed window and a backed-off retransmit, seconds past the close.
 				// The OS's own table shows it, and shows whether the greeting got through: the
 				// engine shuts its sending side only after writing it.
-				closedAt, shutAt := engineClosed(t, address, call.connection.LocalAddr().String(), deadline)
-				if shutAt.IsZero() || shutAt.After(call.connected.Add(hardDeadlineLimit-closingWaitLimit)) {
+				closedAt, shutAfter, shutBy := engineClosed(t, address, call.connection.LocalAddr().String(), deadline)
+				if shutBy.IsZero() {
 					t.Logf("the greeting waited: the hard deadline ends the call")
 					expectWithin(t, "the close", closedAt, call.dialed.Add(hardDeadlineLimit), deadline)
 					return
 				}
-				t.Logf("the greeting got through: the closing wait ends the call")
-				expectWithin(t, "the close", closedAt, shutAt.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
+				// The greeting got through: the closing wait ends the call 3 seconds after the
+				// shutdown, unless the hard deadline comes first.
+				t.Logf("the greeting got through between %v and %v after the dial", shutAfter.Sub(call.dialed), shutBy.Sub(call.dialed))
+				notBefore := shutAfter.Add(closingWaitLimit)
+				if hardDeadline := call.dialed.Add(hardDeadlineLimit); hardDeadline.Before(notBefore) {
+					notBefore = hardDeadline
+				}
+				notAfter := shutBy.Add(closingWaitLimit)
+				if deadline.Add(-margin).Before(notAfter) {
+					notAfter = deadline.Add(-margin)
+				}
+				expectWithin(t, "the close", closedAt, notBefore, notAfter.Add(margin))
 			})
 		}
 	})
