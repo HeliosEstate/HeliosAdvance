@@ -188,6 +188,10 @@ if [ -n "$pkgs" ]; then
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
   GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
+  # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
+  # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
+  # Windows, and CI sets the same pattern for its Windows runner.
+  [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
   go test ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then

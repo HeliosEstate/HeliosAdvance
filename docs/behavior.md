@@ -43,6 +43,8 @@ greeting and hangs up.
   writing to it.
 - While one caller is silent or slow, the engine shall serve every other caller without waiting
   on that one.
+- If accepting a caller fails, then the engine shall keep serving its open connections and accept
+  again within 1 second.
 
 #### Where it listens
 
