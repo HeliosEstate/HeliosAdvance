@@ -184,9 +184,11 @@ if [ -n "$pkgs" ]; then
   go vet ./...
   golangci-lint run ./...
   # Files built for one platform are linted only when GOOS names it, and the loop runs this
-  # on Windows: lint the other platform too, so a Linux-only file's faults show before CI.
+  # on Windows: lint the other platform too, so a Linux-only file's faults show before CI. With
+  # cgo off, since a C compiler for this platform cannot preprocess the other platform's cgo
+  # files in the standard library; the engine has no cgo, so its own files lint the same.
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
-  GOOS=$other golangci-lint run ./...
+  CGO_ENABLED=0 GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
