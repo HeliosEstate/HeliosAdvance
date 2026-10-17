@@ -321,10 +321,10 @@ func TestCall(t *testing.T) {
 					expectWithin(t, "the close", closedAt, call.dialed.Add(negotiationLimit+closingWaitLimit), deadline)
 					return
 				}
-				// The caller cannot see this close in time: the engine's last bytes and its FIN wait
-				// behind a closed window and a backed-off retransmit, seconds past the close. The
-				// OS's own table shows it, and shows whether the greeting got through: the engine
-				// shuts its sending side only after writing it.
+				// The caller cannot see this close in time: the engine's last bytes and its FIN
+				// wait behind a closed window and a backed-off retransmit, seconds past the close.
+				// The OS's own table shows it, and shows whether the greeting got through: the
+				// engine shuts its sending side only after writing it.
 				closedAt, shutAt := engineClosed(t, address, call.connection.LocalAddr().String(), deadline)
 				if shutAt.IsZero() || shutAt.After(call.connected.Add(hardDeadlineLimit-closingWaitLimit)) {
 					t.Logf("the greeting waited: the hard deadline ends the call")
