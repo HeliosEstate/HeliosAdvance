@@ -42,7 +42,14 @@ const failedAcceptLimit = time.Second
 // is then in reach, which at margin it would not be.
 const acceptMargin = 250 * time.Millisecond
 
-// The moments, after accepting starts to fail, at which a row frees two descriptors: every
+// freedDescriptors is how many descriptors a row frees for its two waiting callers. Linux takes a
+// descriptor for an accept call before it looks for a waiting connection, so the accept that
+// follows one socket's success can hold the last free descriptor for a moment, and the other
+// socket's retry in that moment fails; on 2026-10-17 that failed one row in five with two. The
+// third leaves a descriptor for the other socket however the two accepts meet.
+const freedDescriptors = 3
+
+// The moments, after accepting starts to fail, at which a row frees its descriptors: every
 // freeStep from firstFree, freeCount of them, each row in a child of its own.
 //
 // Why so many: a single free tells nothing of a pause that is too long, because it can fall just
@@ -69,7 +76,7 @@ func TestLinuxAcceptFails(t *testing.T) {
 		t.Parallel()
 		for index := range freeCount {
 			offset := firstFree + time.Duration(index)*freeStep
-			t.Run(fmt.Sprintf("two sockets fail, two descriptors freed %v into the failed spell", offset), func(t *testing.T) {
+			t.Run(fmt.Sprintf("two sockets fail, three descriptors freed %v into the failed spell", offset), func(t *testing.T) {
 				t.Parallel()
 				failedSpell(t, offset)
 			})
@@ -85,7 +92,7 @@ type waitingResult struct {
 }
 
 // failedSpell fills the child's descriptors with served callers on its two sockets, leaves one
-// caller waiting on each, frees two descriptors offset into the failed spell, and checks the
+// caller waiting on each, frees descriptors offset into the failed spell, and checks the
 // held callers were served throughout and each waiting caller was accepted in time. Each socket
 // has a waiting caller, so the accept that failed on each is the one tried again.
 func failedSpell(t *testing.T, offset time.Duration) {
@@ -98,8 +105,8 @@ func failedSpell(t *testing.T, offset time.Duration) {
 		held[index].readOpening(t, held[index].connected.Add(margin))
 	}
 	streams := make([]*recording, len(held))
-	for index, call := range held[2:] {
-		streams[index+2] = call.record(call.connected.Add(negotiationLimit + 2*margin))
+	for index, call := range held[freedDescriptors:] {
+		streams[index+freedDescriptors] = call.record(call.connected.Add(negotiationLimit + 2*margin))
 	}
 
 	var waiting []caller
@@ -107,11 +114,10 @@ func failedSpell(t *testing.T, offset time.Duration) {
 		waiting = append(waiting, dial(t, address))
 	}
 	spell := time.Now()
-	deadline := spell.Add(offset + failedAcceptLimit + acceptMargin)
 	results := make([]chan waitingResult, len(waiting))
 	for index, call := range waiting {
 		results[index] = make(chan waitingResult, 1)
-		_ = call.connection.SetReadDeadline(deadline)
+		_ = call.connection.SetReadDeadline(spell.Add(offset + failedAcceptLimit + margin))
 		go func() {
 			received := make([]byte, len(opening))
 			got, err := io.ReadFull(call.connection, received)
@@ -119,20 +125,26 @@ func failedSpell(t *testing.T, offset time.Duration) {
 		}()
 	}
 
+	// The waiting callers' time runs from the moment the descriptors were freed, which can come
+	// after the planned one on a loaded runner.
 	wait(t, spell.Add(offset))
 	freed := time.Now()
-	for _, call := range held[:2] {
+	for _, call := range held[:freedDescriptors] {
 		_ = call.connection.Close()
 	}
+	for _, call := range waiting {
+		_ = call.connection.SetReadDeadline(freed.Add(failedAcceptLimit + acceptMargin))
+	}
+	t.Logf("the descriptors were freed %v after the planned moment", freed.Sub(spell.Add(offset)))
 
 	// The held callers first: a fault that frees descriptors by closing open connections lets
 	// the waiting callers in, and is told here for what it is.
-	for index, call := range held[2:] {
-		stream := streams[index+2]
+	for index, call := range held[freedDescriptors:] {
+		stream := streams[index+freedDescriptors]
 		<-stream.done
 		if !slices.Equal(stream.received, []byte(greeting)) || !errors.Is(stream.end, io.EOF) {
 			t.Fatalf("held caller %d was not served through the failed spell: it got % x and %v, want the greeting and end of stream",
-				index+3, stream.received, stream.end)
+				index+freedDescriptors+1, stream.received, stream.end)
 		}
 		expectWithin(t, "a held caller's greeting", stream.greetingAt(t),
 			call.dialed.Add(negotiationLimit), call.connected.Add(negotiationLimit+margin))
@@ -141,8 +153,8 @@ func failedSpell(t *testing.T, offset time.Duration) {
 	for index, result := range results {
 		got := <-result
 		if got.err != nil || !slices.Equal(got.received, opening) {
-			t.Fatalf("the waiting caller on socket %d got % x and %v by 1 second and %v after two descriptors were freed %v into the failed spell, want % x",
-				index+1, got.received, got.err, acceptMargin, offset, opening)
+			t.Fatalf("the waiting caller on socket %d got % x and %v by 1 second and %v after %d descriptors were freed %v into the failed spell, want % x",
+				index+1, got.received, got.err, acceptMargin, freedDescriptors, offset, opening)
 		}
 		if got.arrived.Before(freed.Add(-early)) {
 			t.Fatalf("the waiting caller on socket %d was served %v before any descriptor was freed: accepting had not failed",
@@ -235,7 +247,7 @@ func startChild(t *testing.T) childListener {
 			if value, found := strings.CutPrefix(line, "addresses="); found {
 				checkLimits()
 				named.addresses = strings.Fields(value)
-				if len(named.addresses) != 2 || named.free < 3 || named.free >= connectionCap {
+				if len(named.addresses) != 2 || named.free <= freedDescriptors || named.free >= connectionCap {
 					t.Fatalf("the child named %d free descriptors and the addresses %q", named.free, value)
 				}
 				return named
