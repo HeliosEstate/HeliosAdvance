@@ -295,28 +295,46 @@ func TestCall(t *testing.T) {
 	})
 	t.Run("If 10 seconds pass since it accepted a connection, then the engine shall close that connection.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a caller that floods from 2.2 seconds and never reads: closed by 10 seconds, and on Linux, the greeting's write waiting, not before", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			// Flooding late fills the buffers just before negotiation times out, so the greeting's
-			// write is the one left waiting, and only the hard deadline ends the call. On Linux it
-			// waits to the end. Windows may let it through: on 2026-10-17 GitHub's Windows runner
-			// let a 27-byte write after a timed-out one through 1.07 s later, in five tries of
-			// five, where this PC held it 10 s. The greeting through, the closing wait may end the
-			// call 3 seconds after it, so on Windows the close may come from the earliest the
-			// greeting can be written plus the closing wait.
-			wait(t, call.connected.Add(2200*time.Millisecond))
-			call.flood(t)
-			if time.Now().After(call.dialed.Add(negotiationLimit - 100*time.Millisecond)) {
-				t.Fatalf("test fault: the flood took until %v after the dial", time.Since(call.dialed))
-			}
-			notBefore := call.dialed.Add(hardDeadlineLimit)
-			if runtime.GOOS == "windows" {
-				notBefore = call.dialed.Add(negotiationLimit + closingWaitLimit)
-			}
-			closedAt := call.awaitReset(t, call.connected.Add(hardDeadlineLimit+margin))
-			expectWithin(t, "the close", closedAt, notBefore, call.connected.Add(hardDeadlineLimit+margin))
-		})
+		// Flooding fills the buffers before negotiation times out, so that the greeting's
+		// write may be left waiting, which only the hard deadline ends. Whether it waits is the
+		// kernel's choice: on 2026-10-17 Linux added the 27 bytes to a segment already queued for
+		// 30 of 50 callers against the build without the race detector, fewer with it, and
+		// GitHub's Windows runner let them through 1.07 s after a timed-out write, five of five.
+		// So ten callers run at once, each against its own engine: a missing or late hard
+		// deadline shows in any of them whose greeting waits, and all ten get theirs through with
+		// a chance of about 0.6 to the tenth, 0.6 percent, on Linux.
+		for index := range floodingCallers {
+			t.Run(fmt.Sprintf("caller %d of %d floods from 1.5 seconds and never reads: closed at 10 seconds, or by the closing wait if its greeting got through", index+1, floodingCallers), func(t *testing.T) {
+				t.Parallel()
+				address := startEngine(t, 1)[0]
+				call := dial(t, address)
+				wait(t, call.connected.Add(1500*time.Millisecond))
+				call.flood(t)
+				if time.Now().After(call.dialed.Add(negotiationLimit - 100*time.Millisecond)) {
+					t.Fatalf("test fault: the flood took until %v after the dial", time.Since(call.dialed))
+				}
+				deadline := call.connected.Add(hardDeadlineLimit + margin)
+				if runtime.GOOS != "linux" {
+					// Off Linux the row cannot see which way the call went, so it holds the close
+					// to the window both ways share.
+					closedAt := call.awaitReset(t, deadline)
+					expectWithin(t, "the close", closedAt, call.dialed.Add(negotiationLimit+closingWaitLimit), deadline)
+					return
+				}
+				// The caller cannot see this close in time: the engine's last bytes and its FIN wait
+				// behind a closed window and a backed-off retransmit, seconds past the close. The
+				// OS's own table shows it, and shows whether the greeting got through: the engine
+				// shuts its sending side only after writing it.
+				closedAt, shutAt := engineClosed(t, address, call.connection.LocalAddr().String(), deadline)
+				if shutAt.IsZero() || shutAt.After(call.connected.Add(hardDeadlineLimit-closingWaitLimit)) {
+					t.Logf("the greeting waited: the hard deadline ends the call")
+					expectWithin(t, "the close", closedAt, call.dialed.Add(hardDeadlineLimit), deadline)
+					return
+				}
+				t.Logf("the greeting got through: the closing wait ends the call")
+				expectWithin(t, "the close", closedAt, shutAt.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
+			})
+		}
 	})
 	t.Run("While 100 connections are open, the engine shall close each new connection at once, without writing to it.", func(t *testing.T) {
 		t.Parallel()

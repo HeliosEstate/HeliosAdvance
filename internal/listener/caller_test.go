@@ -8,10 +8,13 @@ package listener_test
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -304,6 +307,62 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 		t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
 	}
 	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
+}
+
+// floodingCallers is how many callers the 10-second line's row runs at once, each against its
+// own engine, so that at least one is likely to have its greeting's write left waiting.
+const floodingCallers = 10
+
+// engineClosed watches Linux's table of IPv4 TCP sockets for the engine's end of a connection,
+// found by its two ports, and returns when the engine closed it, the socket having lost its
+// owner (its inode 0) or gone, and when the engine shut its sending side, the owned socket
+// having left ESTABLISHED, or the zero time if it did not before the close. It fails if it never
+// saw the socket owned, so a wrong match cannot pass for a close.
+func engineClosed(t *testing.T, engineAddress, callerAddress string, deadline time.Time) (closed, shut time.Time) {
+	t.Helper()
+	port := func(address string) string {
+		_, number, err := net.SplitHostPort(address)
+		value, convErr := strconv.Atoi(number)
+		if err != nil || convErr != nil {
+			t.Fatalf("the address %q has no port", address)
+		}
+		return fmt.Sprintf("%04X", value)
+	}
+	local, remote := port(engineAddress), port(callerAddress)
+	seen := false
+	for time.Now().Before(deadline) {
+		table, err := os.ReadFile("/proc/net/tcp")
+		if err != nil {
+			t.Fatalf("reading the socket table: %v", err)
+		}
+		owned, present, established := false, false, false
+		for line := range strings.SplitSeq(string(table), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 10 || !strings.HasSuffix(fields[1], ":"+local) || !strings.HasSuffix(fields[2], ":"+remote) {
+				continue
+			}
+			present = true
+			owned = fields[9] != "0"
+			// The table's state 01 is ESTABLISHED.
+			established = fields[3] == "01"
+		}
+		now := time.Now()
+		switch {
+		case present && owned:
+			seen = true
+			if !established && shut.IsZero() {
+				shut = now
+			}
+		case seen:
+			return now, shut
+		}
+		wait(t, time.Now().Add(10*time.Millisecond))
+	}
+	if !seen {
+		t.Fatalf("the engine's end of %s to %s was never in the socket table", callerAddress, engineAddress)
+	}
+	t.Fatalf("the engine had not closed the connection by the deadline")
+	return time.Time{}, time.Time{}
 }
 
 // awaitReset writes a byte at a time until a write fails with a reset, which is how a caller
