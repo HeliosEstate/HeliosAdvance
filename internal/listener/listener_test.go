@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -294,20 +295,27 @@ func TestCall(t *testing.T) {
 	})
 	t.Run("If 10 seconds pass since it accepted a connection, then the engine shall close that connection.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a caller that floods from 2.2 seconds and never reads, the greeting's write waiting: closed at 10 seconds, not before", func(t *testing.T) {
+		t.Run("a caller that floods from 2.2 seconds and never reads: closed by 10 seconds, and on Linux, the greeting's write waiting, not before", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			// Flooding late fills the buffers just before negotiation times out, so the greeting's
-			// write is the one left waiting. Windows lets one waiting write through about six
-			// seconds after the buffers fill, which then still leaves the closing wait running
-			// at 10 seconds.
+			// write is the one left waiting, and only the hard deadline ends the call. On Linux it
+			// waits to the end. Windows may let it through: on 2026-10-17 GitHub's Windows runner
+			// let a 27-byte write after a timed-out one through 1.07 s later, in five tries of
+			// five, where this PC held it 10 s. The greeting through, the closing wait may end the
+			// call 3 seconds after it, so on Windows the close may come from the earliest the
+			// greeting can be written plus the closing wait.
 			wait(t, call.connected.Add(2200*time.Millisecond))
 			call.flood(t)
 			if time.Now().After(call.dialed.Add(negotiationLimit - 100*time.Millisecond)) {
 				t.Fatalf("test fault: the flood took until %v after the dial", time.Since(call.dialed))
 			}
+			notBefore := call.dialed.Add(hardDeadlineLimit)
+			if runtime.GOOS == "windows" {
+				notBefore = call.dialed.Add(negotiationLimit + closingWaitLimit)
+			}
 			closedAt := call.awaitReset(t, call.connected.Add(hardDeadlineLimit+margin))
-			expectWithin(t, "the close", closedAt, call.dialed.Add(hardDeadlineLimit), call.connected.Add(hardDeadlineLimit+margin))
+			expectWithin(t, "the close", closedAt, notBefore, call.connected.Add(hardDeadlineLimit+margin))
 		})
 	})
 	t.Run("While 100 connections are open, the engine shall close each new connection at once, without writing to it.", func(t *testing.T) {

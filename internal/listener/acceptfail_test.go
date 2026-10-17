@@ -298,12 +298,20 @@ func holdListener(t *testing.T) {
 		return
 	}
 	defer engine.Stop()
+	// The limit caps a descriptor's number, not how many are open, so only those numbered below
+	// it take a place: a runner can hand the child higher ones, as GitHub's Linux runners do.
 	// The listing holds the descriptor it was read through, which is closed again after.
 	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
 		t.Fatalf("listing the child's descriptors: %v", err)
 	}
-	announce(t, "free="+strconv.Itoa(descriptorLimit-(len(entries)-1)))
+	held := 0
+	for _, entry := range entries {
+		if number, err := strconv.Atoi(entry.Name()); err == nil && number < descriptorLimit {
+			held++
+		}
+	}
+	announce(t, "free="+strconv.Itoa(descriptorLimit-(held-1)))
 	announce(t, "addresses="+strings.Join(addresses, " "))
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
