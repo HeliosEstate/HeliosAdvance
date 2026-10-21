@@ -106,6 +106,26 @@ func withDeadline(t *testing.T, deadline time.Time) context.Context {
 	return ctx
 }
 
+// endsLate is a context whose deadline passes well before it reports its end, as any context may:
+// it ends after the window a row allows for Negotiate's return, so only the clock can tell in time
+// that the deadline passed. A context's own timer and the connection's deadline, set to the same
+// moment, wake in either order, so without this a row tells the clock's part only by chance.
+func endsLate(t *testing.T, deadline time.Time) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(t.Context(), deadline.Add(2*margin))
+	t.Cleanup(cancel)
+	return lateEnd{Context: ctx, deadline: deadline}
+}
+
+type lateEnd struct {
+	context.Context
+	deadline time.Time
+}
+
+func (ctx lateEnd) Deadline() (time.Time, bool) {
+	return ctx.deadline, true
+}
+
 // endsOnFailure is the real server end, with the context cancelled at the moment a read or a
 // reply's write fails, so the failure and the end of the context meet. A reply is any write
 // after a read has returned bytes; the opening comes before any read.
@@ -344,6 +364,21 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			deadline := time.Now().Add(negotiationLimit)
 			call := negotiate(withDeadline(t, deadline), pair.server)
+			expectReturn(t, call.result(t, deadline.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
+		})
+		t.Run("a deadline at 1 second that the context reports ended only later, a read waiting", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			deadline := time.Now().Add(time.Second)
+			call := negotiate(endsLate(t, deadline), pair.server)
+			expectReturn(t, call.result(t, deadline.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
+		})
+		t.Run("a deadline at 1 second that the context reports ended only later, a write waiting", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			deadline := time.Now().Add(time.Second)
+			call := negotiate(endsLate(t, deadline), pair.server)
+			flood(t, pair.client)
 			expectReturn(t, call.result(t, deadline.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
 		})
 	})
