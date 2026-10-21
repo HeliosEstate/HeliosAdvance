@@ -45,6 +45,8 @@ greeting and hangs up.
   on that one.
 - If accepting a caller fails, then the engine shall keep serving its open connections and accept
   again within 1 second.
+- If accepting a caller fails, then the engine shall wait at least 5 milliseconds before it
+  accepts again.
 
 #### Where it listens
 
