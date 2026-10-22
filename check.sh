@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # The only definition of green. Every gate tolerates an empty repository and says so; a gate that
 # cannot run fails and says so.
-# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER, EFFICACY,
-#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
-#   MCOVER (the mutant-coverage threshold, default 80)
+# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER,
+#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -198,27 +197,21 @@ if [ -n "$pkgs" ]; then
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
-    # gremlins' own exit code is not trusted: a run whose mutants no test reached passed its
-    # thresholds on 2026-10-16, and v0.6.0 reads its two threshold flags as 0, so a run at 78.95%
-    # efficacy exited 0 (2026-10-21). So the result lines are read and judged here. A changed line
-    # with a mutant no test reaches is a line no test proves, so any "Not covered" fails too.
-    # GOFLAGS=-count=1: coverage gathered from Go's test cache made every mutant "time out", which
-    # counts as killed, and read 100% (2026-10-21).
-    mutants=$(GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
+    # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
+    # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
+    # could see its fault. The run still fails when gremlins fails or prints no result lines, since
+    # then there is nothing to read. GOFLAGS=-count=1: coverage gathered from Go's test cache made
+    # every mutant "time out", which counts as killed, and read 100% (2026-10-21).
+    # cmd/ is left out: its tests run the built program as its own process, which gremlins'
+    # coverage cannot see, so every mutant there reads "Not covered". The rows and QA's broken
+    # copies prove it instead (the developer, 2026-10-22).
+    mutants=$(GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^cmd/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
     echo "$mutants"
-    counts=$(grep -oE '(Killed|Lived|Not covered|Timed out): [0-9]+' <<< "$mutants" || true)
-    [ "$(wc -l <<< "$counts")" = 4 ] || fail "mutation testing: no result lines, so it cannot be judged"
-    uncovered=$(grep -oE 'Not covered: [0-9]+' <<< "$counts" | grep -oE '[0-9]+$')
-    [ "$uncovered" = 0 ] || fail "mutation testing: $uncovered mutants on changed lines that no test reaches"
-    if [ "$(grep -oE '[0-9]+$' <<< "$counts" | awk '{ s += $1 } END { print s }')" = 0 ]; then
-      echo "mutation testing: the changed lines hold no mutant"
-    else
-      for gate in "Test efficacy:${EFFICACY:-80}" "Mutator coverage:${MCOVER:-80}"; do
-        name=${gate%:*} least=${gate##*:}
-        got=$(grep -oE "$name: [0-9.]+" <<< "$mutants" | grep -oE '[0-9.]+$' || true)
-        [ -n "$got" ] || fail "mutation testing: no \"$name\" line, so it cannot be judged"
-        awk -v g="$got" -v l="$least" 'BEGIN { exit !(g >= l) }' || fail "mutation testing: $name $got%, below $least%"
-      done
+    grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$mutants" || fail "mutation testing: no result lines, so there is nothing to report"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      { echo "## Mutation testing, a report"; echo '```'
+        grep -E 'LIVED|NOT COVERED|Killed:|Timed out:|Test efficacy|Mutator coverage' <<< "$mutants"
+        echo '```'; } >> "$GITHUB_STEP_SUMMARY"
     fi
   fi
 else

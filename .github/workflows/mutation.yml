@@ -1,8 +1,8 @@
-# Mutation testing, nightly, on what changed in the last day. It proves the approved tests
-# detect broken code, which is the check on the oracle itself. Since 2026-10-16 each pull
+# Mutation testing, nightly, on what changed in the last day: a report of what the approved
+# tests miss, for QA to read (a report, not a gate: the developer, 2026-10-22). Each pull
 # request also runs it on its own changes, stopped at an hour (check.yml); this nightly run
-# catches what merged in a day, with the race detector, and its five hours allow for oracle
-# tests at twenty-five seconds a run; a red run here is read the next morning.
+# covers what merged in a day, with the race detector, and its five hours allow for oracle
+# tests at twenty-five seconds a run; a red run here means the tool could not report.
 name: mutation
 
 on:
