@@ -364,3 +364,28 @@ func TestLinuxLowPort(t *testing.T) {
 		})
 	})
 }
+
+// TestLinuxListeningSockets is Linux's alone because the page names the operating system's table
+// of listening sockets as a second oracle there: a caller can tell a listener on every IPv6
+// address from one at ::1 only by dialing a routable IPv6 address, and no runner has one.
+func TestLinuxListeningSockets(t *testing.T) {
+	t.Parallel()
+	t.Run("The engine shall listen for callers at 127.0.0.1 and at ::1, and at no other address.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("every listening socket the system's table shows for the program is at 127.0.0.1 or ::1", func(t *testing.T) {
+			t.Parallel()
+			program := startProgram(t, portOption, "0")
+			addresses := program.listening(t)
+			sockets := listeningSockets(t, program.command.Process.Pid)
+			if len(sockets) == 0 {
+				t.Fatalf("the system's table shows no listening socket for the program, which named %q", addresses)
+			}
+			for _, socket := range sockets {
+				host, _, err := net.SplitHostPort(socket)
+				if err != nil || (host != ipv4Loopback && host != ipv6Loopback) {
+					t.Errorf("the program listens at %s, which is not 127.0.0.1 or ::1; it named %q", socket, addresses)
+				}
+			}
+		})
+	})
+}
