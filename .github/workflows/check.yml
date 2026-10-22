@@ -139,8 +139,8 @@ jobs:
         env:
           BASE: origin/${{ github.base_ref }}
         run: bash check.sh --mutation
-      # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is
-      # the gate on test strength.
+      # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is a
+      # report too; QA's broken copies are the gate on test strength (the developer, 2026-10-22).
       - name: Coverage report
         if: always() && runner.os == 'Linux'
         run: |
