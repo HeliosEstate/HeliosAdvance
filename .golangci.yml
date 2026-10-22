@@ -73,11 +73,22 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/telnet
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener
+        hadv-service:
+          files: ["**/cmd/hadv-service/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # It starts and stops the Listener (docs/architecture.md); Telnet is the Listener's.
+            - github.com/heliosestate/heliosadvance/internal/listener
     forbidigo:
       analyze-types: true
       forbid:
         - pattern: ^fmt\.Print(f|ln)?$
           msg: use log/slog
+        # The print rule alone let a line reach the console past slog, through fmt.Fprintln or
+        # os.Stderr.WriteString (2026-10-22). Writing to a connection, file or buffer stays allowed.
+        - pattern: ^os\.(Stdout|Stderr)$
+          msg: the local log goes through log/slog; a package that needs the console is a named exception below
         - pattern: ^log\.(Print|Printf|Println|Fatal|Fatalf|Fatalln|Panic|Panicf|Panicln)$
           msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
@@ -122,7 +133,16 @@ linters:
       # itself; the print and subprocess rules are for the engine.
       - path: tools/
         linters: [forbidigo, gosec]
-        text: fmt\.Print|G204|G703
+        text: fmt\.Print|os\.Std(out|err)|G204|G703
+      # The program hands its standard error to the slog logger it writes the local log through.
+      - path: cmd/hadv-service/main\.go
+        linters: [forbidigo]
+        text: os\.Stderr
+      # A test's child process reports to the test through its standard output; the console
+      # rule is for the engine's log.
+      - path: _test\.go
+        linters: [forbidigo]
+        text: os\.Std(out|err)
       # Copied code is judged in production code only: approved tests are locked, so a finding
       # there is one no session could fix.
       - path: _test\.go
