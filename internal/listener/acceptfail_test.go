@@ -9,6 +9,7 @@ package listener_test
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -170,6 +171,7 @@ func failedSpell(t *testing.T, offset time.Duration) {
 type childListener struct {
 	free      int
 	addresses []string
+	processID int
 }
 
 // startChild runs this test binary again as the child, under the descriptor limit. The shell
@@ -181,14 +183,21 @@ func startChild(t *testing.T) childListener {
 	if err != nil {
 		t.Fatalf("finding the test binary: %v", err)
 	}
-	child := exec.CommandContext(t.Context(), "sh", "-c", `ulimit -n "$1" && shift && exec "$@"`,
-		"sh", strconv.Itoa(descriptorLimit), binary, "-test.run=^TestLinuxAcceptFails$", "-test.count=1",
-		childArgument)
+	arguments := []string{"sh", strconv.Itoa(descriptorLimit), binary, "-test.run=^TestLinuxAcceptFails$", "-test.count=1"}
+	// Under go test -cover the child writes its counters where this binary's own counters go, so
+	// the lines only the child runs count as reached; that needs the child to end on its own, not
+	// be killed.
+	if directory := flag.Lookup("test.gocoverdir"); directory != nil && directory.Value.String() != "" {
+		arguments = append(arguments, "-test.gocoverdir="+directory.Value.String())
+	}
+	child := exec.CommandContext(t.Context(), "sh", append([]string{"-c", `ulimit -n "$1" && shift && exec "$@"`},
+		append(arguments, childArgument)...)...)
 	child.WaitDelay = 5 * time.Second
 	stdin, err := child.StdinPipe()
 	if err != nil {
 		t.Fatalf("the child's standard input: %v", err)
 	}
+	child.Cancel = stdin.Close
 	stdout, err := child.StdoutPipe()
 	if err != nil {
 		t.Fatalf("the child's standard output: %v", err)
@@ -224,7 +233,8 @@ func startChild(t *testing.T) childListener {
 			t.Fatalf("the child's open-file limits were %q, want %d for both", limits, descriptorLimit)
 		}
 	}
-	var named childListener
+	// The shell runs the binary with exec, so the shell's process is the child's own.
+	named := childListener{processID: child.Process.Pid}
 	for {
 		select {
 		case line, open := <-lines:
