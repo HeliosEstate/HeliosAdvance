@@ -240,14 +240,41 @@ func TestProgram(t *testing.T) {
 			program := startProgram(t, portOption, "0")
 			addresses := program.listening(t)
 			during := expectServed(t, addresses[0])
+			firstConnected := during.connected
 			during.send(t, []byte("start_failed="+canary+"\r\n"))
 			during.send(t, append(append([]byte{iac, subnegotiationBegin, telnetTypeOption}, canary...), iac, subnegotiationEnd))
+			// The engine refuses a request only once it has read every byte the caller sent
+			// before it, so the refusal shows the text above has been read.
+			during.send(t, []byte{iac, will, telnetTypeOption})
+			during.readExactly(t, []byte{iac, dont, telnetTypeOption}, time.Now().Add(margin))
+			// After negotiation the engine has shut its sending side and says nothing more, so the
+			// only sign it has read to the caller's end of stream is the call ending. With the
+			// engine full, a new caller is served only once a call has ended, and the silent
+			// callers' calls cannot end before their negotiation and closing wait run out.
+			for range connectionCap - 2 {
+				expectServed(t, addresses[0])
+			}
 			after := expectServed(t, addresses[len(addresses)-1])
+			answeredAt := time.Now()
 			after.send(t, answers)
 			after.readExactly(t, []byte(greeting), time.Now().Add(margin))
+			if served(t, addresses[0]) {
+				t.Fatalf("a caller was served with %d connections open", connectionCap)
+			}
 			after.send(t, []byte("started=127.0.0.1:1 "+canary+"\n"))
-			// The stop comes once the engine has had the bytes: a read of what it holds.
-			pause(t, 100*time.Millisecond)
+			if err := after.connection.CloseWrite(); err != nil {
+				t.Fatalf("the caller's close of its sending side failed: %v", err)
+			}
+			for !served(t, addresses[0]) {
+				pause(t, 10*time.Millisecond)
+			}
+			// Past either moment, the closing wait's own end could have ended a call, and being
+			// served would no longer show the engine read to the caller's end of stream.
+			if servedAt := time.Now(); servedAt.After(answeredAt.Add(closingWait)) ||
+				servedAt.After(firstConnected.Add(negotiationLimit+closingWait)) {
+				t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
+					servedAt.Sub(answeredAt))
+			}
 			_, sentBy := send(t, program)
 			program.exit(t, sentBy.Add(margin))
 			if strings.Contains(program.text(), canary) {

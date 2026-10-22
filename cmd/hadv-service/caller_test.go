@@ -19,6 +19,7 @@ import (
 
 const (
 	iac    byte = 255
+	dont   byte = 254
 	doVerb byte = 253
 	will   byte = 251
 
@@ -36,6 +37,8 @@ const (
 const (
 	greeting         = "Hello Helios Advance BBS!\r\n"
 	negotiationLimit = 3 * time.Second
+	closingWait      = 3 * time.Second
+	connectionCap    = 100
 )
 
 // margin is how late past a moment an event may come on the slowest runner, as the listener's
@@ -87,6 +90,27 @@ func expectServed(t *testing.T, address string) caller {
 	call := dial(t, address)
 	call.readExactly(t, opening, call.connected.Add(margin))
 	return call
+}
+
+// served dials the address and tells whether the engine sent the opening by the margin, or
+// closed the connection at once without writing to it, as it does while it is full.
+func served(t *testing.T, address string) bool {
+	t.Helper()
+	call := dial(t, address)
+	_ = call.connection.SetReadDeadline(call.connected.Add(margin))
+	received := make([]byte, len(opening))
+	got, err := io.ReadFull(call.connection, received)
+	switch {
+	case err == nil && slices.Equal(received, opening):
+		return true
+	case got == 0 && (errors.Is(err, io.EOF) || isReset(err)):
+		_ = call.connection.Close()
+		return false
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		t.Fatalf("the engine neither served nor closed a new caller at %s within the margin", address)
+	}
+	t.Fatalf("a new caller at %s got % x and %v, want the opening or a close", address, received[:got], err)
+	return false
 }
 
 // readExactly reads exactly the wanted bytes, which must come by the deadline.
@@ -143,8 +167,8 @@ func (call caller) awaitReset(t *testing.T, notBefore, notAfter time.Time) time.
 	return time.Time{}
 }
 
-// pause waits on the clock or the test's end. It is used only between a caller's probing writes,
-// where the gap is the probe's resolution.
+// pause waits on the clock or the test's end. It is used only between a caller's probing writes
+// or dials, where the gap is the probe's resolution.
 func pause(t *testing.T, length time.Duration) {
 	t.Helper()
 	timer := time.NewTimer(length)
