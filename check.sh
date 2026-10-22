@@ -198,14 +198,28 @@ if [ -n "$pkgs" ]; then
   govulncheck ./...
   if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
-    # gremlins' own exit code is not trusted alone: a run whose mutants no test reached passed its
-    # thresholds on 2026-10-16. A changed line with a mutant no test reaches is a line no test
-    # proves, so any "Not covered" fails here.
-    mutants=$(gremlins unleash --diff "$BASE" --threshold-efficacy "${EFFICACY:-80}" --threshold-mcover "${MCOVER:-80}" . 2>&1) || { echo "$mutants"; fail "mutation testing: below the thresholds"; }
+    # gremlins' own exit code is not trusted: a run whose mutants no test reached passed its
+    # thresholds on 2026-10-16, and v0.6.0 reads its two threshold flags as 0, so a run at 78.95%
+    # efficacy exited 0 (2026-10-21). So the result lines are read and judged here. A changed line
+    # with a mutant no test reaches is a line no test proves, so any "Not covered" fails too.
+    # GOFLAGS=-count=1: coverage gathered from Go's test cache made every mutant "time out", which
+    # counts as killed, and read 100% (2026-10-21).
+    mutants=$(GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
     echo "$mutants"
-    uncovered=$(grep -oE 'Not covered: [0-9]+' <<< "$mutants" | grep -oE '[0-9]+$' || true)
-    [ -n "$uncovered" ] || fail "mutation testing: no result line, so it cannot be judged"
+    counts=$(grep -oE '(Killed|Lived|Not covered|Timed out): [0-9]+' <<< "$mutants" || true)
+    [ "$(wc -l <<< "$counts")" = 4 ] || fail "mutation testing: no result lines, so it cannot be judged"
+    uncovered=$(grep -oE 'Not covered: [0-9]+' <<< "$counts" | grep -oE '[0-9]+$')
     [ "$uncovered" = 0 ] || fail "mutation testing: $uncovered mutants on changed lines that no test reaches"
+    if [ "$(grep -oE '[0-9]+$' <<< "$counts" | awk '{ s += $1 } END { print s }')" = 0 ]; then
+      echo "mutation testing: the changed lines hold no mutant"
+    else
+      for gate in "Test efficacy:${EFFICACY:-80}" "Mutator coverage:${MCOVER:-80}"; do
+        name=${gate%:*} least=${gate##*:}
+        got=$(grep -oE "$name: [0-9.]+" <<< "$mutants" | grep -oE '[0-9.]+$' || true)
+        [ -n "$got" ] || fail "mutation testing: no \"$name\" line, so it cannot be judged"
+        awk -v g="$got" -v l="$least" 'BEGIN { exit !(g >= l) }' || fail "mutation testing: $name $got%, below $least%"
+      done
+    fi
   fi
 else
   echo "no Go packages yet; Go gates skipped"
