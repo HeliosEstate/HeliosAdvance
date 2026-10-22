@@ -204,7 +204,10 @@ if [ -n "$pkgs" ]; then
     # with a mutant no test reaches is a line no test proves, so any "Not covered" fails too.
     # GOFLAGS=-count=1: coverage gathered from Go's test cache made every mutant "time out", which
     # counts as killed, and read 100% (2026-10-21).
-    mutants=$(GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
+    # cmd/ is left out: its tests run the built program as its own process, which gremlins'
+    # coverage cannot see, so every mutant there reads "Not covered". The rows and QA's broken
+    # copies prove it instead (the developer, 2026-10-22).
+    mutants=$(GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^cmd/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
     echo "$mutants"
     counts=$(grep -oE '(Killed|Lived|Not covered|Timed out): [0-9]+' <<< "$mutants" || true)
     [ "$(wc -l <<< "$counts")" = 4 ] || fail "mutation testing: no result lines, so it cannot be judged"
