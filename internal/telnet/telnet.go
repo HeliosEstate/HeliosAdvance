@@ -200,11 +200,6 @@ func negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 			}
 		}
 		if answered {
-			// A stop that lands as the last answer is read must win, or the caller of
-			// Negotiate would go on to write to a connection that is being closed.
-			if ended := ctx.Err(); ended != nil {
-				return finish(0, endedBy(ended))
-			}
 			return finish(Answered, nil)
 		}
 	}
