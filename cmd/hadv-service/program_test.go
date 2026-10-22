@@ -200,8 +200,9 @@ func (program *run) text() string {
 var logKeys = []string{"started", "start_failed"}
 
 // expectLog checks the whole local log once the program has exited: every line is one key and
-// its value, the key one of logKeys and the value not empty, each line ending in LF, and the
-// keys in the order want gives. It returns the values.
+// its value, the key one of logKeys and the value more than spaces and quote marks, each line
+// ending in LF, and the keys in the order want gives. It returns the values. A value may be
+// quoted, so an empty one quoted is as empty as none, and says nothing to the sysop.
 func (program *run) expectLog(t *testing.T, want ...string) []string {
 	t.Helper()
 	<-program.exited
@@ -215,7 +216,7 @@ func (program *run) expectLog(t *testing.T, want ...string) []string {
 			break
 		}
 		key, value, found := strings.Cut(line, "=")
-		if !found || !slices.Contains(logKeys, key) || value == "" || strings.ContainsAny(value, "\r\n") {
+		if !found || !slices.Contains(logKeys, key) || strings.Trim(value, ` "`) == "" || strings.ContainsAny(value, "\r\n") {
 			t.Fatalf("a local log line is not one known key and its value: %q, in\n%s", line, text)
 		}
 		keys = append(keys, key)
