@@ -5,3 +5,4 @@
 internal/telnet/*
 internal/listener/*
 internal/session/*
+internal/textio/*
