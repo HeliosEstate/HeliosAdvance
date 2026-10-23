@@ -40,7 +40,8 @@
 //	io.EOF                       the caller closed its side
 //	the context's error,         the context ended first: the call's ceiling
 //	wrapped                      (context.DeadlineExceeded) or a stop (context.Canceled)
-//	any other error              the connection failed
+//	any other error              the connection failed; RecvString's ErrMostOutOfRange
+//	                             alone means the code calling it is wrong
 //
 // When two happen at once, the context ending wins, then a failure, then a passed deadline.
 //
@@ -55,25 +56,32 @@ package textio
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
 // MostLine is the longest line RecvString takes; a caller asking for more is refused.
 const MostLine = 255
 
+// ErrMostOutOfRange is RecvString refusing a limit below 1 or above MostLine: the code calling it
+// is wrong, not the caller or the connection, so it is the one error the table does not name.
+var ErrMostOutOfRange = errors.New("textio: a line's limit must be from 1 to MostLine")
+
 // Chars is what a kind of connection supplies, declared here where it is used. Each kind of
 // connection is its own type with these calls, and hides inside it everything that kind needs.
 type Chars interface {
 	// SendChar queues one byte for the caller. What is queued is written by Flush, by SendChar
 	// itself when the queue is full, waiting no later than the context's deadline, and by RecvChar
-	// before it waits for the caller. Its results are the table's.
+	// before it waits for the caller or when the queue has no room for the connection's own
+	// replies. Its results are the table's.
 	SendChar(ctx context.Context, character byte) error
 	// RecvChar returns the caller's next data byte, waiting no later than deadline: once deadline
 	// has passed it returns os.ErrDeadlineExceeded, even with bytes waiting. Before it waits for
-	// the caller, it writes what is queued, under deadline; a byte already waiting is returned
-	// without a write. It returns the bytes the caller sent, in the order sent, those that came
-	// before the call included, and never a byte of the connection's own commands. Its results
-	// are the table's.
+	// the caller, it writes what is queued, under deadline; it writes at no other time but when
+	// the queue has no room for the connection's own replies, so a byte already waiting is
+	// otherwise returned without a write. It returns the bytes the caller sent, in the order sent,
+	// those that came before the call included, and never a byte of the connection's own
+	// commands. Its results are the table's.
 	RecvChar(ctx context.Context, deadline time.Time) (byte, error)
 	// Flush writes what is queued; a write cut short leaves what it did not write queued, in
 	// order, so each byte is written once. Its results are the table's.
@@ -97,7 +105,9 @@ func New(chars Chars) *Conn {
 	return newConn(chars)
 }
 
-// SendChar is the kind of connection's own SendChar.
+// SendChar is the kind of connection's own SendChar: it only queues the byte, which goes out with
+// the next SendString, when a RecvChar or RecvString waits for the caller, or when the queue is
+// full.
 func (conn *Conn) SendChar(ctx context.Context, character byte) error {
 	return conn.sendChar(ctx, character)
 }
@@ -136,8 +146,8 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //   - RecvString shall give its SendChar calls a context that also ends at deadline, so a caller
 //     that never reads cannot hold it past deadline; when that deadline, not the call's context,
 //     ends a SendChar, RecvString shall return os.ErrDeadlineExceeded.
-//   - If most is below 1 or above MostLine, then RecvString shall read nothing and return an
-//     error.
+//   - If most is below 1 or above MostLine, then RecvString shall read nothing and return
+//     ErrMostOutOfRange.
 //   - RecvString shall return any other result of RecvChar or SendChar as the table gives it.
 func (conn *Conn) RecvString(ctx context.Context, deadline time.Time, most int) (string, error) {
 	return conn.recvString(ctx, deadline, most)
