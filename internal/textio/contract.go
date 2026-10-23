@@ -44,7 +44,9 @@
 //	any other error              the connection failed; RecvString's ErrMostOutOfRange
 //	                             alone means the code calling it is wrong
 //
-// When two happen at once, the context ending wins, then a failure, then a passed deadline.
+// When two happen at once, the context ending wins, then a failure, then a passed deadline. A
+// context whose deadline has passed has ended, by the clock, whatever the connection's own error
+// says.
 //
 // # Lines for the package
 //
@@ -72,8 +74,9 @@ var ErrMostOutOfRange = errors.New("textio: a line's limit must be from 1 to Mos
 // connection is its own type with these calls, and hides inside it everything that kind needs.
 type Chars interface {
 	// SendChar queues one byte for the caller, and writes only when the queue is full. What is
-	// queued is written by Flush, by SendChar when full, and by RecvChar. The queue holds what one
-	// wait's read gives to echo and reply, so an echo never fills it. Its results are the table's.
+	// queued is written by Flush, by SendChar when the queue is full, under the context, and by
+	// RecvChar before it waits for the caller or when a reply needs room, under its deadline. Its
+	// results are the table's.
 	SendChar(ctx context.Context, character byte) error
 	// RecvChar returns the caller's next data byte, waiting no later than deadline: once deadline
 	// has passed it returns os.ErrDeadlineExceeded, even with bytes waiting. It writes what is
@@ -140,7 +143,7 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //   - If deadline passes before the line ends, then RecvString shall return
 //     os.ErrDeadlineExceeded, whatever bytes are waiting.
 //   - RecvString shall queue its echo with SendChar under the call's context, and call no Flush:
-//     the echo goes out when RecvChar next waits for the caller, under deadline, or with the next
+//     the echo goes out when what is queued is next written, as Chars says, or with the next
 //     SendString.
 //   - If most is below 1 or above MostLine, then RecvString shall read nothing and return
 //     ErrMostOutOfRange.
