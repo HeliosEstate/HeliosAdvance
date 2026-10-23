@@ -6,7 +6,6 @@ package session
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
@@ -15,14 +14,6 @@ import (
 
 // errNotBuilt is what a placeholder returns until its issue builds it.
 var errNotBuilt = errors.New("session: not built yet")
-
-func sendString(_ context.Context, _ Connection, _ string) error {
-	return errNotBuilt
-}
-
-func recvString(_ context.Context, _ Connection, _ time.Time, _ int) (string, Ending, error) {
-	return "", 0, errNotBuilt
-}
 
 func run(_ context.Context, _ Connection) (Ending, error) {
 	return 0, errNotBuilt
