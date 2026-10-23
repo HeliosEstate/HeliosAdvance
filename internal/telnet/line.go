@@ -39,8 +39,9 @@ func (line *Line) recvChar(_ context.Context, _ time.Time) (byte, error) {
 	return 0, errLineNotBuilt
 }
 
-// echoes reads the state ECHO's answer will be kept in; until the build gives it fields, no Line
-// has agreed to ECHO.
 func (line *Line) echoes() bool {
-	return line != nil && line.state != (lineState{})
+	if line != nil {
+		_ = line.state
+	}
+	return false
 }

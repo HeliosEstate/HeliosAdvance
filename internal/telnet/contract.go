@@ -33,10 +33,11 @@
 // request carries in, and all the calls' replies together never longer than all their input;
 // every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
 // into chunks any other way give the same replies and end at the same byte; and once ended it
-// stays ended and nothing changes. Strip, on every run, fed negotiation's bytes and then the rest
-// one at a time: it never crashes; it calls no byte of a Telnet command data; one call appends at
-// most one reply; the replies of Receive's calls and Strip's together are never longer than all
-// their input; and every reply is well-formed as Receive's are.
+// stays ended and nothing changes. Strip, on every run, after Receive is fed the bytes one at a
+// time until it returns true and Strip the rest one at a time: it never crashes; it calls no byte
+// of a Telnet command data; one call appends at most one reply; the replies of Receive's calls
+// and Strip's together are never longer than all their input; and every reply is well-formed as
+// Receive's are.
 //
 // # Oracles
 //
@@ -411,26 +412,29 @@ type Line struct {
 // cause the Line's table names (io.EOF for ErrCallerClosed, the context's error for
 // ErrDeadlineEnded), so a caller's hang-up reads the same before negotiation ends and after.
 //
-// Negotiation's bytes are those it read up to and including the byte that ended it, or every byte
-// it read when 3 seconds ended it: they are discarded as data, their option requests answered.
-// Every byte after them, whether negotiation's last read returned it or it is still in the
-// connection, is the Line's to read, in order: the engine cannot tell when an unread byte was
-// sent, so typing ahead works however negotiation ended. Every byte Negotiate was to write and did
-// not, the rest of a write cut short or the replies of a read that returned with a passed
+// Negotiation's bytes are those Receive read: up to and including the byte that completed the
+// caller's second answer, the byte at which Receive returned true, or every byte negotiation read
+// when no such byte came. They are discarded as data, their option requests answered. Every byte
+// after them, whether negotiation's last read returned it or it is still in the connection, is
+// the Line's to read, in order, whatever the outcome: the engine cannot tell when an unread byte
+// was sent, so typing ahead works however negotiation ended. Every byte Negotiate was to write
+// and did not, the rest of a write cut short or the replies of a read that returned with a passed
 // deadline, is the Line's to write first, so the stream stays framed as RFC 854 frames it and
 // every option request negotiation read is answered.
 //
 //   - Open shall negotiate as Negotiate does, every line of Negotiate holding for it, and return
-//     the Outcome or the error Negotiate's lines give.
+//     the Outcome or the error Negotiate's lines give, an error matching it through errors.Is.
 //   - When Open returns ErrCallerClosed, the error shall also match io.EOF; ErrDeadlineEnded
 //     already wraps the context's error.
 //   - When negotiation ends with an outcome, Open shall return a Line whose send buffer holds
 //     first, in order, every byte Negotiate was to write and did not: the rest of a write cut
 //     short, the opening requests' included, and the replies of a read that returned its bytes
 //     with a passed deadline.
-//   - When negotiation ends with an outcome, Open shall return a Line whose receive buffer holds,
-//     unread and in order, every byte negotiation's last read returned after the byte that ended
-//     negotiation, and no other byte.
+//   - When negotiation ends with an outcome after Receive returned true, Open shall return a Line
+//     whose receive buffer holds, unread and in order, every byte negotiation's last read
+//     returned after the byte at which Receive returned true, and no other byte.
+//   - When negotiation ends TimedOut before Receive returned true, Open shall return a Line whose
+//     receive buffer is empty.
 //   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
@@ -441,7 +445,10 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 // caller closed its side; the context's error, wrapped, when the context ended first, also when it
 // had ended before the call; ErrConnectionFailed, wrapping the cause, for any other failure. When
 // two happen at once, the context ending wins, then a failure, then a passed deadline; a passed
-// deadline is told by the clock, never by which of the connection's deadlines woke a read. Their
+// deadline is told by the clock, never by which of the connection's deadlines woke a read or a
+// write. In the lines below, "the context had ended" includes its deadline having passed by the
+// clock, whether or not the context reports it yet, and "a passed deadline" is a wait the
+// connection ended at a deadline, the call's or the context's, judged by the clock. Their
 // calls on the connection, the same on Linux and Windows:
 //
 //	Call                   Why                                        Documented failures
