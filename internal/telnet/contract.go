@@ -29,17 +29,17 @@
 // Every byte the caller sends crosses the trust boundary at the network listener. During
 // negotiation Negotiate, or Open as Negotiate does, reads it and hands it to Receive; after it, the
 // Line reads it and hands it to Strip, one byte at a time. Receive and Strip are the fuzz targets.
-// Receive, on every run: it never crashes; one call's replies are never longer than its input plus the 2 bytes a split
-// request carries in, and all the calls' replies together never longer than all their input;
-// every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
-// into chunks any other way give the same replies and end at the same byte; and once ended it
-// stays ended and nothing changes. Strip, on every run, after Receive is fed the bytes one at a
-// time up to a point the fuzzer picks, stopping early if it returns true, and Strip the rest one
-// at a time: it never crashes; it calls data exactly the bytes that are neither part of a
-// command nor inside a subnegotiation, and the second IAC of each IAC IAC outside one; one call
-// appends at most one reply; the replies of Receive's calls and Strip's together are never longer
-// than all their input, and well-formed; and they are the same as when Strip takes over at the
-// first byte instead.
+// Receive, on every run: it never crashes; one call's replies are never longer than its input
+// plus the 2 bytes a split request carries in, and all the calls' replies together never longer
+// than all their input; every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else;
+// the same bytes split into chunks any other way give the same replies and end at the same byte;
+// and once ended it stays ended and nothing changes. Strip, on every run, after Receive is fed
+// the bytes one at a time up to a point the fuzzer picks, stopping early if it returns true, and
+// Strip the rest one at a time: it never crashes; it calls data exactly the bytes that are neither
+// part of a command nor inside a subnegotiation, and the second IAC of each IAC IAC outside one;
+// one call appends at most one reply; the replies of Receive's calls and Strip's together are
+// never longer than all their input, and well-formed; and they are the same as when Strip takes
+// over at the first byte instead.
 //
 // # Oracles
 //
