@@ -71,18 +71,16 @@ var ErrMostOutOfRange = errors.New("textio: a line's limit must be from 1 to Mos
 // Chars is what a kind of connection supplies, declared here where it is used. Each kind of
 // connection is its own type with these calls, and hides inside it everything that kind needs.
 type Chars interface {
-	// SendChar queues one byte for the caller. What is queued is written by Flush, by SendChar
-	// itself when the queue is full, waiting no later than the context's deadline, and by RecvChar
-	// before it waits for the caller or when the queue has no room for the connection's own
-	// replies, waiting no later than RecvChar's deadline. Its results are the table's.
+	// SendChar queues one byte for the caller, and writes only when the queue is full. What is
+	// queued is written by Flush, by SendChar when full, and by RecvChar. The queue holds what one
+	// wait's read gives to echo and reply, so an echo never fills it. Its results are the table's.
 	SendChar(ctx context.Context, character byte) error
 	// RecvChar returns the caller's next data byte, waiting no later than deadline: once deadline
-	// has passed it returns os.ErrDeadlineExceeded, even with bytes waiting. Before it waits for
-	// the caller, it writes what is queued, under deadline; it writes at no other time but when
-	// the queue has no room for the connection's own replies, so a byte already waiting is
-	// otherwise returned without a write. It returns the bytes the caller sent, in the order sent,
-	// those that came before the call included, and never a byte of the connection's own
-	// commands. Its results are the table's.
+	// has passed it returns os.ErrDeadlineExceeded, even with bytes waiting. It writes what is
+	// queued before it waits for the caller, and when the queue has no room for the connection's
+	// own replies, under deadline. It returns the bytes the caller sent, in the order sent, those
+	// that came before the call included, and never a byte of the connection's own commands. Its
+	// results are the table's.
 	RecvChar(ctx context.Context, deadline time.Time) (byte, error)
 	// Flush writes what is queued; a write cut short leaves what it did not write queued, in
 	// order, so each byte is written once. Its results are the table's.
@@ -106,9 +104,8 @@ func New(chars Chars) *Conn {
 	return newConn(chars)
 }
 
-// SendChar is the kind of connection's own SendChar: it only queues the byte, which goes out with
-// the next SendString, when a RecvChar or RecvString waits for the caller or needs room for the
-// connection's own replies, or when the queue is full.
+// SendChar is the kind of connection's own SendChar: it queues the byte, which goes out with the
+// next SendString or when a RecvChar or RecvString writes, as Chars says.
 func (conn *Conn) SendChar(ctx context.Context, character byte) error {
 	return conn.sendChar(ctx, character)
 }
@@ -142,16 +139,9 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //     after the one that ended it.
 //   - If deadline passes before the line ends, then RecvString shall return
 //     os.ErrDeadlineExceeded, whatever bytes are waiting.
-//   - RecvString shall call no Flush: its echo goes out as Chars says, when a RecvChar waits for
-//     the caller or needs room for the connection's own replies, under deadline, when the queue
-//     is full, or with the next Flush.
-//   - RecvString shall give every SendChar call a context that also ends at deadline, so no echo
-//     write runs past deadline and a caller that never reads cannot hold it there.
-//   - When a SendChar returns the context's error, RecvString shall judge by the clock which
-//     ended it: the call's context's error when that context was cancelled, or its deadline is at
-//     or before deadline and has passed; otherwise os.ErrDeadlineExceeded.
-//   - When deadline, not the call's context, ends the SendChar of the echo of the byte that ended
-//     the line, RecvString shall still return the line and no error: the line ended in time.
+//   - RecvString shall queue its echo with SendChar under the call's context, and call no Flush:
+//     the echo goes out when RecvChar next waits for the caller, under deadline, or with the next
+//     SendString.
 //   - If most is below 1 or above MostLine, then RecvString shall read nothing and return
 //     ErrMostOutOfRange.
 //   - RecvString shall return any other result of RecvChar or SendChar as the table gives it.
