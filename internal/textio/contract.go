@@ -33,7 +33,8 @@
 //
 // Every call takes the call's context, which carries its ceiling and ends at once on a stop, and
 // reports why it stopped in the standard library's own terms, the same at every layer, so no layer
-// imports another's errors:
+// imports another's errors to read what the caller or the connection did. The one error of its
+// own, ErrMostOutOfRange, is a wrong call, which no caller's doing can bring about:
 //
 //	Result                       Means
 //	os.ErrDeadlineExceeded       the deadline the call was given passed first
