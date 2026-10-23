@@ -24,9 +24,10 @@
 // first form: only a character from space to tilde, 0x20 to 0x7E, is ever added to a line; every
 // other byte is dropped and never written back as itself. Edit is the fuzz target. On every run:
 // it never panics; a line never holds more than its limit nor a byte outside 0x20 to 0x7E; what it
-// echoes is only bytes it added, BS, space and BS for one removed, and CR LF at the end; the same
-// bytes give the same line and the same echo however they are split; and once a line ends it
-// stays ended.
+// echoes is only bytes it added, BS, space and BS for one removed, and CR LF at the end; the echo
+// is never longer than twice the bytes read plus 2, since a removal echoes three bytes for one but
+// needs a character added before it; the same bytes give the same line and the same echo however
+// they are split; and once a line ends it stays ended.
 //
 // # Calls and results
 //
@@ -45,7 +46,8 @@
 //
 // # Lines for the package
 //
-//   - The textio package shall write to the caller only through its Chars' SendChar. [read]
+//   - The textio package shall write to the caller only through its Chars' SendChar and Flush.
+//     [read]
 //   - The textio package shall keep no copy of a line once RecvString returns. [read]
 //   - The textio package shall write nothing to standard output or standard error. [read]
 //   - The textio package shall import nothing outside the Go standard library. [read]
@@ -62,8 +64,9 @@ const MostLine = 255
 // Chars is what a kind of connection supplies, declared here where it is used. Each kind of
 // connection is its own type with these calls, and hides inside it everything that kind needs.
 type Chars interface {
-	// SendChar queues one byte for the caller; Flush, or the next RecvChar, writes what is queued.
-	// Its results are the table's.
+	// SendChar queues one byte for the caller; Flush, or the next RecvChar, writes what is queued,
+	// and so does SendChar itself when the queue is full, waiting no later than the context's
+	// deadline. Its results are the table's.
 	SendChar(ctx context.Context, character byte) error
 	// RecvChar first writes what is queued, then returns the caller's next data byte, waiting no
 	// later than deadline: once deadline has passed it returns os.ErrDeadlineExceeded, even with
@@ -126,8 +129,8 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //     after the one that ended it.
 //   - If deadline passes before the line ends, then RecvString shall return
 //     os.ErrDeadlineExceeded, whatever bytes are waiting.
-//   - RecvString shall give every write the same deadline, so a caller that never reads cannot
-//     hold it past deadline.
+//   - RecvString shall call no Flush: its echo goes out with the next RecvChar, under deadline, so
+//     a caller that never reads cannot hold it past deadline.
 //   - If most is below 1 or above MostLine, then RecvString shall read nothing and return an
 //     error.
 //   - RecvString shall return any other result of RecvChar or SendChar as the table gives it.
