@@ -34,13 +34,12 @@
 // every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
 // into chunks any other way give the same replies and end at the same byte; and once ended it
 // stays ended and nothing changes. Strip, on every run, after Receive is fed the bytes one at a
-// time up to a point the fuzzer picks, or until it returns true if that comes first, as when the
-// 3 seconds end negotiation mid-request, and Strip the rest one at a time: it never crashes; it
-// calls data exactly the bytes outside a Telnet command and the second IAC of each IAC IAC
-// outside a subnegotiation, and no other byte; one call appends at most one reply; the replies of
-// Receive's calls and Strip's together are never longer than all their input; every reply is
-// well-formed as Receive's are; and the same input gives the same replies wherever, up to
-// Receive's end, Strip takes over.
+// time up to a point the fuzzer picks, stopping early if it returns true, and Strip the rest one
+// at a time: it never crashes; it calls data exactly the bytes that are neither part of a
+// command nor inside a subnegotiation, and the second IAC of each IAC IAC outside one; one call
+// appends at most one reply; the replies of Receive's calls and Strip's together are never longer
+// than all their input, and well-formed; and they are the same as when Strip takes over at the
+// first byte instead.
 //
 // # Oracles
 //
@@ -62,7 +61,7 @@
 // Synch's DM byte leaves the stream and the lone IAC before it would swallow the caller's next
 // character. A context carrying the call's ceiling, cancelled by a stop. One Negotiate or one Open
 // per connection, never both, from that connection's own goroutine, before anything else is
-// written to it. After either returns an error, the caller closes the connection without writing
+// written to it. After either returns an error, the Listener closes the connection without writing
 // to it. One goroutine per Negotiation and per Line: neither is safe
 // for use from two at once.
 //
@@ -389,163 +388,109 @@ func (negotiation *Negotiation) Strip(character byte, replies []byte) ([]byte, b
 	return negotiation.strip(character, replies)
 }
 
-// SendBufferSize is the Line's fixed send buffer: what negotiation still owed the caller, what
-// SendChar queues and the replies Strip gives wait here until written. SendChar and RecvChar write
-// it out when it has no room, so nothing the caller does grows it; what negotiation owed, at most
-// ReplyBufferSize bytes, always fits.
+// SendBufferSize is the Line's fixed send buffer. Between two waits for the caller it gains at
+// most one read's echo and replies, so a line's echo never fills it; when something does, the
+// call adding to it writes it out first. Nothing the caller does grows it.
 const SendBufferSize = 1024
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
-// package's Chars, which the textio package builds a caller's string calls on. It keeps a receive
-// buffer of the caller's bytes not yet read, in the order sent, which first holds the bytes Open
-// hands it, so typing ahead works; a send buffer of SendBufferSize, which first holds what
-// negotiation still owed the caller and also carries the answers to option requests; and the
-// negotiation, whose option states go on changing as the caller asks. A Line not made by Open, or
-// nil, fails every call that returns an error with ErrConnectionFailed, and its Echoes returns
-// false. One goroutine per Line.
+// package's Chars. It keeps a receive buffer of the caller's bytes not yet read, a send buffer of
+// SendBufferSize, and the negotiation, whose option states go on changing as the caller asks.
+// It reads in stream order, so an option request is answered, and ECHO changes, exactly where it
+// falls among the caller's characters. A Line not made by Open, or nil, fails every call with
+// ErrConnectionFailed, and its Echoes returns false. One goroutine per Line.
 //
-// The Line's calls report why they stopped in the standard library's own terms, the textio
-// package's table: os.ErrDeadlineExceeded when the deadline given passed first; io.EOF when the
-// caller closed its side; the context's error, wrapped, when the context ended first, also when it
-// had ended before the call; ErrConnectionFailed, wrapping the cause, for any other failure. When
-// two happen at once, the context ending wins, then a failure, then a passed deadline; a passed
-// deadline is told by the clock, never by which of the connection's deadlines woke a read or a
-// write. In the lines on the Line's calls, the context "has ended", "had ended" or "ends" when it
-// is cancelled, and also once its deadline has passed by the clock, whether or not the context
-// reports it yet, "the context's error" then being context.DeadlineExceeded; "a passed deadline"
-// is a wait the connection ended at a deadline, the call's or the context's, judged by the clock.
-// Their calls on the connection, the same on Linux and Windows:
-//
-//	Call                   Why                                        Documented failures
-//	context.AfterFunc      wakes a waiting read or write when the     none
-//	                       context ends, by a deadline in the past
-//	SetReadDeadline,       before each read or write, the earlier     an error, such as
-//	SetWriteDeadline       of the call's deadline and the context's   net.ErrClosed
-//	Write                  the send buffer                            as Negotiate's Write
-//	Read                   the caller's bytes, into a fixed buffer    as Negotiate's Read
-//	                       of ReadBufferSize
-//	time.Now               which deadline passed                      none
-//
-// Each read or write sets its own deadline first, so no call relies on the deadlines another left
-// and none restores them; whoever touches the connection after the Line sets its own. Every call
-// leaves nothing of its own running when it returns, its wake-up on the context stopped.
+// Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
+// deadline given passed first; io.EOF when the caller closed its side; the context's error,
+// wrapped, when the context ended first; ErrConnectionFailed, wrapping the cause, for any other
+// failure. When two happen at once, the context ending wins, then a failure, then a passed
+// deadline. Each is judged by the clock: a context whose deadline has passed has ended, with
+// context.DeadlineExceeded, whether or not it reports it yet. A context ending wakes a waiting
+// call at once. A call sets the connection's deadline itself before each read or write, the
+// earlier of its own deadline and the context's, or none when neither has one, and leaves
+// nothing of its own running when it returns.
 type Line struct {
 	state lineState
 }
 
-// Open is Negotiate that keeps what the call needs next: it negotiates exactly as Negotiate does,
-// and when negotiation ends with an outcome, it returns a Line over the same connection that goes
-// on where negotiation stopped, with no byte lost and none written twice. On an error it returns
-// a nil Line and Negotiate's error, which also matches, through errors.Is, the standard library's
-// cause the Line's table names (io.EOF for ErrCallerClosed, the context's error for
-// ErrDeadlineEnded), so a caller's hang-up reads the same before negotiation ends and after.
+// Open negotiates exactly as Negotiate does and, when negotiation ends with an outcome, returns a
+// Line over the same connection that carries on where negotiation stopped. On an error it
+// returns a nil Line and Negotiate's error, which also matches the standard library's cause
+// through errors.Is: io.EOF for ErrCallerClosed, the context's error for ErrDeadlineEnded.
 //
-// Negotiation's bytes are those Receive read: up to and including the byte that completed the
-// caller's second answer, the byte at which Receive returned true, or every byte negotiation read
-// when no such byte came. They are discarded as data, their option requests answered. Every byte
-// after them, whether negotiation's last read returned it or it is still in the connection, is
-// the Line's to read, in order, whatever the outcome: the engine cannot tell when an unread byte
-// was sent, so typing ahead works however negotiation ended. Every byte Negotiate was to write
-// and did not, the rest of a write cut short or the replies of a read that returned with a passed
-// deadline, is the Line's to write first, so the stream stays framed as RFC 854 frames it and
-// every option request negotiation read is answered.
+// The bytes negotiation read, up to the byte at which Receive returned true or all of them when
+// Receive never did, are negotiation's: discarded as data, their option requests answered. Every
+// byte after them is the Line's to read, in order: the engine cannot tell when an unread byte was
+// sent, so typing ahead works however negotiation ended.
 //
-//   - Open shall negotiate as Negotiate does, every line of Negotiate holding for it, and return
-//     the Outcome or the error Negotiate's lines give, an error matching it through errors.Is.
-//   - When Open returns ErrCallerClosed, the error shall also match io.EOF; ErrDeadlineEnded
-//     already wraps the context's error.
-//   - When negotiation ends with an outcome, Open shall return a Line whose send buffer holds
-//     first, in order, every byte Negotiate was to write and did not: the rest of a write cut
-//     short, the opening requests' included, and the replies of a read that returned its bytes
-//     with a passed deadline.
-//   - When negotiation ends with an outcome after Receive returned true, Open shall return a Line
-//     whose receive buffer holds, unread and in order, every byte negotiation's last read
-//     returned after the byte at which Receive returned true, and no other byte.
-//   - When negotiation ends TimedOut before Receive returned true, Open shall return a Line whose
-//     receive buffer is empty.
+//   - Open shall negotiate as Negotiate does, and return the Outcome, or an error matching
+//     Negotiate's through errors.Is.
+//   - When Open returns ErrCallerClosed, the error shall also match io.EOF.
+//   - When negotiation ends with an outcome, Open shall return a Line that writes first, in order,
+//     every byte Negotiate was to write and did not: the rest of a write cut short, and the
+//     replies of a read that returned with a passed deadline.
+//   - When negotiation ends with an outcome, Open shall return a Line that reads first, in order,
+//     every byte negotiation's last read returned after the byte at which Receive returned true.
 //   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
 }
 
-// SendChar adds one data byte to the send buffer. When the buffer has no room, SendChar first
-// writes it out as Flush does, under the context's deadline.
+// SendChar queues one data byte for the caller. It writes only when the send buffer is full.
 //
-//   - SendChar shall add a byte other than 255 to the send buffer as itself.
-//   - SendChar shall add the data byte 255 to the send buffer as IAC IAC.
-//   - When the send buffer has no room for the byte, or for both bytes of IAC IAC, SendChar shall
-//     first write the buffer out as Flush does, with Flush's results, and add nothing unless that
-//     write emptied it.
-//   - If the context has ended when SendChar is called, then SendChar shall add nothing and
-//     return the context's error, wrapped.
-//   - Before it writes, SendChar shall set the connection's write deadline to the context's
-//     deadline, and when it only adds the byte, it shall set no deadline.
-//   - When it returns, SendChar shall leave nothing of its own running. [read]
+//   - SendChar shall queue a byte other than 255 as itself, and the data byte 255 as IAC IAC.
+//   - When the send buffer has room, SendChar shall queue the byte without writing and return no
+//     error.
+//   - When the send buffer has no room, SendChar shall first write it out as Flush does, with
+//     Flush's results, and queue the byte only if that write emptied it.
 func (line *Line) SendChar(ctx context.Context, character byte) error {
 	return line.sendChar(ctx, character)
 }
 
-// Flush writes the send buffer to the connection and empties it, waiting no later than the
-// context's deadline.
+// Flush writes the send buffer out and empties it, waiting no later than the context's deadline.
 //
 //   - Flush shall write the send buffer's bytes in order, and leave it empty once they are
 //     written.
-//   - If the context has ended when Flush is called, then Flush shall write nothing and return
-//     the context's error, wrapped.
-//   - If the context ends while Flush waits, then Flush shall stop waiting and return the
-//     context's error, wrapped.
-//   - If a write fails, then Flush shall return ErrConnectionFailed, unless the context had ended.
-//   - If a write is cut short, then Flush shall keep the bytes it did not write at the front of
-//     the send buffer, in order, so that a later write sends each byte once.
-//   - Flush shall hold the send buffer in SendBufferSize bytes, and keep no other copy. [read]
-//   - Before it writes, Flush shall set the connection's write deadline to the context's
-//     deadline.
-//   - When it returns, Flush shall leave nothing of its own running. [read]
+//   - If the context has ended when Flush is called, or ends while it waits, then Flush shall
+//     write nothing more and return the context's error, wrapped.
+//   - If a write fails otherwise, then Flush shall return ErrConnectionFailed.
+//   - If a write is cut short, then Flush shall keep what it did not write at the front of the
+//     send buffer, in order, so that each byte is written once.
+//   - Flush shall keep no other copy of the send buffer. [read]
 func (line *Line) Flush(ctx context.Context) error {
 	return line.flush(ctx)
 }
 
-// RecvChar returns the caller's next data byte, reading in stream order: it hands Strip the
-// receive buffer's bytes one at a time and stops at the first data byte, so an option request is
-// answered, and ECHO's state changes, exactly where it falls among the caller's characters, and
-// nothing after the byte returned is read. When the receive buffer is empty, it writes out the
-// send buffer and then reads the connection into the receive buffer, waiting no later than
-// deadline. It makes room for a reply before it hands Strip a byte, so no reply is ever dropped.
+// RecvChar returns the caller's next data byte. It hands Strip the receive buffer's bytes one at
+// a time, queues Strip's replies, and stops at the first data byte, reading nothing after it.
+// Only when no data byte is waiting does it write the send buffer out and wait for the caller,
+// both no later than deadline.
 //
-//   - RecvChar shall hand Strip the receive buffer's bytes one at a time, in order, and stop at
-//     the first data byte, which it returns.
-//   - RecvChar shall read no byte the caller sent after the data byte it returns.
-//   - RecvChar shall add Strip's replies to the send buffer as they are, unescaped, in order.
-//   - When the send buffer has room for fewer than 3 bytes, RecvChar shall write it out under
-//     deadline, as Flush does, before it hands Strip a byte, and hand Strip none until it has
-//     room.
-//   - Before it waits for the connection, RecvChar shall write out the send buffer under
-//     deadline, as Flush does.
-//   - RecvChar shall return the caller's data bytes in the order sent and no byte of a Telnet
+//   - RecvChar shall return the caller's data bytes in the order sent, and no byte of a Telnet
 //     command.
-//   - RecvChar shall keep the bytes a read returns before it looks at that read's error.
+//   - RecvChar shall read no byte after the data byte it returns.
+//   - RecvChar shall queue Strip's replies as they are, unescaped, in order.
+//   - Before it hands Strip a byte, RecvChar shall have room for one reply, 3 bytes, writing the
+//     send buffer out as Flush does, under deadline, when it has not.
+//   - Before it waits for the caller, RecvChar shall write the send buffer out as Flush does,
+//     under deadline.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes in
 //     the receive buffer.
-//   - If the caller closes its side while the receive buffer holds no data byte, then RecvChar
-//     shall return io.EOF.
+//   - If the caller closes its side while no data byte is waiting, then RecvChar shall return
+//     io.EOF.
 //   - If the context has ended when RecvChar is called, or ends while it waits, then RecvChar
 //     shall return the context's error, wrapped, and no byte.
-//   - If a read or a write fails other than by end of file or a passed deadline, then RecvChar
-//     shall return ErrConnectionFailed, unless the context had ended.
+//   - If a read or a write fails otherwise, then RecvChar shall return ErrConnectionFailed.
+//   - RecvChar shall keep the bytes a read returns before it looks at that read's error.
 //   - RecvChar shall read into a buffer of ReadBufferSize bytes and hold at most that many bytes
 //     not yet read. [read]
-//   - Before each read or write, RecvChar shall set that deadline to the earlier of deadline and
-//     the context's deadline.
-//   - When it returns, RecvChar shall leave nothing of its own running. [read]
 func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error) {
 	return line.recvChar(ctx, deadline)
 }
 
-// Echoes is whether the board echoes on this Line now: true while ECHO is in the YES state, which
-// is while the caller has agreed to ECHO as of the last byte RecvChar read; false while it is not,
-// when the caller refused it, has not answered, or has since asked to stop, and echoes for itself
-// (RFC 857). A late yes turns the echo on and a DONT ECHO turns it off, at the place in the
-// stream where it came.
+// Echoes is whether the board echoes on this Line now: true while the caller has agreed to ECHO
+// as of the last byte RecvChar read; false when it refused, has not answered, or has since asked
+// to stop, and echoes for itself (RFC 857).
 //
 //   - While the caller has agreed to ECHO, Echoes shall return true.
 //   - While the caller has not agreed to ECHO, Echoes shall return false.
