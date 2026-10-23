@@ -13,4 +13,5 @@ is in its package's `contract.go`; what the engine does as a whole is in
 |---|---|---|---|
 | Telnet | `internal/telnet` | Telnet negotiation over one accepted connection, from the engine's first option requests to the end of negotiation | the Go standard library only |
 | Listener | `internal/listener` | Accepting callers on the listening sockets the program opened and serving each one from accept to close: the cap of 100 open connections, the 10-second hard deadline, the greeting and the close | Telnet; the Go standard library |
+| Text I/O | `internal/textio` | A caller's string calls built on a connection's character calls, once for every kind of connection: SendString, RecvString and the line editor that reads a line, with its echo; a Conn offering all four calls to the session | the Go standard library only |
 | The program | `cmd/hadv-service` | Starting and stopping: the command line, the refusal as root, listening at 127.0.0.1 and ::1, the local log, and the stop signals | Listener; the Go standard library |
