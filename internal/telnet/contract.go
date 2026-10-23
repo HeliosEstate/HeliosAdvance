@@ -293,16 +293,17 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 	return negotiation.receive(input, replies)
 }
 
-// Negotiate is the one call the Listener makes per connection. It writes the opening requests,
-// then reads into a fixed buffer of ReadBufferSize, hands the bytes to Receive and writes its
-// replies from a fixed buffer of ReplyBufferSize, until Receive reports the end or
-// NegotiationSeconds after the opening write. When two things happen at once, the context ending
-// wins, then any read or write failure, whose replies are not written; Answered only when nothing
-// failed. A read or write that gives up on a passed deadline is told apart by the clock, not by
-// whether the context reports it has ended: ErrDeadlineEnded if the context's deadline had passed
-// by then, else TimedOut. On return, with an outcome or an error, it leaves nothing behind: the
-// connection's read and write deadlines at the context's deadline, cleared if it has none, and
-// nothing of its own running. Results: ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
+// Negotiate negotiates over one connection; the Listener calls Open, which negotiates as Negotiate
+// does and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
+// ReadBufferSize, hands the bytes to Receive and writes its replies from a fixed buffer of
+// ReplyBufferSize, until Receive reports the end or NegotiationSeconds after the opening write.
+// When two things happen at once, the context ending wins, then any read or write failure, whose
+// replies are not written; Answered only when nothing failed. A read or write that gives up on a
+// passed deadline is told apart by the clock, not by whether the context reports it has ended:
+// ErrDeadlineEnded if the context's deadline had passed by then, else TimedOut. On return, with an
+// outcome or an error, it leaves nothing behind: the connection's read and write deadlines at the
+// context's deadline, cleared if it has none, and nothing of its own running. Results:
+// ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
 //
 //   - If the context has ended when Negotiate is called, then Negotiate shall return
 //     ErrDeadlineEnded without writing to the connection.

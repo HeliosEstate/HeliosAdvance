@@ -43,23 +43,27 @@
 // Urgent data is kept in line (SO_OOBINLINE) because RFC 6093 section 6 requires it of an
 // application that still uses urgent data, as Telnet's Synch does: without it a Synch's DM byte
 // leaves the stream, and the lone IAC before it would swallow the caller's next character. The
-// standard library has no call for it, so it is set through the connection's SyscallConn; the
-// option's value is the operating system's own.
+// standard library has no call for it, so it is set through the connection's SyscallConn with
+// syscall.SetsockoptInt, at the socket level: on Linux the value is syscall.SO_OOBINLINE, 0x0A; on
+// Windows, where the syscall package names none, it is Winsock's SO_OOBINLINE, 0x0100. Set after
+// accept, it also keeps in line urgent data that arrived before accept (probed on both).
 //
-//   - The listener package shall set SO_OOBINLINE on each accepted connection before it reads from
-//     or writes to it.
+// These lines are for a connection kept under the cap; one over it is closed at once, as above.
+//
+//   - The listener package shall set SO_OOBINLINE on the connection before it reads from or writes
+//     to it.
 //   - If SO_OOBINLINE cannot be set, then the listener package shall close the connection without
-//     writing to it.
-//   - The listener package shall hand each connection to telnet.Open, and the Line Open returns,
-//     through textio.New, to session.Run, both under the connection's context, whichever Outcome
-//     Open returns.
-//   - The listener package shall make one Open, one textio.New and one Run per connection, in
-//     order, from that connection's own goroutine, and write nothing to it before Open. [read]
-//   - When Run returns Answered, the listener package shall shut down the connection's sending
-//     side, then read and discard until the caller closes or ClosingWaitSeconds pass, no later than
-//     the ceiling, then close the connection.
-//   - When Open returns an error, or Run returns anything but Answered, the listener package shall
-//     close the connection without writing to it.
+//     writing to it. [read]
+//   - Once SO_OOBINLINE is set, the listener package shall call telnet.Open and then, with
+//     textio.New over the Line Open returns, session.Run, each once, under the connection's
+//     context, from the connection's own goroutine, whichever Outcome Open returns. [read]
+//   - When Run returns session.Answered, the listener package shall shut down the connection's
+//     sending side, then read and discard until the caller closes or ClosingWaitSeconds pass, no
+//     later than the ceiling, then close the connection.
+//   - If shutting down the sending side or setting the closing wait's read deadline fails, then
+//     the listener package shall close the connection at once. [read]
+//   - When Open returns an error, or Run returns anything but session.Answered, the listener
+//     package shall close the connection without writing to it.
 //   - The listener package shall set the read deadline for the closing wait itself, and rely on no
 //     deadline a call of the telnet or textio package left. [read]
 //
