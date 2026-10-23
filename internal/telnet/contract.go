@@ -36,9 +36,11 @@
 // stays ended and nothing changes. Strip, on every run, after Receive is fed the bytes one at a
 // time up to a point the fuzzer picks, or until it returns true if that comes first, as when the
 // 3 seconds end negotiation mid-request, and Strip the rest one at a time: it never crashes; it
-// calls no byte of a Telnet command data; one call appends at most one reply; the replies of
-// Receive's calls and Strip's together are never longer than all their input; and every reply is
-// well-formed as Receive's are.
+// calls data exactly the bytes outside a Telnet command and the second IAC of each IAC IAC
+// outside a subnegotiation, and no other byte; one call appends at most one reply; the replies of
+// Receive's calls and Strip's together are never longer than all their input; every reply is
+// well-formed as Receive's are; and the same input gives the same replies wherever, up to
+// Receive's end, Strip takes over.
 //
 // # Oracles
 //
@@ -60,8 +62,8 @@
 // Synch's DM byte leaves the stream and the lone IAC before it would swallow the caller's next
 // character. A context carrying the call's ceiling, cancelled by a stop. One Negotiate or one Open
 // per connection, never both, from that connection's own goroutine, before anything else is
-// written to it. After either returns an error, the
-// connection closed without a write. One goroutine per Negotiation and per Line: neither is safe
+// written to it. After either returns an error, the caller closes the connection without writing
+// to it. One goroutine per Negotiation and per Line: neither is safe
 // for use from two at once.
 //
 // # The wire format
@@ -408,27 +410,25 @@ const SendBufferSize = 1024
 // had ended before the call; ErrConnectionFailed, wrapping the cause, for any other failure. When
 // two happen at once, the context ending wins, then a failure, then a passed deadline; a passed
 // deadline is told by the clock, never by which of the connection's deadlines woke a read or a
-// write. In the lines on the Line's calls, the context "has ended", "had ended" or "ends" once
-// its deadline has passed by the clock, whether or not the context reports it yet, and "the
-// context's error" is then context.DeadlineExceeded; "a passed deadline" is a wait the connection
-// ended at a deadline, the call's or the context's, judged by the clock. Their calls on the
-// connection, the same on Linux and Windows:
+// write. In the lines on the Line's calls, the context "has ended", "had ended" or "ends" when it
+// is cancelled, and also once its deadline has passed by the clock, whether or not the context
+// reports it yet, "the context's error" then being context.DeadlineExceeded; "a passed deadline"
+// is a wait the connection ended at a deadline, the call's or the context's, judged by the clock.
+// Their calls on the connection, the same on Linux and Windows:
 //
 //	Call                   Why                                        Documented failures
 //	context.AfterFunc      wakes a waiting read or write when the     none
 //	                       context ends, by a deadline in the past
-//	SetReadDeadline,       the earlier of the call's deadline and     an error, such as
-//	SetWriteDeadline       the context's, set only by a call that     net.ErrClosed
-//	                       reads or writes
+//	SetReadDeadline,       before each read or write, the earlier     an error, such as
+//	SetWriteDeadline       of the call's deadline and the context's   net.ErrClosed
 //	Write                  the send buffer                            as Negotiate's Write
 //	Read                   the caller's bytes, into a fixed buffer    as Negotiate's Read
 //	                       of ReadBufferSize
 //	time.Now               which deadline passed                      none
 //
-// Every call that reads or writes leaves nothing behind when it returns: the connection's read and
-// write deadlines at the context's deadline, cleared if it has none, and nothing of its own
-// running, its wake-up on the context stopped. A call that neither reads nor writes touches no
-// deadline.
+// Each read or write sets its own deadline first, so no call relies on the deadlines another left
+// and none restores them; whoever touches the connection after the Line sets its own. Every call
+// leaves nothing of its own running when it returns, its wake-up on the context stopped.
 type Line struct {
 	state lineState
 }
@@ -478,9 +478,9 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 //     write emptied it.
 //   - If the context has ended when SendChar is called, then SendChar shall add nothing and
 //     return the context's error, wrapped.
-//   - When it only adds the byte, SendChar shall set no deadline on the connection.
-//   - When it writes, SendChar shall leave the connection's deadlines at the context's deadline
-//     and nothing of its own running. [read]
+//   - Before it writes, SendChar shall set the connection's write deadline to the context's
+//     deadline, and when it only adds the byte, it shall set no deadline.
+//   - When it returns, SendChar shall leave nothing of its own running. [read]
 func (line *Line) SendChar(ctx context.Context, character byte) error {
 	return line.sendChar(ctx, character)
 }
@@ -498,8 +498,9 @@ func (line *Line) SendChar(ctx context.Context, character byte) error {
 //   - If a write is cut short, then Flush shall keep the bytes it did not write at the front of
 //     the send buffer, in order, so that a later write sends each byte once.
 //   - Flush shall hold the send buffer in SendBufferSize bytes, and keep no other copy. [read]
-//   - When it returns, Flush shall leave the connection's deadlines at the context's deadline and
-//     nothing of its own running.
+//   - Before it writes, Flush shall set the connection's write deadline to the context's
+//     deadline.
+//   - When it returns, Flush shall leave nothing of its own running. [read]
 func (line *Line) Flush(ctx context.Context) error {
 	return line.flush(ctx)
 }
@@ -533,8 +534,9 @@ func (line *Line) Flush(ctx context.Context) error {
 //     shall return ErrConnectionFailed, unless the context had ended.
 //   - RecvChar shall read into a buffer of ReadBufferSize bytes and hold at most that many bytes
 //     not yet read. [read]
-//   - When it returns, RecvChar shall leave the connection's deadlines at the context's deadline,
-//     not at the deadline it was given, and nothing of its own running.
+//   - Before each read or write, RecvChar shall set that deadline to the earlier of deadline and
+//     the context's deadline.
+//   - When it returns, RecvChar shall leave nothing of its own running. [read]
 func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error) {
 	return line.recvChar(ctx, deadline)
 }
