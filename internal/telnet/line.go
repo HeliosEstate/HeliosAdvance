@@ -19,12 +19,12 @@ var errLineNotBuilt = errors.New("telnet: the line is not built yet")
 // lineState is the state a Line keeps; the build gives it its fields.
 type lineState struct{}
 
-func (negotiation *Negotiation) strip(_, data, replies []byte) ([]byte, []byte) {
-	return data, replies
+func (negotiation *Negotiation) strip(_ byte, replies []byte) ([]byte, bool) {
+	return replies, false
 }
 
 func open(_ context.Context, _ Conn) (*Line, Outcome, error) {
-	return &Line{state: lineState{}}, 0, errLineNotBuilt
+	return nil, 0, errLineNotBuilt
 }
 
 func (line *Line) sendChar(_ context.Context, _ byte) error {
@@ -39,6 +39,8 @@ func (line *Line) recvChar(_ context.Context, _ time.Time) (byte, error) {
 	return 0, errLineNotBuilt
 }
 
+// echoes reads the state ECHO's answer will be kept in; until the build gives it fields, no Line
+// has agreed to ECHO.
 func (line *Line) echoes() bool {
-	return false
+	return line != nil && line.state != (lineState{})
 }

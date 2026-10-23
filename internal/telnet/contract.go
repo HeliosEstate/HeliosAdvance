@@ -11,9 +11,9 @@
 // 3 seconds pass, saying which. After it, the Line owns the Telnet side of the textio package's
 // Chars: a receive buffer of the caller's bytes, read in stream order, each option request
 // answered by the same rules and tables and every other Telnet command discarded; a send buffer
-// written with the data byte 255 doubled, which also carries those answers; and whether the board
-// echoes, which is whether the caller has agreed to ECHO as of the byte just read. It writes
-// nothing to the local log.
+// written with the data byte 255 doubled, which also carries those answers and what negotiation
+// still owed the caller; and whether the board echoes, which is whether the caller has agreed to
+// ECHO as of the byte just read. It writes nothing to the local log.
 //
 // It does not own accepting, the cap of 100, the ceiling on a whole call, shutting down the sending
 // side, the closing wait or closing: the Listener owns those. It does not own reading a line,
@@ -28,15 +28,15 @@
 //
 // Every byte the caller sends crosses the trust boundary at the network listener. During
 // negotiation Negotiate reads it and hands it to Receive; after it, the Line reads it and hands it
-// to Strip. Receive and Strip are the fuzz targets. Receive, on every run: it never crashes; one
-// call's replies are never longer than its input plus the 2 bytes a split request carries in, and
-// all the calls' replies together never longer than all their input; every reply is a well-formed
-// 3-byte WILL, WONT or DONT and nothing else; the same bytes split into chunks any other way give
-// the same replies and end at the same byte; and once ended it stays ended and nothing changes.
-// Strip, on every run: it never crashes; it appends to data no byte of a Telnet command and never
-// more bytes than its input held; its replies are bounded as Receive's are and well-formed as
-// Receive's are; and the same bytes split into chunks any other way give the same data and the
-// same replies.
+// to Strip, one byte at a time. Receive and Strip are the fuzz targets. Receive, on every run: it
+// never crashes; one call's replies are never longer than its input plus the 2 bytes a split
+// request carries in, and all the calls' replies together never longer than all their input;
+// every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
+// into chunks any other way give the same replies and end at the same byte; and once ended it
+// stays ended and nothing changes. Strip, on every run, fed negotiation's bytes and then the rest
+// one at a time: it never crashes; it calls no byte of a Telnet command data; one call appends at
+// most one reply; the replies of Receive's calls and Strip's together are never longer than all
+// their input; and every reply is well-formed as Receive's are.
 //
 // # Oracles
 //
@@ -344,57 +344,59 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 	return negotiate(ctx, connection)
 }
 
-// Strip reads the caller's bytes after negotiation, with no connection, clock or goroutine: it
-// appends each data byte in input to data, answers each option request into replies by the same
-// rules and tables as Receive (RFC 854, RFC 1143), keeping the same option states, and discards
-// every other Telnet command. It goes on from where Receive stopped, so a command that
-// negotiation's end split is read whole; from its first call, Receive appends nothing more. The
-// option rules and tables are in one place, Receive's, used by both, so a later layer adds a
-// Telnet option there alone. It never fails.
+// Strip reads one byte the caller sent after negotiation, with no connection, clock or goroutine,
+// and returns true when that byte is a data byte, the character itself; false when it is part of
+// a Telnet command. It answers each option request into replies by the same rules and tables as
+// Receive (RFC 854, RFC 1143), keeping the same option states, and discards every other Telnet
+// command. It goes on from where Receive stopped, so a command that negotiation's end split is
+// read whole; from its first call, Receive appends nothing more. The option rules and tables are
+// in one place, Receive's, used by both, so a later layer adds a Telnet option there alone. It
+// never fails. One byte at a time, it cannot read a byte past the data byte it returns.
 //
-// How input is read after negotiation (RFC 854, RFC 855):
+// How the bytes are read after negotiation (RFC 854, RFC 855):
 //
 //	IAC, then WILL, WONT, DO or DONT, then one byte   an option request, answered by the tables
 //	                                                  on Receive, as while negotiation lasts
-//	IAC IAC, outside a subnegotiation                 the data byte 255, appended
+//	IAC IAC, outside a subnegotiation                 the second IAC is the data byte 255
 //	IAC SB, to IAC SE                                 a subnegotiation, discarded whole;
 //	                                                  IAC IAC inside it does not end it
 //	IAC, then any other byte                          a two-byte command, discarded
-//	any other byte                                    data, appended
+//	any other byte                                    data
 //
 // Lines:
 //
-//   - Strip shall append every data byte in input to data, in order, and no byte of a Telnet
-//     command.
-//   - When input holds IAC IAC outside a subnegotiation, Strip shall append the data byte 255.
-//   - When input holds an option request, Strip shall answer it into replies and change the
+//   - Strip shall return true for each data byte and false for each byte of a Telnet command.
+//   - When the bytes hold IAC IAC outside a subnegotiation, Strip shall return false for the
+//     first IAC and true for the second, the data byte 255.
+//   - When a byte completes an option request, Strip shall answer it into replies and change the
 //     option's state exactly as Receive's lines do while negotiation lasts.
-//   - When input holds IAC and then a byte other than WILL, WONT, DO, DONT, SB or IAC, or a
-//     subnegotiation, Strip shall discard it without reply.
-//   - When a sequence is split across calls, or across negotiation's end and a call, Strip shall
-//     read it as it would had the sequence come in one call.
-//   - Strip shall append its data and replies after the bytes already in data and replies, and
-//     leave those unchanged.
-//   - Strip shall append, in one call, no more bytes to data than input held, and no more to
-//     replies than input held plus 2.
+//   - When the bytes hold IAC and then a byte other than WILL, WONT, DO, DONT, SB or IAC, or a
+//     subnegotiation, Strip shall discard them without reply.
+//   - When a sequence is split across negotiation's end, Strip shall read it as it would had the
+//     sequence come after it whole.
+//   - Strip shall append its reply after the bytes already in replies, and leave those unchanged.
+//   - Strip shall append at most one reply, 3 bytes, in one call.
 //   - Strip shall append to replies, over all its calls and Receive's on one negotiation, no more
 //     bytes than all their input held.
 //   - After Strip's first call, Receive shall append no reply and change no state on that
 //     negotiation, for every later call.
-//   - Strip shall return for every input without failing or panicking.
-func (negotiation *Negotiation) Strip(input, data, replies []byte) ([]byte, []byte) {
-	return negotiation.strip(input, data, replies)
+//   - Strip shall return for every byte without failing or panicking.
+func (negotiation *Negotiation) Strip(character byte, replies []byte) ([]byte, bool) {
+	return negotiation.strip(character, replies)
 }
 
-// SendBufferSize is the Line's fixed send buffer: what SendChar queues and the replies Strip
-// gives wait here until written. It holds a whole line's echo and the replies to one read at once.
+// SendBufferSize is the Line's fixed send buffer: what negotiation still owed the caller, what
+// SendChar queues and the replies Strip gives wait here until written. SendChar and RecvChar write
+// it out when it has no room, so nothing the caller does grows it; what negotiation owed, at most
+// ReplyBufferSize bytes, always fits.
 const SendBufferSize = 1024
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
 // package's Chars, which the textio package builds a caller's string calls on. It keeps a receive
 // buffer of the caller's bytes not yet read, in the order sent, which first holds what
 // negotiation's last read left after the byte that ended it, so typing ahead works; a send buffer
-// of SendBufferSize, which also carries the answers to option requests; and the negotiation, whose
+// of SendBufferSize, which first holds what negotiation still owed the caller and also carries the
+// answers to option requests; and the negotiation, whose
 // option states go on changing as the caller asks. A Line not made by Open, or nil, fails every
 // call that returns an error with ErrConnectionFailed, and its Echoes returns false. One goroutine
 // per Line.
@@ -403,25 +405,32 @@ type Line struct {
 }
 
 // Open is Negotiate that keeps what the call needs next: it negotiates exactly as Negotiate does,
-// and when negotiation ends with an outcome, it returns a Line over the same connection. On an
-// error it returns a nil Line and Negotiate's error, which also matches, through errors.Is, the
-// standard library's cause the Line's table names (io.EOF for ErrCallerClosed, the context's
-// error for ErrDeadlineEnded), so a caller's hang-up reads the same before negotiation ends and
-// after. What negotiation read is discarded as data, its requests answered; what it had not read
-// when it ended comes after it, in the Line's receive buffer or still in the connection, and is
-// read by the Line in order, his decision of 2026-10-23: the engine cannot tell when an unread
-// byte was sent, so "during negotiation" means what negotiation read.
+// and when negotiation ends with an outcome, it returns a Line over the same connection that goes
+// on where negotiation stopped, with no byte lost and none written twice. On an error it returns
+// a nil Line and Negotiate's error, which also matches, through errors.Is, the standard library's
+// cause the Line's table names (io.EOF for ErrCallerClosed, the context's error for
+// ErrDeadlineEnded), so a caller's hang-up reads the same before negotiation ends and after.
+//
+// Negotiation's bytes are those it read up to and including the byte that ended it, or every byte
+// it read when 3 seconds ended it: they are discarded as data, their option requests answered.
+// Every byte after them, whether negotiation's last read returned it or it is still in the
+// connection, is the Line's to read, in order: the engine cannot tell when an unread byte was
+// sent, so typing ahead works however negotiation ended. Every byte Negotiate was to write and did
+// not, the rest of a write cut short or the replies of a read that returned with a passed
+// deadline, is the Line's to write first, so the stream stays framed as RFC 854 frames it and
+// every option request negotiation read is answered.
 //
 //   - Open shall negotiate as Negotiate does, every line of Negotiate holding for it, and return
 //     the Outcome or the error Negotiate's lines give.
 //   - When Open returns ErrCallerClosed, the error shall also match io.EOF; ErrDeadlineEnded
 //     already wraps the context's error.
-//   - When negotiation ends Answered, Open shall return a Line whose receive buffer holds, unread
-//     and in order, the bytes negotiation's last read left after the byte that ended negotiation.
-//   - When negotiation ends TimedOut, Open shall return a Line whose receive buffer is empty,
-//     leaving in the connection, to be read in order, what negotiation had not read.
-//   - When negotiation ends TimedOut with a write cut short, Open shall queue the rest of that
-//     write first in the Line's send buffer, so the stream stays framed as RFC 854 frames it.
+//   - When negotiation ends with an outcome, Open shall return a Line whose send buffer holds
+//     first, in order, every byte Negotiate was to write and did not: the rest of a write cut
+//     short, the opening requests' included, and the replies of a read that returned its bytes
+//     with a passed deadline.
+//   - When negotiation ends with an outcome, Open shall return a Line whose receive buffer holds,
+//     unread and in order, every byte negotiation's last read returned after the byte that ended
+//     negotiation, and no other byte.
 //   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
@@ -454,8 +463,9 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 //
 //   - SendChar shall add a byte other than 255 to the send buffer as itself.
 //   - SendChar shall add the data byte 255 to the send buffer as IAC IAC.
-//   - When the send buffer has no room for the byte, SendChar shall first write the buffer out as
-//     Flush does, with Flush's results.
+//   - When the send buffer has no room for the byte, or for both bytes of IAC IAC, SendChar shall
+//     first write the buffer out as Flush does, with Flush's results, and add nothing unless that
+//     write emptied it.
 //   - If the context has ended when SendChar is called, then SendChar shall add nothing and
 //     return the context's error, wrapped.
 //   - When it returns, SendChar shall leave the connection's deadlines at the context's deadline
@@ -472,6 +482,8 @@ func (line *Line) SendChar(ctx context.Context, character byte) error {
 //   - If the context ends while Flush waits, then Flush shall stop waiting and return the
 //     context's error, wrapped.
 //   - If a write fails, then Flush shall return ErrConnectionFailed, unless the context had ended.
+//   - If a write is cut short, then Flush shall keep the bytes it did not write at the front of
+//     the send buffer, in order, so that a later write sends each byte once.
 //   - Flush shall hold the send buffer in SendBufferSize bytes, and keep no other copy. [read]
 //   - When it returns, Flush shall leave the connection's deadlines at the context's deadline and
 //     nothing of its own running.
@@ -484,14 +496,17 @@ func (line *Line) Flush(ctx context.Context) error {
 // answered, and ECHO's state changes, exactly where it falls among the caller's characters, and
 // nothing after the byte returned is read. When the receive buffer is empty, it writes out the
 // send buffer and then reads the connection into the receive buffer, waiting no later than
-// deadline.
+// deadline. It makes room for a reply before it hands Strip a byte, so no reply is ever dropped.
 //
 //   - RecvChar shall hand Strip the receive buffer's bytes one at a time, in order, and stop at
 //     the first data byte, which it returns.
 //   - RecvChar shall read no byte the caller sent after the data byte it returns.
 //   - RecvChar shall add Strip's replies to the send buffer as they are, unescaped, in order.
+//   - When the send buffer has room for fewer than 3 bytes, RecvChar shall write it out under
+//     deadline, as Flush does, before it hands Strip a byte, and hand Strip none until it has
+//     room.
 //   - Before it waits for the connection, RecvChar shall write out the send buffer under
-//     deadline.
+//     deadline, as Flush does.
 //   - RecvChar shall return the caller's data bytes in the order sent and no byte of a Telnet
 //     command.
 //   - RecvChar shall keep the bytes a read returns before it looks at that read's error.
