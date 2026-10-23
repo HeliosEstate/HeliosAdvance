@@ -4,3 +4,4 @@
 # that is also a git pathspec.
 internal/telnet/*
 internal/listener/*
+internal/textio/*
