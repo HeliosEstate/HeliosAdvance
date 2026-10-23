@@ -19,8 +19,8 @@ var errLineNotBuilt = errors.New("telnet: the line is not built yet")
 // lineState is the state a Line keeps; the build gives it its fields.
 type lineState struct{}
 
-func (negotiation *Negotiation) strip(_, data []byte) []byte {
-	return data
+func (negotiation *Negotiation) strip(_, data, replies []byte) ([]byte, []byte) {
+	return data, replies
 }
 
 func open(_ context.Context, _ Conn) (*Line, Outcome, error) {

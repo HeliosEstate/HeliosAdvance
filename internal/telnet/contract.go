@@ -31,9 +31,10 @@
 // all the calls' replies together never longer than all their input; every reply is a well-formed
 // 3-byte WILL, WONT or DONT and nothing else; the same bytes split into chunks any other way give
 // the same replies and end at the same byte; and once ended it stays ended and nothing changes.
-// Strip, on every run: it never crashes; it appends no byte of a Telnet command and never more
-// bytes than its input held; and the same bytes split into chunks any other way give the same
-// data.
+// Strip, on every run: it never crashes; it appends to data no byte of a Telnet command and never
+// more bytes than its input held; its replies are bounded as Receive's are and well-formed as
+// Receive's are; and the same bytes split into chunks any other way give the same data and the
+// same replies.
 //
 // # Oracles
 //
@@ -339,14 +340,17 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 }
 
 // Strip reads the caller's bytes after negotiation, with no connection, clock or goroutine: it
-// appends each data byte in input to data and discards every Telnet command, going on from where
-// Receive stopped, so a command that negotiation's end split is read whole. It sends no reply
-// and changes no option state, whether Receive ended negotiation or 3 seconds passed first; from
-// its first call, Receive appends no reply and changes nothing. It never fails.
+// appends each data byte in input to data, answers each option request into replies by the same
+// rules and tables as Receive (RFC 854, RFC 1143), keeping the same option states, and discards
+// every other Telnet command. It goes on from where Receive stopped, so a command that
+// negotiation's end split is read whole; from its first call, Receive appends nothing more. The
+// option rules and tables are in one place, Receive's, used by both, so a later layer adds a
+// Telnet option there alone. It never fails.
 //
 // How input is read after negotiation (RFC 854, RFC 855):
 //
-//	IAC, then WILL, WONT, DO or DONT, then one byte   an option request, discarded, no reply
+//	IAC, then WILL, WONT, DO or DONT, then one byte   an option request, answered by the tables
+//	                                                  on Receive, as while negotiation lasts
 //	IAC IAC, outside a subnegotiation                 the data byte 255, appended
 //	IAC SB, to IAC SE                                 a subnegotiation, discarded whole;
 //	                                                  IAC IAC inside it does not end it
@@ -358,22 +362,27 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 //   - Strip shall append every data byte in input to data, in order, and no byte of a Telnet
 //     command.
 //   - When input holds IAC IAC outside a subnegotiation, Strip shall append the data byte 255.
-//   - When input holds an option request, Strip shall discard it and append no reply anywhere.
+//   - When input holds an option request, Strip shall answer it into replies and change the
+//     option's state exactly as Receive's lines do while negotiation lasts.
+//   - When input holds IAC and then a byte other than WILL, WONT, DO, DONT, SB or IAC, or a
+//     subnegotiation, Strip shall discard it without reply.
 //   - When a sequence is split across calls, or across negotiation's end and a call, Strip shall
 //     read it as it would had the sequence come in one call.
-//   - Strip shall append its data after the bytes already in data and leave those unchanged.
-//   - Strip shall append, in one call, no more bytes than input held.
-//   - Strip shall change no option state and make Receive append nothing from its first call on.
+//   - Strip shall append its data and replies after the bytes already in data and replies, and
+//     leave those unchanged.
+//   - Strip shall append, in one call, no more bytes to data than input held, and no more to
+//     replies than input held plus 2.
 //   - Strip shall return for every input without failing or panicking.
-func (negotiation *Negotiation) Strip(input, data []byte) []byte {
-	return negotiation.strip(input, data)
+func (negotiation *Negotiation) Strip(input, data, replies []byte) ([]byte, []byte) {
+	return negotiation.strip(input, data, replies)
 }
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
 // package's Chars, which the textio package builds a caller's string calls on. It keeps a receive
 // buffer, which first holds the data in the bytes negotiation's last read left after the one that
-// ended it, so typing ahead works; a send buffer; and whether the caller agreed to ECHO. A Line
-// not made by Open, or nil, fails every call with ErrConnectionFailed. One goroutine per Line.
+// ended it, so typing ahead works; a send buffer, which also carries Strip's replies; and the
+// negotiation, whose option states go on changing as the caller asks. A Line not made by Open, or
+// nil, fails every call with ErrConnectionFailed. One goroutine per Line.
 type Line struct {
 	state lineState
 }
@@ -392,9 +401,9 @@ type Line struct {
 //   - When negotiation ends Answered, Open shall return a Line whose receive buffer holds the
 //     data, read by Strip, in the bytes negotiation's last read left after the byte that ended
 //     negotiation.
-//   - When negotiation ends TimedOut, Open shall discard what the caller sent during negotiation,
-//     reading what had arrived by its end with Strip and keeping none of it, and return a Line
-//     whose receive buffer is empty.
+//   - When negotiation ends TimedOut, Open shall discard the data the caller sent during
+//     negotiation, reading what had arrived by its end with Strip, keeping none of its data and
+//     queueing its replies, and return a Line whose receive buffer is empty.
 //   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
@@ -459,6 +468,8 @@ func (line *Line) Flush(ctx context.Context) error {
 //   - RecvChar shall return the caller's data bytes in the order sent, those in the receive buffer
 //     from negotiation first, and no byte of a Telnet command.
 //   - RecvChar shall hand every byte a read returns to Strip before it looks at that read's error.
+//   - RecvChar shall queue Strip's replies in the send buffer, in order, ahead of any later byte,
+//     so they are written before it next waits.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes in
 //     the receive buffer, and give every write it makes the same deadline.
 //   - If the caller closes its side while the receive buffer is empty, then RecvChar shall return
@@ -475,13 +486,13 @@ func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error
 	return line.recvChar(ctx, deadline)
 }
 
-// Echoes is whether the board echoes on this Line: true when negotiation ended with ECHO in the
-// YES state, which is when the caller agreed to ECHO; false when the caller refused it or stayed
-// silent through negotiation, and echoes for itself (RFC 857). Fixed for the call, since option
-// requests after negotiation are discarded.
+// Echoes is whether the board echoes on this Line now: true while ECHO is in the YES state, which
+// is while the caller has agreed to ECHO; false while it is not, when the caller refused it, has
+// not answered, or has since asked to stop, and echoes for itself (RFC 857). It follows the
+// option's state as Strip changes it, so a late yes turns the echo on and a DONT ECHO turns it off.
 //
 //   - While the caller has agreed to ECHO, Echoes shall return true.
-//   - If the caller did not agree to ECHO during negotiation, then Echoes shall return false.
+//   - While the caller has not agreed to ECHO, Echoes shall return false.
 func (line *Line) Echoes() bool {
 	return line.echoes()
 }
