@@ -1,30 +1,45 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package telnet negotiates Telnet options over one accepted connection, from the engine's first
-// option requests to the end of negotiation.
+// Package telnet is the Telnet kind of connection: it negotiates Telnet options over one accepted
+// connection, and then carries the caller's characters for the session as the Line.
 //
-// It owns the opening requests, WILL ECHO and WILL SGA; reading what the caller sends through a
-// fixed buffer; the Q-method state of ECHO and SGA on the engine's side (RFC 1143); the replies,
-// refusing every other Telnet option, at most one reply per option request; discarding every other
-// byte; and ending negotiation when the caller has answered both requests or 3 seconds pass, saying
-// which. It writes nothing to the local log.
+// During negotiation it owns the opening requests, WILL ECHO and WILL SGA; reading what the caller
+// sends through a fixed buffer; the Q-method state of ECHO and SGA on the engine's side (RFC 1143);
+// the replies, refusing every other Telnet option, at most one reply per option request;
+// discarding every other byte; and ending negotiation when the caller has answered both requests or
+// 3 seconds pass, saying which. After it, the Line owns the Telnet side of the textio package's
+// Chars: a receive buffer of the caller's bytes, read in stream order, each option request
+// answered by the same rules and tables and every other Telnet command discarded; a send buffer
+// written with the data byte 255 doubled, which also carries those answers and what negotiation
+// still owed the caller; and whether the board echoes, which is whether the caller has agreed to
+// ECHO as of the byte just read. It writes nothing to the local log.
 //
-// It does not own accepting, the cap of 100, the 10-second hard deadline, the greeting, shutting
-// down the sending side, reading and discarding after that, or closing: the Listener owns those.
-// The command line, running as root, stop signals, stopping and the local log belong to the
+// It does not own accepting, the cap of 100, the ceiling on a whole call, shutting down the sending
+// side, the closing wait or closing: the Listener owns those. It does not own reading a line,
+// editing it or deciding what to echo, which the textio package owns, nor what the call says and
+// asks, which the session owns; it declares nothing of either package's and imports nothing of
+// them. The command line, running as root, stop signals, stopping and the local log belong to the
 // program. Later layers own any Telnet option other than ECHO and SGA beyond refusing it.
 //
 // It has no files.
 //
 // # Untrusted input
 //
-// Every byte the caller sends crosses the trust boundary at the network listener; Negotiate reads
-// it and hands it to Receive. Receive is the fuzz target. On every run: it never crashes; one
-// call's replies are never longer than its input plus the 2 bytes a split request carries in, and
-// all the calls' replies together never longer than all their input; every reply is a well-formed
-// 3-byte WILL, WONT or DONT and nothing else; the same bytes split into chunks any other way give
-// the same replies and end at the same byte; and once ended it stays ended and nothing changes.
+// Every byte the caller sends crosses the trust boundary at the network listener. During
+// negotiation Negotiate reads it and hands it to Receive; after it, the Line reads it and hands it
+// to Strip, one byte at a time. Receive and Strip are the fuzz targets. Receive, on every run: it
+// never crashes; one call's replies are never longer than its input plus the 2 bytes a split
+// request carries in, and all the calls' replies together never longer than all their input;
+// every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
+// into chunks any other way give the same replies and end at the same byte; and once ended it
+// stays ended and nothing changes. Strip, on every run, after Receive is fed the bytes one at a
+// time up to a point the fuzzer picks, stopping early if it returns true, and Strip the rest one
+// at a time: it never crashes; it calls data exactly the bytes that are neither part of a
+// command nor inside a subnegotiation, and the second IAC of each IAC IAC outside one; one call
+// appends at most one reply; the replies of Receive's calls and Strip's together are never longer
+// than all their input, and well-formed; and they are the same as when Strip takes over at the
+// first byte instead.
 //
 // # Oracles
 //
@@ -33,17 +48,22 @@
 // scripted Telnet client, written from RFC 854 and RFC 1143 before and apart from this package's
 // code, on real loopback sockets, without this package's constants. Its callers answer yes, answer
 // no, stay silent, ask for other options, never read, hang up halfway, break the connection, send
-// a subnegotiation that never ends, and send requests a byte at a time. Tests run on Linux x86-64,
+// a subnegotiation that never ends, and send requests a byte at a time. The Line over a socket: the
+// same client typing after negotiation, with commands, IAC IAC and option requests among its
+// characters, ahead of the prompt, and across negotiation's end. Tests run on Linux x86-64,
 // Linux ARM64 and Windows x86-64, as an ordinary user with no admin, root or container, over
 // loopback on a port the operating system picks. It uses the Go standard library only.
 //
 // # What it needs from its callers
 //
-// A connection with read and write deadlines. A context carrying the connection's 10-second hard
-// deadline, cancelled by a stop. One Negotiate per connection, from that connection's own
-// goroutine, before anything else is written to it. After Negotiate returns an error, the
-// connection closed without a write. One goroutine per Negotiation: it is not safe for use from
-// two at once.
+// A connection with read and write deadlines. For Open and the Line, a connection that keeps TCP
+// urgent data in line (SO_OOBINLINE), as RFC 6093 section 6 requires of Telnet: without it a
+// Synch's DM byte leaves the stream and the lone IAC before it would swallow the caller's next
+// character. A context carrying the call's ceiling, cancelled by a stop. One Negotiate or one Open
+// per connection, never both, from that connection's own goroutine, before anything else is
+// written to it. After either returns an error, the Listener closes the connection without writing
+// to it. One goroutine per Negotiation and per Line: neither is safe
+// for use from two at once.
 //
 // # The wire format
 //
@@ -128,7 +148,7 @@ const (
 	NegotiationSeconds = 3
 )
 
-// Outcome is how negotiation ended when nothing failed. The greeting goes out after either.
+// Outcome is how negotiation ended when nothing failed. The call goes on after either.
 type Outcome int
 
 const (
@@ -161,8 +181,8 @@ var (
 	// ErrConnectionFailed means any other read or write failure on the connection, a reset
 	// included.
 	ErrConnectionFailed = errors.New("telnet: the connection failed")
-	// ErrDeadlineEnded means the context ended first: the 10-second hard deadline or a forced
-	// stop, also when it had ended before anything was written. It is returned wrapping
+	// ErrDeadlineEnded means Negotiate's context ended first: the call's ceiling or a forced stop,
+	// also when it had ended before anything was written. It is returned wrapping
 	// context.DeadlineExceeded or context.Canceled, so errors.Is matches it and the one wrapped.
 	ErrDeadlineEnded = errors.New("telnet: the deadline ended first")
 )
@@ -325,4 +345,161 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 //     leave nothing behind.
 func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 	return negotiate(ctx, connection)
+}
+
+// Strip reads one byte the caller sent after negotiation, with no connection, clock or goroutine,
+// and returns true when that byte is a data byte, the character itself; false when it is part of
+// a Telnet command. It answers each option request into replies by the same rules and tables as
+// Receive (RFC 854, RFC 1143), keeping the same option states, and discards every other Telnet
+// command. It goes on from where Receive stopped, so a command that negotiation's end split is
+// read whole; from its first call, Receive appends nothing more. The option rules and tables are
+// in one place, Receive's, used by both, so a later layer adds a Telnet option there alone. It
+// never fails. One byte at a time, it cannot read a byte past the data byte it returns.
+//
+// How the bytes are read after negotiation (RFC 854, RFC 855):
+//
+//	IAC, then WILL, WONT, DO or DONT, then one byte   an option request, answered by the tables
+//	                                                  on Receive, as while negotiation lasts
+//	IAC IAC, outside a subnegotiation                 the second IAC is the data byte 255
+//	IAC SB, to IAC SE                                 a subnegotiation, discarded whole;
+//	                                                  IAC IAC inside it does not end it
+//	IAC, then any other byte                          a two-byte command, discarded
+//	any other byte                                    data
+//
+// Lines:
+//
+//   - Strip shall return true for each data byte and false for each byte of a Telnet command.
+//   - When the bytes hold IAC IAC outside a subnegotiation, Strip shall return false for the
+//     first IAC and true for the second, the data byte 255.
+//   - When a byte completes an option request, Strip shall answer it into replies and change the
+//     option's state exactly as Receive's lines do while negotiation lasts.
+//   - When the bytes hold IAC and then a byte other than WILL, WONT, DO, DONT, SB or IAC, or a
+//     subnegotiation, Strip shall discard them without reply.
+//   - When a sequence is split across negotiation's end, Strip shall read it as it would had the
+//     sequence come after it whole.
+//   - Strip shall append its reply after the bytes already in replies, and leave those unchanged.
+//   - Strip shall append at most one reply, 3 bytes, in one call.
+//   - Strip shall append to replies, over all its calls and Receive's on one negotiation, no more
+//     bytes than all their input held.
+//   - After Strip's first call, Receive shall append no reply and change no state on that
+//     negotiation, for every later call.
+//   - Strip shall return for every byte without failing or panicking.
+func (negotiation *Negotiation) Strip(character byte, replies []byte) ([]byte, bool) {
+	return negotiation.strip(character, replies)
+}
+
+// SendBufferSize is the Line's fixed send buffer. When it is full, the call adding to it writes
+// it out first, so nothing the caller does grows it.
+const SendBufferSize = 1024
+
+// Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
+// package's Chars. It keeps a receive buffer of the caller's bytes not yet read, a send buffer of
+// SendBufferSize, and the negotiation, whose option states go on changing as the caller asks.
+// It reads in stream order, so an option request is answered, and ECHO changes, exactly where it
+// falls among the caller's characters. A Line not made by Open, or nil, fails every call with
+// ErrConnectionFailed, and its Echoes returns false. One goroutine per Line.
+//
+// Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
+// deadline given passed first; io.EOF when the caller closed its side; the context's error,
+// wrapped, when the context ended first; ErrConnectionFailed, wrapping the cause, for any other
+// failure. When two happen at once, the context ending wins, then a failure, then a passed
+// deadline. Each is judged by the clock: a context whose deadline has passed has ended, with
+// context.DeadlineExceeded, whether or not it reports it yet. A context ending wakes a waiting
+// call at once. A call sets the connection's deadline itself before each read or write, the
+// earlier of its own deadline and the context's, or none when neither has one, and leaves
+// nothing of its own running when it returns.
+type Line struct {
+	state lineState
+}
+
+// Open negotiates exactly as Negotiate does and, when negotiation ends with an outcome, returns a
+// Line over the same connection that carries on where negotiation stopped. On an error it
+// returns a nil Line and Negotiate's error, which also matches the standard library's cause
+// through errors.Is: io.EOF for ErrCallerClosed, the context's error for ErrDeadlineEnded.
+//
+// The bytes negotiation read, up to the byte at which Receive returned true or all of them when
+// Receive never did, are negotiation's: discarded as data, their option requests answered. Every
+// byte after them is the Line's to read, in order: the engine cannot tell when an unread byte was
+// sent, so typing ahead works however negotiation ended.
+//
+//   - Open shall negotiate as Negotiate does, and return the Outcome, or an error matching
+//     Negotiate's through errors.Is.
+//   - When Open returns ErrCallerClosed, the error shall also match io.EOF.
+//   - When negotiation ends with an outcome, Open shall return a Line that writes first, in order,
+//     every byte Negotiate was to write and did not: the rest of a write cut short, and the
+//     replies of a read that returned with a passed deadline.
+//   - When negotiation ends with an outcome after Receive returned true, Open shall return a Line
+//     whose receive buffer holds, unread and in order, every byte negotiation's last read
+//     returned after the byte at which Receive returned true, and no other byte.
+//   - When negotiation ends TimedOut before Receive returned true, Open shall return a Line whose
+//     receive buffer is empty.
+//   - When it returns an error, Open shall return a nil Line.
+func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
+	return open(ctx, connection)
+}
+
+// SendChar queues one data byte for the caller. It writes only when the send buffer is full.
+//
+//   - SendChar shall queue a byte other than 255 as itself, and the data byte 255 as IAC IAC.
+//   - If the context has ended when SendChar is called, then SendChar shall queue nothing and
+//     return the context's error, wrapped.
+//   - When the send buffer has room for the byte, or for both bytes of IAC IAC, SendChar shall
+//     queue it without writing and return no error.
+//   - When the send buffer has no room for the byte, or for both bytes of IAC IAC, SendChar shall
+//     first write it out as Flush does, with Flush's results, and queue nothing unless that write
+//     emptied it.
+func (line *Line) SendChar(ctx context.Context, character byte) error {
+	return line.sendChar(ctx, character)
+}
+
+// Flush writes the send buffer out and empties it, waiting no later than the context's deadline.
+//
+//   - Flush shall write the send buffer's bytes in order, and leave it empty once they are
+//     written.
+//   - If the context has ended when Flush is called, or ends while it waits, then Flush shall
+//     write nothing more and return the context's error, wrapped.
+//   - If a write fails otherwise, then Flush shall return ErrConnectionFailed.
+//   - If a write is cut short, then Flush shall keep what it did not write at the front of the
+//     send buffer, in order, so that each byte is written once.
+//   - Flush shall hold the send buffer in SendBufferSize bytes, and keep no other copy. [read]
+func (line *Line) Flush(ctx context.Context) error {
+	return line.flush(ctx)
+}
+
+// RecvChar returns the caller's next data byte. It hands Strip the receive buffer's bytes one at
+// a time, queues Strip's replies, and stops at the first data byte, reading nothing after it.
+// It writes the send buffer out before it waits for the caller, and when a reply needs room, both
+// no later than deadline.
+//
+//   - RecvChar shall return the caller's data bytes in the order sent, and no byte of a Telnet
+//     command.
+//   - RecvChar shall read no byte after the data byte it returns.
+//   - RecvChar shall queue Strip's replies as they are, unescaped, in order.
+//   - Before it hands Strip a byte, RecvChar shall have room for one reply, 3 bytes, writing the
+//     send buffer out as Flush does, under deadline, when it has not.
+//   - Before it waits for the caller, RecvChar shall write the send buffer out as Flush does,
+//     under deadline.
+//   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes in
+//     the receive buffer.
+//   - If the caller closes its side while no data byte is waiting, then RecvChar shall return
+//     io.EOF.
+//   - If the context has ended when RecvChar is called, or ends while it waits, then RecvChar
+//     shall return the context's error, wrapped, and no byte.
+//   - If a read or a write fails otherwise, then RecvChar shall return ErrConnectionFailed.
+//   - RecvChar shall keep the bytes a read returns before it looks at that read's error.
+//   - RecvChar shall read into a buffer of ReadBufferSize bytes and hold at most that many bytes
+//     not yet read. [read]
+func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error) {
+	return line.recvChar(ctx, deadline)
+}
+
+// Echoes is whether the board echoes on this Line now: true while the caller has agreed to ECHO
+// as of the last byte RecvChar read; false when it refused, has not answered, or has since asked
+// to stop, and echoes for itself (RFC 857).
+//
+//   - While the caller has agreed to ECHO, Echoes shall return true.
+//   - While the caller has not agreed to ECHO, Echoes shall return false.
+//   - If the Line was not made by Open, or is nil, then Echoes shall return false.
+func (line *Line) Echoes() bool {
+	return line.echoes()
 }
