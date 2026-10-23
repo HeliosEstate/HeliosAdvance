@@ -129,8 +129,10 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //     after the one that ended it.
 //   - If deadline passes before the line ends, then RecvString shall return
 //     os.ErrDeadlineExceeded, whatever bytes are waiting.
-//   - RecvString shall call no Flush: its echo goes out with the next RecvChar, under deadline, so
-//     a caller that never reads cannot hold it past deadline.
+//   - RecvString shall call no Flush: its echo goes out with the next RecvChar, under deadline.
+//   - RecvString shall give its SendChar calls a context that also ends at deadline, so a caller
+//     that never reads cannot hold it past deadline; when that deadline, not the call's context,
+//     ends a SendChar, RecvString shall return os.ErrDeadlineExceeded.
 //   - If most is below 1 or above MostLine, then RecvString shall read nothing and return an
 //     error.
 //   - RecvString shall return any other result of RecvChar or SendChar as the table gives it.
