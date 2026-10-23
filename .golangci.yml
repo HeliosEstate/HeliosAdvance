@@ -95,7 +95,8 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            # It starts and stops the Listener (docs/architecture.md); Telnet is the Listener's.
+            # It starts and stops the Listener (docs/architecture.md); Telnet, Text I/O and the
+            # Session are the Listener's.
             - github.com/heliosestate/heliosadvance/internal/listener
     forbidigo:
       analyze-types: true

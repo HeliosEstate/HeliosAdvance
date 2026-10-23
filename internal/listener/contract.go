@@ -53,6 +53,8 @@
 //   - The listener package shall hand each connection to telnet.Open, and the Line Open returns,
 //     through textio.New, to session.Run, both under the connection's context, whichever Outcome
 //     Open returns.
+//   - The listener package shall make one Open, one textio.New and one Run per connection, in
+//     order, from that connection's own goroutine, and write nothing to it before Open. [read]
 //   - When Run returns Answered, the listener package shall shut down the connection's sending
 //     side, then read and discard until the caller closes or ClosingWaitSeconds pass, no later than
 //     the ceiling, then close the connection.
