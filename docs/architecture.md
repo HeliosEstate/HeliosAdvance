@@ -11,6 +11,6 @@ is in its package's `contract.go`; what the engine does as a whole is in
 
 | Unit | Package | Owns | Uses |
 |---|---|---|---|
-| Telnet | `internal/telnet` | Telnet negotiation over one accepted connection, from the engine's first option requests to the end of negotiation; then the Line, the Telnet kind of the session's connection: the caller's data with every Telnet command discarded, 255 doubled on the way out, and echo only when the caller agreed to ECHO | the Go standard library only |
+| Telnet | `internal/telnet` | Telnet negotiation over one accepted connection, from the engine's first option requests to the end of negotiation; then the Line, the Telnet side of textio's character calls: a receive buffer of the caller's data with every Telnet command removed, a send buffer with 255 doubled, and whether the board echoes | the Go standard library only |
 | Listener | `internal/listener` | Accepting callers on the listening sockets the program opened and serving each one from accept to close: the cap of 100 open connections, the 10-second hard deadline, the greeting and the close | Telnet; the Go standard library |
 | The program | `cmd/hadv-service` | Starting and stopping: the command line, the refusal as root, listening at 127.0.0.1 and ::1, the local log, and the stop signals | Listener; the Go standard library |
