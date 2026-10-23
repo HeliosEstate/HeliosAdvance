@@ -26,13 +26,14 @@
 //
 // Every byte the caller sends crosses the trust boundary at the network listener. During
 // negotiation Negotiate reads it and hands it to Receive; after it, the Line reads it and hands it
-// to Data. Receive and Data are the fuzz targets. Receive, on every run: it never crashes; one
+// to Strip. Receive and Strip are the fuzz targets. Receive, on every run: it never crashes; one
 // call's replies are never longer than its input plus the 2 bytes a split request carries in, and
 // all the calls' replies together never longer than all their input; every reply is a well-formed
 // 3-byte WILL, WONT or DONT and nothing else; the same bytes split into chunks any other way give
 // the same replies and end at the same byte; and once ended it stays ended and nothing changes.
-// Data, on every run: it never crashes; it appends no byte of a Telnet command and never more bytes
-// than its input held; and the same bytes split into chunks any other way give the same data.
+// Strip, on every run: it never crashes; it appends no byte of a Telnet command and never more
+// bytes than its input held; and the same bytes split into chunks any other way give the same
+// data.
 //
 // # Oracles
 //
@@ -337,7 +338,7 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 	return negotiate(ctx, connection)
 }
 
-// Data reads the caller's bytes after negotiation, with no connection, clock or goroutine: it
+// Strip reads the caller's bytes after negotiation, with no connection, clock or goroutine: it
 // appends each data byte in input to data and discards every Telnet command, going on from where
 // Receive stopped, so a command that negotiation's end split is read whole. It sends no reply
 // and changes no option state, whether Receive ended negotiation or 3 seconds passed first; from
@@ -347,25 +348,25 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 //
 //	IAC, then WILL, WONT, DO or DONT, then one byte   an option request, discarded, no reply
 //	IAC IAC, outside a subnegotiation                 the data byte 255, appended
-//	IAC SB, to IAC SE                                 a subnegotiation, discarded whole,
-//	                                                  IAC IAC inside it a data byte
+//	IAC SB, to IAC SE                                 a subnegotiation, discarded whole;
+//	                                                  IAC IAC inside it does not end it
 //	IAC, then any other byte                          a two-byte command, discarded
 //	any other byte                                    data, appended
 //
 // Lines:
 //
-//   - Data shall append every data byte in input to data, in order, and no byte of a Telnet
+//   - Strip shall append every data byte in input to data, in order, and no byte of a Telnet
 //     command.
-//   - When input holds IAC IAC outside a subnegotiation, Data shall append the data byte 255.
-//   - When input holds an option request, Data shall discard it and append no reply anywhere.
-//   - When a sequence is split across calls, or across negotiation's end and a call, Data shall
+//   - When input holds IAC IAC outside a subnegotiation, Strip shall append the data byte 255.
+//   - When input holds an option request, Strip shall discard it and append no reply anywhere.
+//   - When a sequence is split across calls, or across negotiation's end and a call, Strip shall
 //     read it as it would had the sequence come in one call.
-//   - Data shall append its data after the bytes already in data and leave those unchanged.
-//   - Data shall append, in one call, no more bytes than input held.
-//   - Data shall change no option state and make Receive append nothing from its first call on.
-//   - Data shall return for every input without failing or panicking.
-func (negotiation *Negotiation) Data(input, data []byte) []byte {
-	return negotiation.data(input, data)
+//   - Strip shall append its data after the bytes already in data and leave those unchanged.
+//   - Strip shall append, in one call, no more bytes than input held.
+//   - Strip shall change no option state and make Receive append nothing from its first call on.
+//   - Strip shall return for every input without failing or panicking.
+func (negotiation *Negotiation) Strip(input, data []byte) []byte {
+	return negotiation.strip(input, data)
 }
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
@@ -379,13 +380,22 @@ type Line struct {
 
 // Open is Negotiate that keeps what the call needs next: it negotiates exactly as Negotiate does,
 // and when negotiation ends with an outcome, it returns a Line over the same connection. On an
-// error it returns a nil Line and Negotiate's error.
+// error it returns a nil Line and Negotiate's error, which also matches, through errors.Is, the
+// standard library's cause the Line's table names (io.EOF for ErrCallerClosed, the context's
+// error for ErrDeadlineEnded), so a caller's hang-up reads the same before negotiation ends and
+// after.
 //
 //   - Open shall negotiate as Negotiate does, every line of Negotiate holding for it, and return
 //     the Outcome or the error Negotiate's lines give.
-//   - When Open returns an Outcome, Open shall return a Line over the same connection whose
-//     receive buffer holds the data, read by Data, in the bytes negotiation's last read left after
-//     the byte that ended negotiation; when it returns an error, a nil Line.
+//   - When Open returns ErrCallerClosed, the error shall also match io.EOF; ErrDeadlineEnded
+//     already wraps the context's error.
+//   - When negotiation ends Answered, Open shall return a Line whose receive buffer holds the
+//     data, read by Strip, in the bytes negotiation's last read left after the byte that ended
+//     negotiation.
+//   - When negotiation ends TimedOut, Open shall discard what the caller sent during negotiation,
+//     reading what had arrived by its end with Strip and keeping none of it, and return a Line
+//     whose receive buffer is empty.
+//   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
 }
@@ -407,13 +417,22 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 //	Read                   the caller's bytes, into a fixed buffer    as Negotiate's Read
 //	                       of ReadBufferSize
 //	time.Now               which deadline passed                      none
+//
+// Every call leaves nothing behind when it returns: the connection's read and write deadlines at
+// the context's deadline, cleared if it has none, and nothing of its own running, its wake-up on
+// the context stopped.
 
-// SendChar adds one data byte to the send buffer; it writes nothing itself.
+// SendChar adds one data byte to the send buffer, the fixed buffer Flush writes. When the buffer
+// is full, SendChar first writes it out as Flush does, under the context's deadline.
 //
 //   - SendChar shall add a byte other than 255 to the send buffer as itself.
 //   - SendChar shall add the data byte 255 to the send buffer as IAC IAC.
+//   - When the send buffer has no room for the byte, SendChar shall first write the buffer out as
+//     Flush does, with Flush's results.
 //   - If the context has ended when SendChar is called, then SendChar shall add nothing and
 //     return the context's error, wrapped.
+//   - When it returns, SendChar shall leave the connection's deadlines at the context's deadline
+//     and nothing of its own running. [read]
 func (line *Line) SendChar(ctx context.Context, character byte) error {
 	return line.sendChar(ctx, character)
 }
@@ -426,19 +445,20 @@ func (line *Line) SendChar(ctx context.Context, character byte) error {
 //   - If the context ends while Flush waits, then Flush shall stop waiting and return the
 //     context's error, wrapped.
 //   - If a write fails, then Flush shall return ErrConnectionFailed, unless the context had ended.
-//   - Flush shall hold the send buffer in a fixed size, writing out what it holds whenever it
-//     fills, and keep no other copy. [read]
+//   - Flush shall hold the send buffer in a fixed size, and keep no other copy. [read]
+//   - When it returns, Flush shall leave the connection's deadlines at the context's deadline and
+//     nothing of its own running.
 func (line *Line) Flush(ctx context.Context) error {
 	return line.flush(ctx)
 }
 
 // RecvChar first flushes the send buffer, then returns the receive buffer's next data byte,
-// reading the connection into it with Data when it is empty, waiting no later than deadline.
+// reading the connection into it with Strip when it is empty, waiting no later than deadline.
 //
 //   - RecvChar shall flush the send buffer before it returns a byte or waits.
 //   - RecvChar shall return the caller's data bytes in the order sent, those in the receive buffer
 //     from negotiation first, and no byte of a Telnet command.
-//   - RecvChar shall hand every byte a read returns to Data before it looks at that read's error.
+//   - RecvChar shall hand every byte a read returns to Strip before it looks at that read's error.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes in
 //     the receive buffer, and give every write it makes the same deadline.
 //   - If the caller closes its side while the receive buffer is empty, then RecvChar shall return
@@ -449,6 +469,8 @@ func (line *Line) Flush(ctx context.Context) error {
 //     shall return ErrConnectionFailed, unless the context had ended.
 //   - RecvChar shall read into a buffer of ReadBufferSize bytes and hold at most that many bytes
 //     not yet returned. [read]
+//   - When it returns, RecvChar shall leave the connection's deadlines at the context's deadline,
+//     not at the deadline it was given, and nothing of its own running.
 func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error) {
 	return line.recvChar(ctx, deadline)
 }

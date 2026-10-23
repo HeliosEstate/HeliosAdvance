@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// The Line's operations and Data hand their work to the unexported functions below, so the
+// The Line's operations and Strip hand their work to the unexported functions below, so the
 // contract builds before they are built and the build never needs to change the contract. Each
 // placeholder here is replaced by the issue that builds it.
 
@@ -19,7 +19,7 @@ var errLineNotBuilt = errors.New("telnet: the line is not built yet")
 // lineState is the state a Line keeps; the build gives it its fields.
 type lineState struct{}
 
-func (negotiation *Negotiation) data(_, data []byte) []byte {
+func (negotiation *Negotiation) strip(_, data []byte) []byte {
 	return data
 }
 
