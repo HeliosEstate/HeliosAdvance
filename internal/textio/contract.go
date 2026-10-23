@@ -76,8 +76,8 @@ type Chars interface {
 	RecvChar(ctx context.Context, deadline time.Time) (byte, error)
 	// Flush writes what is queued. Its results are the table's.
 	Flush(ctx context.Context) error
-	// Echoes is whether the board echoes what the caller types on this connection, fixed for the
-	// call.
+	// Echoes is whether the board echoes what the caller types on this connection now; it may
+	// change during the call as the caller asks, and RecvString asks it again at each echo.
 	Echoes() bool
 }
 
@@ -123,8 +123,8 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //
 //   - RecvString shall read each byte with Edit, in the order RecvChar returns them, those the
 //     caller sent before the call included.
-//   - While the connection echoes, RecvString shall send what Edit gives to echo, in order; when
-//     it does not, nothing.
+//   - While the connection echoes, as Echoes says at that byte, RecvString shall send what Edit
+//     gives to echo, in order; when it does not, nothing.
 //   - When Edit ends the line, RecvString shall return the line and no error, and read no byte
 //     after the one that ended it.
 //   - If deadline passes before the line ends, then RecvString shall return
