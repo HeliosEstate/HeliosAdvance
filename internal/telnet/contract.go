@@ -34,10 +34,11 @@
 // every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
 // into chunks any other way give the same replies and end at the same byte; and once ended it
 // stays ended and nothing changes. Strip, on every run, after Receive is fed the bytes one at a
-// time until it returns true and Strip the rest one at a time: it never crashes; it calls no byte
-// of a Telnet command data; one call appends at most one reply; the replies of Receive's calls
-// and Strip's together are never longer than all their input; and every reply is well-formed as
-// Receive's are.
+// time up to a point the fuzzer picks, or until it returns true if that comes first, as when the
+// 3 seconds end negotiation mid-request, and Strip the rest one at a time: it never crashes; it
+// calls no byte of a Telnet command data; one call appends at most one reply; the replies of
+// Receive's calls and Strip's together are never longer than all their input; and every reply is
+// well-formed as Receive's are.
 //
 // # Oracles
 //
@@ -394,13 +395,40 @@ const SendBufferSize = 1024
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
 // package's Chars, which the textio package builds a caller's string calls on. It keeps a receive
-// buffer of the caller's bytes not yet read, in the order sent, which first holds what
-// negotiation's last read left after the byte that ended it, so typing ahead works; a send buffer
-// of SendBufferSize, which first holds what negotiation still owed the caller and also carries the
-// answers to option requests; and the negotiation, whose
-// option states go on changing as the caller asks. A Line not made by Open, or nil, fails every
-// call that returns an error with ErrConnectionFailed, and its Echoes returns false. One goroutine
-// per Line.
+// buffer of the caller's bytes not yet read, in the order sent, which first holds the bytes Open
+// hands it, so typing ahead works; a send buffer of SendBufferSize, which first holds what
+// negotiation still owed the caller and also carries the answers to option requests; and the
+// negotiation, whose option states go on changing as the caller asks. A Line not made by Open, or
+// nil, fails every call that returns an error with ErrConnectionFailed, and its Echoes returns
+// false. One goroutine per Line.
+//
+// The Line's calls report why they stopped in the standard library's own terms, the textio
+// package's table: os.ErrDeadlineExceeded when the deadline given passed first; io.EOF when the
+// caller closed its side; the context's error, wrapped, when the context ended first, also when it
+// had ended before the call; ErrConnectionFailed, wrapping the cause, for any other failure. When
+// two happen at once, the context ending wins, then a failure, then a passed deadline; a passed
+// deadline is told by the clock, never by which of the connection's deadlines woke a read or a
+// write. In the lines on the Line's calls, the context "has ended", "had ended" or "ends" once
+// its deadline has passed by the clock, whether or not the context reports it yet, and "the
+// context's error" is then context.DeadlineExceeded; "a passed deadline" is a wait the connection
+// ended at a deadline, the call's or the context's, judged by the clock. Their calls on the
+// connection, the same on Linux and Windows:
+//
+//	Call                   Why                                        Documented failures
+//	context.AfterFunc      wakes a waiting read or write when the     none
+//	                       context ends, by a deadline in the past
+//	SetReadDeadline,       the earlier of the call's deadline and     an error, such as
+//	SetWriteDeadline       the context's, set only by a call that     net.ErrClosed
+//	                       reads or writes
+//	Write                  the send buffer                            as Negotiate's Write
+//	Read                   the caller's bytes, into a fixed buffer    as Negotiate's Read
+//	                       of ReadBufferSize
+//	time.Now               which deadline passed                      none
+//
+// Every call that reads or writes leaves nothing behind when it returns: the connection's read and
+// write deadlines at the context's deadline, cleared if it has none, and nothing of its own
+// running, its wake-up on the context stopped. A call that neither reads nor writes touches no
+// deadline.
 type Line struct {
 	state lineState
 }
@@ -440,31 +468,6 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
 }
 
-// The Line's calls report why they stopped in the standard library's own terms, the textio
-// package's table: os.ErrDeadlineExceeded when the deadline given passed first; io.EOF when the
-// caller closed its side; the context's error, wrapped, when the context ended first, also when it
-// had ended before the call; ErrConnectionFailed, wrapping the cause, for any other failure. When
-// two happen at once, the context ending wins, then a failure, then a passed deadline; a passed
-// deadline is told by the clock, never by which of the connection's deadlines woke a read or a
-// write. In the lines below, "the context had ended" includes its deadline having passed by the
-// clock, whether or not the context reports it yet, and "a passed deadline" is a wait the
-// connection ended at a deadline, the call's or the context's, judged by the clock. Their
-// calls on the connection, the same on Linux and Windows:
-//
-//	Call                   Why                                        Documented failures
-//	context.AfterFunc      wakes a waiting read or write when the     none
-//	                       context ends, by a deadline in the past
-//	SetReadDeadline,       the earlier of the call's deadline and     an error, such as
-//	SetWriteDeadline       the context's                              net.ErrClosed
-//	Write                  the send buffer                            as Negotiate's Write
-//	Read                   the caller's bytes, into a fixed buffer    as Negotiate's Read
-//	                       of ReadBufferSize
-//	time.Now               which deadline passed                      none
-//
-// Every call leaves nothing behind when it returns: the connection's read and write deadlines at
-// the context's deadline, cleared if it has none, and nothing of its own running, its wake-up on
-// the context stopped.
-
 // SendChar adds one data byte to the send buffer. When the buffer has no room, SendChar first
 // writes it out as Flush does, under the context's deadline.
 //
@@ -475,7 +478,8 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 //     write emptied it.
 //   - If the context has ended when SendChar is called, then SendChar shall add nothing and
 //     return the context's error, wrapped.
-//   - When it returns, SendChar shall leave the connection's deadlines at the context's deadline
+//   - When it only adds the byte, SendChar shall set no deadline on the connection.
+//   - When it writes, SendChar shall leave the connection's deadlines at the context's deadline
 //     and nothing of its own running. [read]
 func (line *Line) SendChar(ctx context.Context, character byte) error {
 	return line.sendChar(ctx, character)
@@ -486,6 +490,8 @@ func (line *Line) SendChar(ctx context.Context, character byte) error {
 //
 //   - Flush shall write the send buffer's bytes in order, and leave it empty once they are
 //     written.
+//   - If the context has ended when Flush is called, then Flush shall write nothing and return
+//     the context's error, wrapped.
 //   - If the context ends while Flush waits, then Flush shall stop waiting and return the
 //     context's error, wrapped.
 //   - If a write fails, then Flush shall return ErrConnectionFailed, unless the context had ended.
