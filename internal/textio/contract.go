@@ -74,7 +74,7 @@ type Chars interface {
 	// SendChar queues one byte for the caller. What is queued is written by Flush, by SendChar
 	// itself when the queue is full, waiting no later than the context's deadline, and by RecvChar
 	// before it waits for the caller or when the queue has no room for the connection's own
-	// replies. Its results are the table's.
+	// replies, waiting no later than RecvChar's deadline. Its results are the table's.
 	SendChar(ctx context.Context, character byte) error
 	// RecvChar returns the caller's next data byte, waiting no later than deadline: once deadline
 	// has passed it returns os.ErrDeadlineExceeded, even with bytes waiting. Before it waits for
@@ -107,8 +107,8 @@ func New(chars Chars) *Conn {
 }
 
 // SendChar is the kind of connection's own SendChar: it only queues the byte, which goes out with
-// the next SendString, when a RecvChar or RecvString waits for the caller, or when the queue is
-// full.
+// the next SendString, when a RecvChar or RecvString waits for the caller or needs room for the
+// connection's own replies, or when the queue is full.
 func (conn *Conn) SendChar(ctx context.Context, character byte) error {
 	return conn.sendChar(ctx, character)
 }
@@ -140,13 +140,18 @@ func (conn *Conn) SendString(ctx context.Context, text string) error {
 //     gives to echo, in order; when it does not, nothing.
 //   - When Edit ends the line, RecvString shall return the line and no error, and read no byte
 //     after the one that ended it.
+//   - RecvString shall queue the echo of the byte that ends the line under the call's context
+//     alone, so a line ended before deadline is returned even when its echo comes after it.
 //   - If deadline passes before the line ends, then RecvString shall return
 //     os.ErrDeadlineExceeded, whatever bytes are waiting.
-//   - RecvString shall call no Flush: its echo goes out when a RecvChar waits for the caller,
-//     under deadline, or with the next Flush.
-//   - RecvString shall give its SendChar calls a context that also ends at deadline, so a caller
-//     that never reads cannot hold it past deadline; when that deadline, not the call's context,
-//     ends a SendChar, RecvString shall return os.ErrDeadlineExceeded.
+//   - RecvString shall call no Flush: its echo goes out as Chars says, when a RecvChar waits for
+//     the caller or needs room for the connection's own replies, under deadline, when the queue
+//     is full, or with the next Flush.
+//   - RecvString shall give its other SendChar calls a context that also ends at deadline, so a
+//     caller that never reads cannot hold it past deadline.
+//   - When a SendChar returns the context's error, RecvString shall judge by the clock which
+//     ended it: the call's context's error when that context was cancelled, or its deadline is at
+//     or before deadline and has passed; otherwise os.ErrDeadlineExceeded.
 //   - If most is below 1 or above MostLine, then RecvString shall read nothing and return
 //     ErrMostOutOfRange.
 //   - RecvString shall return any other result of RecvChar or SendChar as the table gives it.
