@@ -83,8 +83,11 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            # It negotiates each connection through the Telnet unit (docs/architecture.md).
+            # It negotiates each connection through the Telnet unit and hands the call to the
+            # Session through Text I/O (docs/architecture.md).
             - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/textio
+            - github.com/heliosestate/heliosadvance/internal/session
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener
         hadv-service:

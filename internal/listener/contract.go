@@ -7,41 +7,69 @@
 // It owns accepting callers on the listening sockets the program opened and hands it, one accept
 // loop per listening socket, until Stop; the cap of 100 open connections across them, and closing
 // a connection over the cap at once without writing to it; and each connection's life, from the
-// 10-second hard deadline at accept, through negotiation (the telnet package), the greeting,
-// shutting down its sending side, reading and discarding until the caller closes or 3 seconds
-// pass, to the close. Each connection's context is made by Start, carries the hard deadline, and
-// is ended at once by Stop. After a failed accept, unless Stop closed that socket, it pauses and
-// accepts again, and writes nothing; after Stop closes a socket, its accept loop ends.
+// 70-second ceiling on the whole call, counted from accept, through keeping TCP urgent data in
+// line, the telnet package's Open and the session's Run, to shutting down its sending side,
+// reading and discarding until the caller closes or 3 seconds pass, and the close. Each
+// connection's context is made by Start, carries the ceiling, and is ended at once by Stop. After
+// a failed accept, unless Stop closed that socket, it pauses and accepts again, and writes
+// nothing; after Stop closes a socket, its accept loop ends.
 //
-// It does not own negotiation itself, which is the telnet package's. The command line, opening the
-// listening sockets, the root check, the local log and the stop signals belong to the program.
-// Later layers own the per-source cap, settings and the central audit system. It has no files and
-// writes no local log.
+// It does not own negotiation or the Telnet side of the caller's characters, which are the telnet
+// package's; reading a line and its echo, which are the textio package's; nor what the call says
+// and asks, the greeting and the name among them, which is the session's. The command line,
+// opening the listening sockets, the root check, the local log and the stop signals belong to the
+// program. Later layers own the per-source cap, settings and the central audit system. It has no
+// files and writes no local log.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
 //
 // # Untrusted input
 //
-// Two things cross the trust boundary at the network listener. Every byte the caller sends:
-// during negotiation the telnet package reads it; after it, this package reads it into a fixed
-// buffer and discards it unread. And how the caller behaves: how many connections and how fast,
-// silence, never reading; the cap and the hard deadline bound both. There is no fuzz target here:
-// this package parses nothing, and every byte read for meaning goes to telnet's Receive.
+// Two things cross the trust boundary at the network listener. Every byte the caller sends: until
+// Run returns, the telnet package reads it and the textio package edits it; after Run returns
+// Answered, this package reads it into a fixed buffer and discards it unread, and what the Line
+// had read and not handed on is dropped with the Line. And how the caller behaves: how many
+// connections and how fast, silence, never reading; the cap and the ceiling bound both. There is
+// no fuzz target here: this package parses nothing, and every byte read for meaning goes to
+// telnet's Receive and Strip and textio's Edit.
 //
 // # What it needs from its callers
 //
 // Listening TCP sockets, already open, each handed to one Start only and not used by the caller
 // after a Start that returned a Listener; after a refused Start, the caller closes them.
 //
+// # Each connection
+//
+// Urgent data is kept in line (SO_OOBINLINE) because RFC 6093 section 6 requires it of an
+// application that still uses urgent data, as Telnet's Synch does: without it a Synch's DM byte
+// leaves the stream, and the lone IAC before it would swallow the caller's next character. The
+// standard library has no call for it, so it is set through the connection's SyscallConn; the
+// option's value is the operating system's own.
+//
+//   - The listener package shall set SO_OOBINLINE on each accepted connection before it reads from
+//     or writes to it.
+//   - If SO_OOBINLINE cannot be set, then the listener package shall close the connection without
+//     writing to it.
+//   - The listener package shall hand each connection to telnet.Open, and the Line Open returns,
+//     through textio.New, to session.Run, both under the connection's context, whichever Outcome
+//     Open returns.
+//   - When Run returns Answered, the listener package shall shut down the connection's sending
+//     side, then read and discard until the caller closes or ClosingWaitSeconds pass, no later than
+//     the ceiling, then close the connection.
+//   - When Open returns an error, or Run returns anything but Answered, the listener package shall
+//     close the connection without writing to it.
+//   - The listener package shall set the read deadline for the closing wait itself, and rely on no
+//     deadline a call of the telnet or textio package left. [read]
+//
 // # Lines for the package
 //
-//   - The listener package shall read a caller's bytes after negotiation only into a buffer of
-//     DiscardBufferSize bytes, and keep no copy of them. [read]
-//   - The listener package shall write nothing to a connection but what Negotiate writes and the
-//     greeting.
+//   - The listener package shall read a caller's bytes itself only after Run returns Answered, only
+//     into a buffer of DiscardBufferSize bytes, and keep no copy of them. [read]
+//   - The listener package shall write nothing to a connection itself: every byte it sends goes
+//     through the telnet package's Open and Line. [read]
 //   - The listener package shall write nothing to standard output or standard error. [read]
-//   - The listener package shall import nothing outside the Go standard library and the telnet
-//     package. [read]
+//   - The listener package shall import nothing outside the Go standard library and the telnet,
+//     textio and session packages. [read]
 package listener
 
 import (
@@ -53,21 +81,21 @@ const (
 	// ConnectionCap is the number of open connections across every listening socket. Fixed in
 	// this layer, as are the times below; settings once configuration exists.
 	ConnectionCap = 100
-	// HardDeadlineSeconds is counted from accept, over every write and wait.
-	HardDeadlineSeconds = 10
+	// CeilingSeconds is the whole call, counted from accept, over negotiation, the name, the
+	// shutdown and the closing wait. It is what ends a caller that never reads, whose stalled
+	// writes the name's own 60 seconds may never reach.
+	CeilingSeconds = 70
 	// ClosingWaitSeconds is the wait after shutting down the sending side, for the caller to
 	// close.
 	ClosingWaitSeconds = 3
-	// DiscardBufferSize is the fixed buffer read into after negotiation: nothing the caller sends
-	// grows it.
+	// DiscardBufferSize is the fixed buffer read into after Run returns Answered: nothing the
+	// caller sends grows it.
 	DiscardBufferSize = 256
 	// AcceptPauseFirstMilliseconds is the first pause before the next Accept after a failure; it
 	// doubles after each further failure, up to AcceptPauseMostMilliseconds.
 	AcceptPauseFirstMilliseconds = 5
 	// AcceptPauseMostMilliseconds is the longest pause between tries.
 	AcceptPauseMostMilliseconds = 1000
-	// Greeting is written in ASCII, CR LF its new line (RFC 854).
-	Greeting = "Hello Helios Advance BBS!\r\n"
 )
 
 // ErrNoListeners means Start was given no listening socket, or one that is nil.
