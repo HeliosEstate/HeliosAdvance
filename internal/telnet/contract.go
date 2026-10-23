@@ -409,7 +409,8 @@ type Line struct {
 // error for ErrDeadlineEnded), so a caller's hang-up reads the same before negotiation ends and
 // after. What negotiation read is discarded as data, its requests answered; what it had not read
 // when it ended comes after it, in the Line's receive buffer or still in the connection, and is
-// read by the Line in order.
+// read by the Line in order, his decision of 2026-10-23: the engine cannot tell when an unread
+// byte was sent, so "during negotiation" means what negotiation read.
 //
 //   - Open shall negotiate as Negotiate does, every line of Negotiate holding for it, and return
 //     the Outcome or the error Negotiate's lines give.
