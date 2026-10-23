@@ -28,8 +28,8 @@
 //
 // Every byte the caller sends crosses the trust boundary at the network listener. During
 // negotiation Negotiate, or Open as Negotiate does, reads it and hands it to Receive; after it, the
-// Line reads it and hands it to Strip, one byte at a time. Receive and Strip are the fuzz targets. Receive, on every run: it
-// never crashes; one call's replies are never longer than its input plus the 2 bytes a split
+// Line reads it and hands it to Strip, one byte at a time. Receive and Strip are the fuzz targets.
+// Receive, on every run: it never crashes; one call's replies are never longer than its input plus the 2 bytes a split
 // request carries in, and all the calls' replies together never longer than all their input;
 // every reply is a well-formed 3-byte WILL, WONT or DONT and nothing else; the same bytes split
 // into chunks any other way give the same replies and end at the same byte; and once ended it
