@@ -69,7 +69,8 @@ const (
 // io.EOF when the caller closed its side, the context's error, wrapped, when the context ended
 // first, any other error when the connection failed.
 type Connection interface {
-	// SendChar queues one byte for the caller.
+	// SendChar queues one byte for the caller; it goes out with the next SendString, when
+	// RecvChar or RecvString waits for the caller, or when the queue is full.
 	SendChar(ctx context.Context, character byte) error
 	// RecvChar returns the caller's next data byte, waiting no later than deadline.
 	RecvChar(ctx context.Context, deadline time.Time) (byte, error)
