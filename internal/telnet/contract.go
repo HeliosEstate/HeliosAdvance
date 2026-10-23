@@ -17,10 +17,18 @@
 //
 // It has no files.
 //
+// From Part 2 it also owns the Line: the Telnet kind of the session layer's connection, the
+// connection once negotiation is over. Open negotiates as Negotiate does and returns it. The Line
+// hands on the caller's data and discards every Telnet command, doubles the data byte 255 it
+// writes, and echoes only when the caller agreed to ECHO; the session layer knows none of that.
+// It declares nothing of the session package's and imports nothing of it: the Line has the three
+// calls the session's connection asks for.
+//
 // # Untrusted input
 //
 // Every byte the caller sends crosses the trust boundary at the network listener; Negotiate reads
-// it and hands it to Receive. Receive is the fuzz target. On every run: it never crashes; one
+// it and hands it to Receive, and after negotiation the Line reads it with Receive's reading of
+// commands. Receive is the fuzz target. On every run: it never crashes; one
 // call's replies are never longer than its input plus the 2 bytes a split request carries in, and
 // all the calls' replies together never longer than all their input; every reply is a well-formed
 // 3-byte WILL, WONT or DONT and nothing else; the same bytes split into chunks any other way give
@@ -325,4 +333,83 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 //     leave nothing behind.
 func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 	return negotiate(ctx, connection)
+}
+
+// Line is a caller's Telnet connection once negotiation is over: the Telnet kind of the session
+// layer's connection. It keeps what negotiation left: the bytes after the one that ended it in
+// negotiation's last read, where Receive's reading stopped, and whether the caller agreed to
+// ECHO. A Line not made by Open, or nil, fails every call with ErrConnectionFailed. One goroutine
+// per Line; its reading and its writing share no buffer, so a later layer may run them at once.
+type Line struct {
+	state lineState
+}
+
+// Open is Negotiate that keeps what the call needs next: it negotiates exactly as Negotiate does,
+// and when negotiation ends with an outcome, it returns a Line over the same connection. On an
+// error it returns a nil Line and Negotiate's error.
+//
+//   - Open shall negotiate as Negotiate does, every line of Negotiate holding for it, and return
+//     the Outcome or the error Negotiate's lines give.
+//   - When Open returns an Outcome, Open shall return a Line over the same connection; when it
+//     returns an error, a nil Line.
+func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
+	return open(ctx, connection)
+}
+
+// RecvChar returns the caller's next data byte, reading as Receive does and going on where
+// negotiation stopped: first from the bytes negotiation's last read left after the byte that
+// ended it, then from the connection, into a fixed buffer of ReadBufferSize. Every Telnet command
+// is discarded without reply: an option request, a two-byte command, a subnegotiation whole; IAC
+// IAC is the data byte 255. It waits until the earlier of deadline and the context's deadline.
+// Results: os.ErrDeadlineExceeded once deadline has passed, io.EOF once the caller has closed its
+// side, ErrDeadlineEnded wrapping the context's error once the context has ended,
+// ErrConnectionFailed for any other failure.
+//
+//   - When negotiation's last read held bytes after the one that ended negotiation, RecvChar shall
+//     return their data bytes, in order, before it reads the connection.
+//   - RecvChar shall go on reading a command that negotiation's end split, as Receive would read
+//     it in one piece, so that no byte of a command is returned as data.
+//   - RecvChar shall return every data byte the caller sends, in order, and no byte of a Telnet
+//     command.
+//   - When the caller sends IAC IAC outside a subnegotiation, RecvChar shall return the data byte
+//     255.
+//   - If the caller sends an option request after negotiation, then RecvChar shall discard it and
+//     write no reply.
+//   - If deadline passes before a data byte arrives, then RecvChar shall return
+//     os.ErrDeadlineExceeded.
+//   - If the caller closes its side before a data byte arrives, then RecvChar shall return io.EOF.
+//   - If the context ends while RecvChar waits, then RecvChar shall stop waiting and return
+//     ErrDeadlineEnded.
+//   - If a read fails other than by end of file or a passed deadline, then RecvChar shall return
+//     ErrConnectionFailed.
+//   - RecvChar shall read into a buffer of ReadBufferSize bytes and keep no other copy of the
+//     caller's bytes than the ones not yet returned. [read]
+func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error) {
+	return line.recvChar(ctx, deadline)
+}
+
+// SendChar writes one data byte to the caller, the data byte 255 as IAC IAC (RFC 854), waiting
+// no later than the context's deadline. Results: ErrDeadlineEnded wrapping the context's error
+// once the context has ended, ErrConnectionFailed for any other failure.
+//
+//   - SendChar shall write a byte other than 255 as itself.
+//   - SendChar shall write the data byte 255 as IAC IAC.
+//   - If the context ends while SendChar waits, then SendChar shall stop waiting and return
+//     ErrDeadlineEnded.
+//   - If a write fails, then SendChar shall return ErrConnectionFailed, unless the context had
+//     ended.
+func (line *Line) SendChar(ctx context.Context, character byte) error {
+	return line.sendChar(ctx, character)
+}
+
+// Echo writes one byte back to the caller as SendChar does when the caller agreed to ECHO, which
+// is when negotiation ended with ECHO in the YES state, and writes nothing otherwise: a caller
+// that refused ECHO, or stayed silent through negotiation, echoes for itself (RFC 857). Fixed for
+// the call, since option requests after negotiation are discarded. Results as SendChar's.
+//
+//   - While the caller has agreed to ECHO, Echo shall write the byte as SendChar does.
+//   - If the caller did not agree to ECHO during negotiation, then Echo shall write nothing and
+//     return no error.
+func (line *Line) Echo(ctx context.Context, character byte) error {
+	return line.echo(ctx, character)
 }
