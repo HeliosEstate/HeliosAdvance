@@ -49,9 +49,14 @@
 // accept, it also keeps in line urgent data that arrived before accept (probed on both).
 //
 // These lines are for a connection kept under the cap; one over it is closed at once, as above.
+// A close with the caller's bytes still unread may reach the caller as a reset rather than an
+// orderly end of stream; either is the close the lines below ask for.
 //
+//   - The listener package shall keep the caller's urgent data in line, so that a Synch, IAC with
+//     DM sent as urgent data, reaches the telnet package whole and, after negotiation, the
+//     caller's next character after it is read as data.
 //   - The listener package shall set SO_OOBINLINE on the connection before it reads from or writes
-//     to it.
+//     to it. [read]
 //   - If SO_OOBINLINE cannot be set, then the listener package shall close the connection without
 //     writing to it. [read]
 //   - Once SO_OOBINLINE is set, the listener package shall call telnet.Open and then, with
