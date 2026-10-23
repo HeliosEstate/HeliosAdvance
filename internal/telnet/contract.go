@@ -388,9 +388,8 @@ func (negotiation *Negotiation) Strip(character byte, replies []byte) ([]byte, b
 	return negotiation.strip(character, replies)
 }
 
-// SendBufferSize is the Line's fixed send buffer. Between two waits for the caller it gains at
-// most one read's echo and replies, so a line's echo never fills it; when something does, the
-// call adding to it writes it out first. Nothing the caller does grows it.
+// SendBufferSize is the Line's fixed send buffer. When it is full, the call adding to it writes
+// it out first, so nothing the caller does grows it.
 const SendBufferSize = 1024
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
@@ -429,8 +428,11 @@ type Line struct {
 //   - When negotiation ends with an outcome, Open shall return a Line that writes first, in order,
 //     every byte Negotiate was to write and did not: the rest of a write cut short, and the
 //     replies of a read that returned with a passed deadline.
-//   - When negotiation ends with an outcome, Open shall return a Line that reads first, in order,
-//     every byte negotiation's last read returned after the byte at which Receive returned true.
+//   - When negotiation ends with an outcome after Receive returned true, Open shall return a Line
+//     whose receive buffer holds, unread and in order, every byte negotiation's last read
+//     returned after the byte at which Receive returned true, and no other byte.
+//   - When negotiation ends TimedOut before Receive returned true, Open shall return a Line whose
+//     receive buffer is empty.
 //   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
@@ -439,10 +441,13 @@ func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 // SendChar queues one data byte for the caller. It writes only when the send buffer is full.
 //
 //   - SendChar shall queue a byte other than 255 as itself, and the data byte 255 as IAC IAC.
-//   - When the send buffer has room, SendChar shall queue the byte without writing and return no
-//     error.
-//   - When the send buffer has no room, SendChar shall first write it out as Flush does, with
-//     Flush's results, and queue the byte only if that write emptied it.
+//   - If the context has ended when SendChar is called, then SendChar shall queue nothing and
+//     return the context's error, wrapped.
+//   - When the send buffer has room for the byte, or for both bytes of IAC IAC, SendChar shall
+//     queue it without writing and return no error.
+//   - When the send buffer has no room for the byte, or for both bytes of IAC IAC, SendChar shall
+//     first write it out as Flush does, with Flush's results, and queue nothing unless that write
+//     emptied it.
 func (line *Line) SendChar(ctx context.Context, character byte) error {
 	return line.sendChar(ctx, character)
 }
@@ -456,15 +461,15 @@ func (line *Line) SendChar(ctx context.Context, character byte) error {
 //   - If a write fails otherwise, then Flush shall return ErrConnectionFailed.
 //   - If a write is cut short, then Flush shall keep what it did not write at the front of the
 //     send buffer, in order, so that each byte is written once.
-//   - Flush shall keep no other copy of the send buffer. [read]
+//   - Flush shall hold the send buffer in SendBufferSize bytes, and keep no other copy. [read]
 func (line *Line) Flush(ctx context.Context) error {
 	return line.flush(ctx)
 }
 
 // RecvChar returns the caller's next data byte. It hands Strip the receive buffer's bytes one at
 // a time, queues Strip's replies, and stops at the first data byte, reading nothing after it.
-// Only when no data byte is waiting does it write the send buffer out and wait for the caller,
-// both no later than deadline.
+// It writes the send buffer out before it waits for the caller, and when a reply needs room, both
+// no later than deadline.
 //
 //   - RecvChar shall return the caller's data bytes in the order sent, and no byte of a Telnet
 //     command.
