@@ -94,14 +94,14 @@ then hangs up. The layer that asks and answers is the one SSH will share.
   than 30, the engine shall add it to the name.
 - Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after
   negotiation, and every character past the 30th.
-- If the caller sends a Telnet command after negotiation ends, then the engine shall discard it
-  without reply.
+- After negotiation ends and until the name ends, the engine shall answer each option request as
+  it did during negotiation, and discard every other Telnet command without reply.
 
 #### The echo
 
 - While the caller has agreed to ECHO, the engine shall echo each character it adds to the name,
   write BS, space, BS for each it removes, and write CR LF when the name ends.
-- If the caller did not agree to ECHO during negotiation, then the engine shall echo nothing.
+- While the caller has not agreed to ECHO, the engine shall echo nothing.
 
 #### Correcting a name
 
