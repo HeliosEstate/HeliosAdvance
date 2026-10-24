@@ -20,7 +20,7 @@ import (
 )
 
 // floodRequests is more than any runner's buffers hold: Linux took up to 7 MB of a flood before
-// its writes waited, on the laptop's Ubuntu, 2026-10-23.
+// its writes waited, on an Ubuntu 24.04 machine, 2026-10-23.
 const floodRequests = 8 << 20
 
 // floodOptions are the option codes the flood asks for in turn: 4 to 255, never ECHO or SGA.

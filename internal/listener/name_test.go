@@ -629,7 +629,7 @@ func (call caller) readOpeningFrom(t *testing.T, stream *recording) {
 }
 
 // floodRequests is more than any runner's buffers hold: Linux took up to 7 MB of a flood before
-// its writes waited, on the laptop's Ubuntu, 2026-10-23.
+// its writes waited, on an Ubuntu 24.04 machine, 2026-10-23.
 const floodRequests = 8 << 20
 
 // floodOptions are the option codes a flood asks for in turn: 4 to 255, never ECHO or SGA.
@@ -776,11 +776,11 @@ func engineCloseAt(t *testing.T, call caller, address string, deadline time.Time
 // ceilingCallers is how many callers the ceiling's row runs at once, each against its own engine.
 // A caller that floods and never reads leaves negotiation waiting in a write, so the greeting is
 // never written and only the ceiling ends the call. On 2026-10-23 and 24, on Windows, 20 of 20 and
-// 30 of 30 callers reached the ceiling. On the laptop's Ubuntu, in the whole suite under the race
-// detector, 20 of 20 did, twice; in two earlier runs, one of them killed for want of memory, 1 of
-// 30 and none of 30 did, their greetings getting through and the name's 60 seconds ending the
-// call. So the row asks for one at the ceiling on Windows only; the clamp's row shows the ceiling
-// on Linux.
+// 30 of 30 callers reached the ceiling. On an Ubuntu 24.04 machine, in the whole suite under the
+// race detector, 20 of 20 did, twice; in two earlier runs, one of them killed for want of
+// memory, 1 of 30 and none of 30 did, their greetings getting through and the name's 60 seconds
+// ending the call. So the row asks for one at the ceiling on Windows only; the clamp's row shows
+// the ceiling on Linux.
 const ceilingCallers = 20
 
 // ceilingRows floods from 1 second and never reads, each caller against its own engine: each
@@ -834,7 +834,7 @@ func ceilingCall(t *testing.T, index int) string {
 }
 
 // clampCallers is how many callers the clamp's row runs at once: on 2026-10-23, 4 of 4 had their
-// Hello after 68 seconds on Windows and on the laptop's Ubuntu.
+// Hello after 68 seconds on Windows and on Ubuntu 24.04.
 const clampCallers = 6
 
 // clampRows makes Hello come after 68 seconds, so the closing wait would end past the ceiling: a
