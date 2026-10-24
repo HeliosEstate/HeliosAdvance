@@ -6,50 +6,147 @@ package textio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
-// builds before the package is built and the build never needs to change the contract. Each
-// placeholder here is replaced by the issue that builds it.
+// builds before the package is built and the build never needs to change the contract.
 
-// errNotBuilt is what a placeholder returns until its issue builds it.
-var errNotBuilt = errors.New("textio: not built yet")
+const (
+	backspace      = 0x08
+	deleteKey      = 0x7F
+	carriageReturn = 0x0D
+	lineFeed       = 0x0A
+	space          = 0x20
+	tilde          = 0x7E
+)
 
-// connState is the state a Conn keeps; the build gives it its fields.
-type connState struct{}
+// errNoChars is what every call of a Conn that has no Chars returns, so that a Conn not made by
+// New cannot panic the code calling it.
+var errNoChars = errors.New("textio: the connection has no characters to send and receive")
 
-// lineState is the state a Line keeps; the build gives it its fields.
-type lineState struct{}
-
-func newConn(_ Chars) *Conn {
-	return &Conn{state: connState{}}
+type connState struct {
+	chars Chars
 }
 
-func (conn *Conn) sendChar(_ context.Context, _ byte) error {
-	return errNotBuilt
+// lineState is an array, not a slice, so that a Line copies by value and two copies never share
+// bytes, which a caller that keeps a Line before an Edit and tries another byte depends on.
+type lineState struct {
+	characters [MostLine]byte
+	count      int
+	limit      int
+	ended      bool
 }
 
-func (conn *Conn) recvChar(_ context.Context, _ time.Time) (byte, error) {
-	return 0, errNotBuilt
+func newConn(chars Chars) *Conn {
+	return &Conn{state: connState{chars: chars}}
 }
 
-func (conn *Conn) sendString(_ context.Context, _ string) error {
-	return errNotBuilt
+func (conn *Conn) sendChar(ctx context.Context, character byte) error {
+	if conn == nil || conn.state.chars == nil {
+		return errNoChars
+	}
+	return conn.state.chars.SendChar(ctx, character)
 }
 
-func (conn *Conn) recvString(_ context.Context, _ time.Time, _ int) (string, error) {
-	return "", errNotBuilt
+func (conn *Conn) recvChar(ctx context.Context, deadline time.Time) (byte, error) {
+	if conn == nil || conn.state.chars == nil {
+		return 0, errNoChars
+	}
+	return conn.state.chars.RecvChar(ctx, deadline)
 }
 
-func newLine(_ int) Line {
-	return Line{state: lineState{}}
+func (conn *Conn) sendString(ctx context.Context, text string) error {
+	if conn == nil || conn.state.chars == nil {
+		return errNoChars
+	}
+	if err := contextEnded(ctx); err != nil {
+		return err
+	}
+	chars := conn.state.chars
+	for index := range len(text) {
+		if err := chars.SendChar(ctx, text[index]); err != nil {
+			return err
+		}
+	}
+	return chars.Flush(ctx)
+}
+
+// contextEnded counts a deadline that has passed by the clock as the context's end, whether or not
+// the context reports it yet.
+func contextEnded(ctx context.Context) error {
+	cause := ctx.Err()
+	if cause == nil {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Now().Before(deadline) {
+			return nil
+		}
+		cause = context.DeadlineExceeded
+	}
+	return fmt.Errorf("textio: the call's context ended: %w", cause)
+}
+
+func (conn *Conn) recvString(ctx context.Context, deadline time.Time, most int) (string, error) {
+	if most < 1 || most > MostLine {
+		return "", ErrMostOutOfRange
+	}
+	if conn == nil || conn.state.chars == nil {
+		return "", errNoChars
+	}
+	chars := conn.state.chars
+	line := NewLine(most)
+	for {
+		character, err := chars.RecvChar(ctx, deadline)
+		if err != nil {
+			return "", err
+		}
+		var echo []byte
+		var ended bool
+		line, echo, ended = Edit(line, character)
+		if chars.Echoes() {
+			for _, value := range echo {
+				if err := chars.SendChar(ctx, value); err != nil {
+					return "", err
+				}
+			}
+		}
+		if ended {
+			return line.Text(), nil
+		}
+	}
+}
+
+func newLine(most int) Line {
+	return Line{state: lineState{limit: min(max(most, 0), MostLine)}}
 }
 
 func (line Line) text() string {
-	return ""
+	return string(line.state.characters[:line.state.count])
 }
 
-func edit(line Line, _ byte) (Line, []byte, bool) {
+func edit(line Line, character byte) (Line, []byte, bool) {
+	state := &line.state
+	if state.ended {
+		return line, nil, true
+	}
+	switch {
+	case character >= space && character <= tilde:
+		if state.count < state.limit {
+			state.characters[state.count] = character
+			state.count++
+			return line, []byte{character}, false
+		}
+	case character == backspace || character == deleteKey:
+		if state.count > 0 {
+			state.count--
+			return line, []byte{backspace, space, backspace}, false
+		}
+	case character == carriageReturn || character == lineFeed:
+		if state.count > 0 {
+			state.ended = true
+			return line, []byte{carriageReturn, lineFeed}, true
+		}
+	}
 	return line, nil, false
 }
