@@ -71,6 +71,39 @@ func floodNumbered(t *testing.T, client *net.TCPConn) {
 	t.Fatalf("flooding: the writes never waited")
 }
 
+// connectSmall is connect with the caller's receive buffer set to 4096 bytes before it connects,
+// so the window it offers stays small and a caller that does not read stops the server's writes
+// for good. With the buffer left to grow, a caller's write that waits on a loaded runner can stop
+// the flood while the server is merely slow, and the server then writes every reply and waits in a
+// read: so it went on GitHub's Linux runners, 2026-10-24.
+func connectSmall(t *testing.T) connected {
+	t.Helper()
+	listening, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening on loopback: %v", err)
+	}
+	defer func() { _ = listening.Close() }()
+	dialed := time.Now()
+	clientEnd, err := (&net.Dialer{Control: smallWindow}).DialContext(t.Context(), "tcp", listening.Addr().String())
+	if err != nil {
+		t.Fatalf("dialing loopback: %v", err)
+	}
+	serverEnd, err := listening.Accept()
+	if err != nil {
+		t.Fatalf("accepting on loopback: %v", err)
+	}
+	client, clientIsTCP := clientEnd.(*net.TCPConn)
+	server, serverIsTCP := serverEnd.(*net.TCPConn)
+	if !clientIsTCP || !serverIsTCP {
+		t.Fatalf("loopback connection is not TCP: %T, %T", clientEnd, serverEnd)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	return connected{client: client, server: server, dialed: dialed}
+}
+
 // stallNegotiation has the caller of a Negotiate call flood and never read, so that Negotiate is
 // left waiting in a write of replies well before its 3 seconds pass.
 func stallNegotiation(t *testing.T, pair connected, call negotiating) {
@@ -100,7 +133,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 		t.Run("a caller that floods and never reads: still waiting at 5 seconds, then cancelled: ErrDeadlineEnded at once", func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancel(t.Context())
-			pair := connect(t)
+			pair := connectSmall(t)
 			call := negotiate(ctx, pair.server)
 			stallNegotiation(t, pair, call)
 			expectNotReturned(t, call, call.called.Add(5*time.Second))
@@ -110,7 +143,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 		})
 		t.Run("a caller that floods, then reads from 5 seconds: Negotiate returns only once it reads", func(t *testing.T) {
 			t.Parallel()
-			pair := connect(t)
+			pair := connectSmall(t)
 			call := negotiate(t.Context(), pair.server)
 			stallNegotiation(t, pair, call)
 			expectNotReturned(t, call, call.called.Add(5*time.Second))
@@ -123,7 +156,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 		t.Parallel()
 		t.Run("a caller that floods, then reads from 4 seconds: TimedOut, each request answered once or still unread, in order", func(t *testing.T) {
 			t.Parallel()
-			pair := connect(t)
+			pair := connectSmall(t)
 			call := negotiate(t.Context(), pair.server)
 			stallNegotiation(t, pair, call)
 			expectNotReturned(t, call, call.called.Add(4*time.Second))
@@ -171,7 +204,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 		t.Run("a caller that floods and never reads, the context's deadline at 5 seconds: ErrDeadlineEnded at 5 seconds, not TimedOut at 3", func(t *testing.T) {
 			t.Parallel()
 			deadline := time.Now().Add(5 * time.Second)
-			pair := connect(t)
+			pair := connectSmall(t)
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			stallNegotiation(t, pair, call)
 			expectReturn(t, call.result(t, deadline.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
@@ -179,7 +212,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 		t.Run("the same, the context reporting its end only later: the clock tells", func(t *testing.T) {
 			t.Parallel()
 			deadline := time.Now().Add(5 * time.Second)
-			pair := connect(t)
+			pair := connectSmall(t)
 			call := negotiate(endsLate(t, deadline), pair.server)
 			stallNegotiation(t, pair, call)
 			expectReturn(t, call.result(t, deadline.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))

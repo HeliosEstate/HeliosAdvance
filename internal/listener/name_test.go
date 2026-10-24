@@ -868,6 +868,7 @@ func clampCall(t *testing.T, index int) bool {
 	t.Helper()
 	address := startEngine(t, 1)[0]
 	call := dialSmall(t, address)
+	closeAt := watchClose(t, call, address, call.connected.Add(ceilingLimit+closingWaitLimit+margin))
 	wait(t, call.connected.Add(time.Second))
 	call.flood(t)
 	wait(t, call.connected.Add(10*time.Second))
@@ -885,12 +886,39 @@ func clampCall(t *testing.T, index int) bool {
 	if hello < 0 || helloAt.Before(call.dialed.Add(68*time.Second)) {
 		// No Hello after 68 seconds: the call ended by the name's 60 seconds or the ceiling,
 		// either way by the ceiling.
-		if closedAt := engineCloseAt(t, call, address, call.connected.Add(ceilingLimit+margin)); closedAt.After(call.connected.Add(ceilingLimit + margin)) {
+		if closedAt := closeAt(); closedAt.After(call.connected.Add(ceilingLimit + margin)) {
 			t.Errorf("caller %d's call ended %v after the ceiling", index, closedAt.Sub(ceiling))
 		}
 		return false
 	}
-	closedAt := engineCloseAt(t, call, address, call.connected.Add(ceilingLimit+closingWaitLimit+margin))
-	expectWithin(t, fmt.Sprintf("caller %d's close, Hello at %v", index, helloAt.Sub(call.dialed)), closedAt, ceiling, call.connected.Add(ceilingLimit+margin))
+	expectWithin(t, fmt.Sprintf("caller %d's close, Hello at %v", index, helloAt.Sub(call.dialed)), closeAt(), ceiling, call.connected.Add(ceilingLimit+margin))
 	return true
+}
+
+// watchClose starts watching for the engine's close of a caller's connection and returns a call
+// that gives its moment. On Linux it watches the OS's table of sockets from the start, so a close
+// that came before the row looks is seen too; elsewhere the caller's writes meet the reset, which
+// stays to be met however late it is looked for.
+func watchClose(t *testing.T, call caller, address string, deadline time.Time) func() time.Time {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return func() time.Time { return call.awaitReset(t, deadline) }
+	}
+	closed := make(chan time.Time, 1)
+	local := call.connection.LocalAddr().String()
+	go func() {
+		closedAt, _, _ := engineClosed(t, address, local, deadline)
+		closed <- closedAt
+	}()
+	return func() time.Time {
+		timer := time.NewTimer(time.Until(deadline.Add(margin)))
+		defer timer.Stop()
+		select {
+		case closedAt := <-closed:
+			return closedAt
+		case <-timer.C:
+			t.Errorf("the engine's close was not seen by %v", deadline)
+			return deadline.Add(margin)
+		}
+	}
 }
