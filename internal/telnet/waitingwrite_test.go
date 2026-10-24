@@ -72,10 +72,11 @@ func floodNumbered(t *testing.T, client *net.TCPConn) {
 }
 
 // connectSmall is connect with the caller's receive buffer set to 4096 bytes before it connects,
-// so the window it offers stays small and a caller that does not read stops the server's writes
-// for good. With the buffer left to grow, a caller's write that waits on a loaded runner can stop
-// the flood while the server is merely slow, and the server then writes every reply and waits in a
-// read: so it went on GitHub's Linux runners, 2026-10-24.
+// and the server end's send buffer set to 4096 bytes, so that a caller that does not read stops
+// the server's writes for good. Left to Linux, the server's send buffer grows while the caller
+// does not read, the server writes every reply and waits in a read, and the 3 seconds end that
+// read: so it went on GitHub's Linux runners on 2026-10-24, and with the send buffer set, 20
+// cases of 20 passed there.
 func connectSmall(t *testing.T) connected {
 	t.Helper()
 	listening, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -101,6 +102,9 @@ func connectSmall(t *testing.T) connected {
 		_ = client.Close()
 		_ = server.Close()
 	})
+	if err := server.SetWriteBuffer(4096); err != nil {
+		t.Fatalf("setting the server end's send buffer: %v", err)
+	}
 	return connected{client: client, server: server, dialed: dialed}
 }
 
