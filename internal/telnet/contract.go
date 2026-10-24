@@ -88,9 +88,11 @@
 //	Call                   Why                                        Documented failures
 //	context.AfterFunc      wakes a waiting read or write when the     none
 //	                       context ends, by a deadline in the past
-//	SetReadDeadline,       the earlier of 3 seconds after the         an error, such as
-//	SetWriteDeadline       opening write and the context's deadline;  net.ErrClosed on a
+//	SetReadDeadline        the earlier of 3 seconds after the         an error, such as
+//	                       opening write and the context's deadline;  net.ErrClosed on a
 //	                       at return, the context's deadline          closed connection
+//	SetWriteDeadline       the context's deadline, so the 3 seconds   the same
+//	                       never cut a write
 //	Write                  the opening requests and the replies       an error whenever fewer
 //	                                                                  bytes are written;
 //	                                                                  os.ErrDeadlineExceeded;
@@ -154,8 +156,8 @@ type Outcome int
 const (
 	// Answered means the caller answered both requests, each with DO or DONT.
 	Answered Outcome = iota + 1
-	// TimedOut means 3 seconds after the opening write came first, with a read or a write
-	// waiting.
+	// TimedOut means 3 seconds after the opening write came first, with a read waiting, or
+	// passed while a write waited.
 	TimedOut
 )
 
@@ -297,6 +299,10 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 // does and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
 // ReadBufferSize, hands the bytes to Receive and writes its replies from a fixed buffer of
 // ReplyBufferSize, until Receive reports the end or NegotiationSeconds after the opening write.
+// The 3 seconds end a read that waits, never a write: a write waits until it is done or the
+// context ends. A write cut short can reach the caller whole while reporting nothing written, as
+// Go on Windows reports a cancelled send, so nothing written after one could be trusted to be
+// right; the context's end closes the call, so nothing is written after it.
 // When two things happen at once, the context ending wins, then any read or write failure, whose
 // replies are not written; Answered only when nothing failed. A read or write that gives up on a
 // passed deadline is told apart by the clock, not by whether the context reports it has ended:
@@ -318,10 +324,14 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 //   - When Receive returns true, Negotiate shall write that call's replies and, if neither that
 //     read nor that write returned an error, return Answered with no error.
 //   - If NegotiationSeconds pass after Negotiate begins the opening write, before the context's
-//     deadline, while a read or a write is waiting, then Negotiate shall return TimedOut with no
-//     error.
-//   - If the context's deadline passes at or before NegotiationSeconds after the opening write
-//     began, while a read or a write is waiting, then Negotiate shall return ErrDeadlineEnded.
+//     deadline, while a read is waiting, then Negotiate shall return TimedOut with no error.
+//   - While a write is waiting, Negotiate shall wait for it until it ends or the context ends,
+//     whether or not NegotiationSeconds have passed.
+//   - If NegotiationSeconds have passed when a write ends without an error, and Receive has not
+//     returned true, then Negotiate shall return TimedOut with no error, reading nothing more.
+//   - If the context's deadline passes while a write is waiting, or at or before
+//     NegotiationSeconds after the opening write began while a read is waiting, then Negotiate
+//     shall return ErrDeadlineEnded.
 //   - If the context is cancelled while a read or a write is waiting, then Negotiate shall stop
 //     waiting and return ErrDeadlineEnded.
 //   - Negotiate shall return ErrDeadlineEnded wrapping context.DeadlineExceeded when the
@@ -408,7 +418,9 @@ const SendBufferSize = 1024
 // context.DeadlineExceeded, whether or not it reports it yet. A context ending wakes a waiting
 // call at once. A call sets the connection's deadline itself before each read or write, the
 // earlier of its own deadline and the context's, or none when neither has one, and leaves
-// nothing of its own running when it returns.
+// nothing of its own running when it returns. Once a write fails, whatever it wrote, the Line
+// writes nothing more, for the reason given on Negotiate: what a write cut short sent cannot be
+// known.
 type Line struct {
 	state lineState
 }
@@ -427,8 +439,8 @@ type Line struct {
 //     Negotiate's through errors.Is.
 //   - When Open returns ErrCallerClosed, the error shall also match io.EOF.
 //   - When negotiation ends with an outcome, Open shall return a Line that writes first, in order,
-//     every byte Negotiate was to write and did not: the rest of a write cut short, and the
-//     replies of a read that returned with a passed deadline.
+//     the replies of a read that returned bytes with a passed deadline, which Negotiate did not
+//     write.
 //   - When negotiation ends with an outcome after Receive returned true, Open shall return a Line
 //     whose receive buffer holds, unread and in order, every byte negotiation's last read
 //     returned after the byte at which Receive returned true, and no other byte.
@@ -460,8 +472,8 @@ func (line *Line) SendChar(ctx context.Context, character byte) error {
 //   - If the context has ended when Flush is called, or ends while it waits, then Flush shall
 //     write nothing more and return the context's error, wrapped.
 //   - If a write fails otherwise, then Flush shall return ErrConnectionFailed.
-//   - If a write is cut short, then Flush shall keep what it did not write at the front of the
-//     send buffer, in order, so that each byte is written once.
+//   - After a write has failed, whatever it wrote, every later SendChar, Flush and RecvChar on the
+//     Line shall write nothing and return ErrConnectionFailed.
 //   - Flush shall hold the send buffer in SendBufferSize bytes, and keep no other copy. [read]
 func (line *Line) Flush(ctx context.Context) error {
 	return line.flush(ctx)

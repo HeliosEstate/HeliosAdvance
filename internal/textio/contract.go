@@ -85,8 +85,8 @@ type Chars interface {
 	// that came before the call included, and never a byte of the connection's own commands. Its
 	// results are the table's.
 	RecvChar(ctx context.Context, deadline time.Time) (byte, error)
-	// Flush writes what is queued; a write cut short leaves what it did not write queued, in
-	// order, so each byte is written once. Its results are the table's.
+	// Flush writes what is queued. Once a write fails, the kind of connection writes nothing
+	// more, since what a write cut short sent cannot be known. Its results are the table's.
 	Flush(ctx context.Context) error
 	// Echoes is whether the board echoes what the caller types on this connection now; it may
 	// change during the call as the caller asks, and RecvString asks it again at each echo.
