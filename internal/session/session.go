@@ -29,7 +29,7 @@ func run(ctx context.Context, connection Connection) (Ending, error) {
 	deadline := time.Now().Add(NameSeconds * time.Second)
 	name, err := connection.RecvString(ctx, deadline, NameMostCharacters)
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return NoName, nil
 		}
 		return 0, ending(err)

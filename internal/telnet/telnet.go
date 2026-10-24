@@ -95,8 +95,9 @@ func (negotiation *Negotiation) strip(character byte, replies []byte) ([]byte, b
 	return state.readByte(character, replies)
 }
 
-// readByte is the one table Receive and Strip both run. Its second result is whether the byte is
-// data: a byte outside every command, or the second IAC of IAC IAC.
+// readByte is the one table Receive and Strip both run, so a later option is added in one place.
+// Its second result is whether the byte is data: a byte outside every command, or the second IAC
+// of IAC IAC.
 func (state *negotiationState) readByte(value byte, replies []byte) ([]byte, bool) {
 	isData := false
 	switch state.phase {
@@ -195,8 +196,9 @@ func wakeOnEnd(ctx context.Context, connection Conn) (release func()) {
 	}
 }
 
-// handOver is what negotiation leaves for the Line: its last read's bytes from index from to
-// readCount, and the replies of a read cut short by its deadline, which were never written.
+// handOver is what Open takes from negotiation so that nothing is copied or lost: the last read's
+// bytes from index from to readCount, and the replies of a read cut short by its deadline, which
+// were never written and go out first.
 type handOver struct {
 	readCount int
 	from      int

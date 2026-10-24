@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// replyRoom is what RecvChar keeps free before it hands Strip a byte: one reply, 3 bytes.
+// replyRoom is 3 because Strip appends at most one reply, and every reply is 3 bytes: a reply
+// must never find the send buffer full, since Strip cannot write it out.
 const replyRoom = 3
 
 // lineState keeps a read's error until the bytes that came with it are read, since the caller's
@@ -52,7 +53,8 @@ func open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return line, outcome, nil
 }
 
-// usable is false for a nil Line and one Open did not make, which fail every call.
+// usable is false for a Line that cannot be written through, so a misuse fails with an error and
+// never with a nil dereference.
 func (line *Line) usable() bool {
 	return line != nil && line.state.connection != nil
 }
@@ -71,8 +73,8 @@ func contextEnded(ctx context.Context) error {
 	return fmt.Errorf("telnet: the call's context ended: %w", cause)
 }
 
-// judge tells what a failed read or write means. A passed deadline is the context's when the
-// context has ended, and the call's own otherwise.
+// judge reads a failure by what ended the call: a deadline that passed is the context's when the
+// context has ended, since the connection cannot tell the two apart, and the call's own otherwise.
 func judge(ctx context.Context, cause error) error {
 	if ended := contextEnded(ctx); ended != nil {
 		return ended
@@ -86,8 +88,8 @@ func judge(ctx context.Context, cause error) error {
 	return fmt.Errorf("%w: %w", ErrConnectionFailed, cause)
 }
 
-// connectionDeadline is the earlier of the call's deadline and the context's, none when neither
-// has one.
+// connectionDeadline is the earlier of the two because either ending must wake the call; none when
+// neither has one, which clears any deadline an earlier call left.
 func connectionDeadline(ctx context.Context, deadline time.Time) time.Time {
 	contextDeadline, ok := ctx.Deadline()
 	if ok && (deadline.IsZero() || contextDeadline.Before(deadline)) {
@@ -96,7 +98,8 @@ func connectionDeadline(ctx context.Context, deadline time.Time) time.Time {
 	return deadline
 }
 
-// check runs the order every call judges in: the context ending, then a failed write.
+// check puts the context ending before a failed write so that a stop is reported as a stop, not as
+// the failed write it caused by waking the call.
 func (line *Line) check(ctx context.Context) error {
 	if !line.usable() {
 		return ErrConnectionFailed
