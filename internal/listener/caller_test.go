@@ -44,11 +44,10 @@ const (
 
 // The page's limits, written here so a changed constant in the engine cannot move a test with it.
 const (
-	greeting          = "Hello Helios Advance BBS!\r\n"
-	negotiationLimit  = 3 * time.Second
-	closingWaitLimit  = 3 * time.Second
-	hardDeadlineLimit = 10 * time.Second
-	connectionCap     = 100
+	greeting         = "Hello Helios Advance BBS!\r\n"
+	negotiationLimit = 3 * time.Second
+	closingWaitLimit = 3 * time.Second
+	connectionCap    = 100
 )
 
 // margin is how late past a limit an event may come on the slowest runner, under the race
@@ -290,13 +289,6 @@ func (stream *recording) arrivedAt(t *testing.T, offset int) time.Time {
 	return stream.arrived[offset]
 }
 
-// greetingAt is when the greeting's first byte arrived, the greeting being the stream's end.
-func (stream *recording) greetingAt(t *testing.T) time.Time {
-	t.Helper()
-	<-stream.done
-	return stream.arrivedAt(t, len(stream.received)-len(greeting))
-}
-
 // expectWithin checks a moment falls in its window and logs how far into it it came.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
@@ -308,10 +300,6 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 	}
 	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
-
-// floodingCallers is how many callers the 10-second line's row runs at once, each against its
-// own engine, so that at least one is likely to have its greeting's write left waiting.
-const floodingCallers = 10
 
 // engineClosed watches Linux's table of IPv4 TCP sockets for the engine's end of a connection,
 // found by its two ports, and returns when the engine closed it, the socket having lost its

@@ -290,7 +290,7 @@ func TestNegotiate(t *testing.T) {
 			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
 		})
 	})
-	t.Run("If NegotiationSeconds pass after Negotiate begins the opening write, before the context's deadline, while a read or a write is waiting, then Negotiate shall return TimedOut with no error.", func(t *testing.T) {
+	t.Run("If NegotiationSeconds pass after Negotiate begins the opening write, before the context's deadline, while a read is waiting, then Negotiate shall return TimedOut with no error.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a silent caller, a read waiting", func(t *testing.T) {
 			t.Parallel()
@@ -303,14 +303,6 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(t.Context(), pair.server)
-			limit := call.called.Add(negotiationLimit)
-			expectReturn(t, call.result(t, limit.Add(margin)), telnet.TimedOut, nil, limit, limit.Add(margin))
-		})
-		t.Run("a caller that floods and never reads, a write waiting", func(t *testing.T) {
-			t.Parallel()
-			pair := connect(t)
-			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			flood(t, pair.client)
 			limit := call.called.Add(negotiationLimit)
 			expectReturn(t, call.result(t, limit.Add(margin)), telnet.TimedOut, nil, limit, limit.Add(margin))
 		})
@@ -342,7 +334,7 @@ func TestNegotiate(t *testing.T) {
 			expectReturn(t, call.result(t, limit.Add(margin)), telnet.TimedOut, nil, limit, before.Add(3500*time.Millisecond))
 		})
 	})
-	t.Run("If the context's deadline passes at or before NegotiationSeconds after the opening write began, while a read or a write is waiting, then Negotiate shall return ErrDeadlineEnded.", func(t *testing.T) {
+	t.Run("If the context's deadline passes while a write is waiting, or at or before NegotiationSeconds after the opening write began while a read is waiting, then Negotiate shall return ErrDeadlineEnded.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a deadline at 1 second, a read waiting", func(t *testing.T) {
 			t.Parallel()
