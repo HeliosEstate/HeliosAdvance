@@ -173,8 +173,9 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 			return 0, err
 		}
 		state := &line.state
-		// A stored end or failure outranks a passed deadline once no bytes are left, as the Line's
-		// order has it; with bytes waiting the deadline still comes first.
+		// A stored end or failure happened before the deadline passed, so it is what ended the
+		// read. While bytes are waiting the deadline comes first, so a caller who keeps sending
+		// cannot hold a read past its deadline.
 		if state.receiveNext >= state.receiveEnd && state.readError != nil {
 			return 0, state.readError
 		}
