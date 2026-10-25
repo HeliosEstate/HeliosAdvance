@@ -6,9 +6,10 @@
 //
 // It owns SendString and RecvString, built on the SendChar and RecvChar each kind of connection
 // supplies: the line editor that reads a line, with the characters a line may hold, its length,
-// backspace and the end of the line; echoing as it edits, unless the connection says it does not
-// echo; and flushing what was sent. A Conn wraps one kind of connection and offers all four calls,
-// SendChar, RecvChar, SendString and RecvString, to the session.
+// backspace, erasing the whole line and the end of the line; echoing as it edits, unless the
+// connection says it does not echo; and flushing what was sent. A Conn wraps one kind of
+// connection and offers all four calls, SendChar, RecvChar, SendString and RecvString, to the
+// session.
 //
 // It does not own negotiation, whether a connection echoes, how bytes cross the wire or which bytes
 // are a connection's own commands: each kind of connection owns those, behind Chars. What the
@@ -24,9 +25,10 @@
 // first form: only a character from space to tilde, 0x20 to 0x7E, is ever added to a line; every
 // other byte is dropped and never written back as itself. Edit is the fuzz target. On every run:
 // it never panics; a line never holds more than its limit nor a byte outside 0x20 to 0x7E; what it
-// echoes is only bytes it added, BS, space and BS for one removed, and CR LF at the end; the echo
-// is never longer than twice the bytes read plus 2, since a removal echoes three bytes for one but
-// needs a character added before it; the same bytes give the same line and the same echo however
+// echoes is only bytes it added, BS, space and BS for each one removed, and CR LF at the end; the
+// echo is never longer than four times the bytes read plus 2, since each character removed echoes
+// three bytes and needed a byte that added it, and one Ctrl-U removes them all; the same bytes give
+// the same line and the same echo however
 // they are split; and once a line ends it stays ended.
 //
 // # Calls and results
@@ -175,8 +177,10 @@ func (line Line) Text() string {
 //	0x20 to 0x7E, the line below its limit      added; echo it
 //	0x20 to 0x7E, the line at its limit         dropped; echo nothing
 //	BS 0x08 or DEL 0x7F, the line not empty     the last character removed; echo BS, space, BS
+//	Ctrl-U 0x15, the line not empty             every character removed; echo BS, space, BS
+//	                                            for each
 //	CR 0x0D or LF 0x0A, the line not empty      the line ends; echo CR LF
-//	BS, DEL, CR or LF, the line empty           nothing; echo nothing
+//	BS, DEL, Ctrl-U, CR or LF, the line empty   nothing; echo nothing
 //	any other byte                              dropped; echo nothing
 //
 // Lines:
@@ -187,10 +191,12 @@ func (line Line) Text() string {
 //     for it.
 //   - When the byte is BS or DEL and the line holds a character, Edit shall remove the last one
 //     and echo BS, space, BS.
+//   - When the byte is Ctrl-U (0x15) and the line holds a character, Edit shall remove every
+//     character and echo BS, space, BS for each.
 //   - When the byte is CR or LF and the line holds a character, Edit shall end the line and echo
 //     CR LF.
-//   - If the byte is BS, DEL, CR or LF and the line is empty, then Edit shall change nothing and
-//     echo nothing.
+//   - If the byte is BS, DEL, Ctrl-U, CR or LF and the line is empty, then Edit shall change
+//     nothing and echo nothing.
 //   - Edit shall keep spaces as they come, leading and trailing ones included.
 //   - After the line has ended, Edit shall change nothing and echo nothing.
 //   - Edit shall return for every byte without panicking.
