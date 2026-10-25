@@ -112,6 +112,7 @@ linters:
             # (docs/architecture.md, Part 3's shape); Text I/O and the Session are the Listener's.
             - github.com/heliosestate/heliosadvance/internal/listener
             - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/ssh
     forbidigo:
       analyze-types: true
       forbid:
