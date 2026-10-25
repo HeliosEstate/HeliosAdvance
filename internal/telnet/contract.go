@@ -306,8 +306,8 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 // When two things happen at once, the context ending wins, then any read or write failure, whose
 // replies are not written; Answered only when nothing failed. Whether the context has ended is
 // judged by the clock, as on the Line, whatever the failure: a context whose deadline has passed
-// has ended, with context.DeadlineExceeded, whether or not it reports it yet. So a read that gives
-// up on a passed deadline is TimedOut only if the context has not ended when Negotiate judges it.
+// has ended, with context.DeadlineExceeded, whether or not it reports it yet. TimedOut is only
+// ever the result while the context has not ended.
 // On return, with an outcome or an error, it leaves nothing behind: the connection's read and
 // write deadlines at the context's deadline, cleared if it has none, and nothing of its own
 // running. Results: ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
@@ -324,12 +324,15 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 //     its next read.
 //   - When Receive returns true, Negotiate shall write that call's replies and, if neither that
 //     read nor that write returned an error, return Answered with no error.
-//   - If NegotiationSeconds pass after Negotiate begins the opening write, before the context's
-//     deadline, while a read is waiting, then Negotiate shall return TimedOut with no error.
+//   - If NegotiationSeconds pass after Negotiate begins the opening write, while a read is
+//     waiting, and the context has not ended, then Negotiate shall return TimedOut with no error.
 //   - While a write is waiting, Negotiate shall wait for it until it ends or the context ends,
 //     whether or not NegotiationSeconds have passed.
-//   - If NegotiationSeconds have passed when a write ends without an error, and Receive has not
-//     returned true, then Negotiate shall return TimedOut with no error, reading nothing more.
+//   - If NegotiationSeconds have passed when a write ends without an error, Receive has not
+//     returned true, and the context has not ended, then Negotiate shall return TimedOut with no
+//     error, reading nothing more.
+//   - If NegotiationSeconds have passed when a write ends without an error, Receive has not
+//     returned true, and the context has ended, then Negotiate shall return ErrDeadlineEnded.
 //   - If the context's deadline passes while a write is waiting, or at or before
 //     NegotiationSeconds after the opening write began while a read is waiting, then Negotiate
 //     shall return ErrDeadlineEnded.
