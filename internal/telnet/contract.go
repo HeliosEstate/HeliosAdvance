@@ -4,6 +4,14 @@
 // Package telnet is the Telnet kind of connection: it negotiates Telnet options over one accepted
 // connection, and then carries the caller's characters for the session as the Line.
 //
+// The Line is Telnet's object in the developer's design for Part 3: "There are two listeners, one
+// for Telnet and one for SSH. The listeners' job is just to accept the connections. It then hands
+// each connection off to a shared execution path as a class. That class defines identical
+// primitives that the shared execution uses." Accept makes an accepted connection Telnet's object,
+// and the Line offers the identical primitives: SendChar and RecvChar, the page's; Flush and
+// Echoes, which the textio package's Chars asks of every kind of connection; and Close, the kind's
+// own close.
+//
 // During negotiation it owns the opening requests, WILL ECHO and WILL SGA; reading what the caller
 // sends through a fixed buffer; the Q-method state of ECHO and SGA on the engine's side (RFC 1143);
 // the replies, refusing every other Telnet option, at most one reply per option request;
@@ -13,12 +21,15 @@
 // answered by the same rules and tables and every other Telnet command discarded; a send buffer
 // written with the data byte 255 doubled, which also carries those answers and what negotiation
 // still owed the caller; and whether the board echoes, which is whether the caller has agreed to
-// ECHO as of the byte just read. It writes nothing to the local log.
+// ECHO as of the byte just read. On an accepted connection it owns keeping TCP urgent data in
+// line, and, once the call is answered, Telnet's own close: shutting down the sending side, and
+// reading and discarding until the caller closes or 3 seconds pass. It writes nothing to the local
+// log.
 //
-// It does not own accepting, the cap of 100, the ceiling on a whole call, shutting down the sending
-// side, the closing wait or closing: the Listener owns those. It does not own reading a line,
-// editing it or deciding what to echo, which the textio package owns, nor what the call says and
-// asks, which the session owns; it declares nothing of either package's and imports nothing of
+// It does not own accepting, the cap of 100, the ceiling on a whole call or closing the
+// connection: the listeners and the shared execution path own those. It does not own reading a
+// line, editing it or deciding what to echo, which the textio package owns, nor what the call says
+// and asks, which the session owns; it declares nothing of either package's and imports nothing of
 // them. The command line, running as root, stop signals, stopping and the local log belong to the
 // program. Later layers own any Telnet option other than ECHO and SGA beyond refusing it.
 //
@@ -39,7 +50,9 @@
 // part of a command nor inside a subnegotiation, and the second IAC of each IAC IAC outside one;
 // one call appends at most one reply; the replies of Receive's calls and Strip's together are
 // never longer than all their input, and well-formed; and they are the same as when Strip takes
-// over at the first byte instead.
+// over at the first byte instead. Once the call is answered, Close reads what the caller still
+// sends into a fixed buffer of DiscardBufferSize and discards it unread, for at most
+// ClosingWaitSeconds.
 //
 // # Oracles
 //
@@ -56,14 +69,15 @@
 //
 // # What it needs from its callers
 //
-// A connection with read and write deadlines. For Open and the Line, a connection that keeps TCP
-// urgent data in line (SO_OOBINLINE), as RFC 6093 section 6 requires of Telnet: without it a
-// Synch's DM byte leaves the stream and the lone IAC before it would swallow the caller's next
-// character. A context carrying the call's ceiling, cancelled by a stop. One Negotiate or one Open
-// per connection, never both, from that connection's own goroutine, before anything else is
-// written to it. After either returns an error, the Listener closes the connection without writing
-// to it. One goroutine per Negotiation and per Line: neither is safe
-// for use from two at once.
+// A connection with read and write deadlines. For Open and the Line it makes, a connection that
+// keeps TCP urgent data in line (SO_OOBINLINE), as RFC 6093 section 6 requires of Telnet: without
+// it a Synch's DM byte leaves the stream and the lone IAC before it would swallow the caller's next
+// character; Accept sets it itself. A context carrying the call's ceiling, cancelled by a stop. One
+// Negotiate, one Open or one Accept per connection, never two, from that connection's own
+// goroutine, before anything else is written to it. After any of them returns an error, the
+// shared execution path closes the connection without writing to it, and it closes the connection
+// after Close. One goroutine per Negotiation and per Line: neither is safe for use from two at
+// once.
 //
 // # The wire format
 //
@@ -117,6 +131,7 @@ package telnet
 import (
 	"context"
 	"errors"
+	"net"
 	"time"
 )
 
@@ -161,7 +176,7 @@ const (
 	TimedOut
 )
 
-// Conn is the connection as Negotiate needs it; the Listener's accepted net.Conn satisfies it.
+// Conn is the connection as Negotiate needs it; an accepted net.Conn satisfies it.
 // Declared here, where it is used.
 type Conn interface {
 	// Read returns end of file, a passed deadline and any other failure as its error.
@@ -177,8 +192,8 @@ type Conn interface {
 
 var (
 	// ErrCallerClosed means the caller closed its side in order before negotiation ended: a read
-	// met end of file. A half-close cannot be told from a hang-up, so the Listener writes nothing
-	// after it.
+	// met end of file. A half-close cannot be told from a hang-up, so the shared execution path
+	// writes nothing after it.
 	ErrCallerClosed = errors.New("telnet: the caller closed the connection")
 	// ErrConnectionFailed means any other read or write failure on the connection, a reset
 	// included.
@@ -295,8 +310,8 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 	return negotiation.receive(input, replies)
 }
 
-// Negotiate negotiates over one connection; the Listener calls Open, which negotiates as Negotiate
-// does and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
+// Negotiate negotiates over one connection; Accept calls Open, which negotiates as Negotiate does
+// and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
 // ReadBufferSize, hands the bytes to Receive and writes its replies from a fixed buffer of
 // ReplyBufferSize, until Receive reports the end or NegotiationSeconds after the opening write.
 // The 3 seconds end a read that waits, never a write: a write waits until it is done or the
@@ -411,8 +426,9 @@ const SendBufferSize = 1024
 // package's Chars. It keeps a receive buffer of the caller's bytes not yet read, a send buffer of
 // SendBufferSize, and the negotiation, whose option states go on changing as the caller asks.
 // It reads in stream order, so an option request is answered, and ECHO changes, exactly where it
-// falls among the caller's characters. A Line not made by Open, or nil, fails every call with
-// ErrConnectionFailed, and its Echoes returns false. One goroutine per Line.
+// falls among the caller's characters. A Line not made by Open or Accept, or nil, fails every
+// call with ErrConnectionFailed, and its Echoes returns false. Close needs a Line made by Accept:
+// on one made by Open it fails with ErrConnectionFailed. One goroutine per Line.
 //
 // Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
 // deadline given passed first; io.EOF when the caller closed its side; the context's error,
@@ -453,6 +469,36 @@ type Line struct {
 //   - When it returns an error, Open shall return a nil Line.
 func Open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	return open(ctx, connection)
+}
+
+const (
+	// ClosingWaitSeconds is the wait after Close shuts down the sending side, for the caller to
+	// close. Fixed in this layer; a setting once configuration exists.
+	ClosingWaitSeconds = 3
+	// DiscardBufferSize is the fixed buffer Close reads into: nothing the caller sends grows it.
+	DiscardBufferSize = 256
+)
+
+// Accept makes one accepted TCP connection Telnet's object for the shared execution path: it keeps
+// urgent data in line, then negotiates and returns the Line exactly as Open does, whichever Outcome
+// negotiation ends with. Urgent data is kept in line (SO_OOBINLINE) because RFC 6093 section 6
+// requires it of an application that still uses urgent data, as Telnet's Synch does. The standard
+// library has no call for it, so it is set through the connection's SyscallConn with
+// syscall.SetsockoptInt, at the socket level: on Linux the value is syscall.SO_OOBINLINE, 0x0A; on
+// Windows, where the syscall package names none, it is Winsock's SO_OOBINLINE, 0x0100. Set after
+// accept, it also keeps in line urgent data that arrived before accept (probed on both).
+//
+//   - Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as
+//     urgent data, reaches negotiation whole and, after negotiation, the caller's next character
+//     after it is read as data.
+//   - Accept shall set SO_OOBINLINE on the connection before it reads from or writes to it.
+//     [read]
+//   - If SO_OOBINLINE cannot be set, then Accept shall return ErrConnectionFailed and a nil Line
+//     without writing to the connection.
+//   - Once SO_OOBINLINE is set, Accept shall negotiate and return a Line as Open does, whichever
+//     Outcome negotiation ends with, or a nil Line and Open's error.
+func Accept(ctx context.Context, connection *net.TCPConn) (*Line, error) {
+	return accept(ctx, connection)
 }
 
 // SendChar queues one data byte for the caller. It writes only when the send buffer is full.
@@ -516,7 +562,34 @@ func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error
 //
 //   - While the caller has agreed to ECHO, Echoes shall return true.
 //   - While the caller has not agreed to ECHO, Echoes shall return false.
-//   - If the Line was not made by Open, or is nil, then Echoes shall return false.
+//   - If the Line was not made by Open or Accept, or is nil, then Echoes shall return false.
 func (line *Line) Echoes() bool {
 	return line.echoes()
+}
+
+// Close is Telnet's own close, called once the call is answered: it shuts down the sending side
+// of the Line's connection, then reads and discards what the caller sends until the caller closes
+// or ClosingWaitSeconds pass, no later than the context's deadline. It writes nothing, what is
+// still queued included, and leaves closing the connection to the shared execution path. A close
+// with the caller's bytes still unread may reach the caller as a reset rather than an orderly end
+// of stream; either is the close these lines ask for.
+//
+//   - Close shall shut down the sending side of the Line's connection, then read and discard until
+//     the caller closes or ClosingWaitSeconds pass, no later than the context's deadline.
+//   - Close shall write nothing to the connection.
+//   - Close shall set the read deadline for its wait itself, and rely on no deadline an earlier
+//     call left. [read]
+//   - Close shall read only into a buffer of DiscardBufferSize bytes, and keep no copy of what it
+//     reads. [read]
+//   - When the caller closes, or ClosingWaitSeconds pass, Close shall return no error.
+//   - If the context has ended when Close is called, then Close shall return the context's
+//     error, wrapped, without touching the connection.
+//   - If the context ends while Close waits, then Close shall return the context's error,
+//     wrapped.
+//   - If shutting down the sending side or setting the read deadline fails, then Close shall
+//     return ErrConnectionFailed at once.
+//   - If the Line was not made by Accept, or is nil, then Close shall return ErrConnectionFailed
+//     without touching the connection.
+func (line *Line) Close(ctx context.Context) error {
+	return line.close(ctx)
 }
