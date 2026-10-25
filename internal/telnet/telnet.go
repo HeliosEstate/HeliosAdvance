@@ -252,8 +252,8 @@ func negotiateWith(
 	// The three seconds end only a read that waits, never a write, so a write that ends with them
 	// passed is where negotiation stops, without a read after it.
 	endAtTimeout := func(left handOver) (Outcome, handOver, error) {
-		if contextDeadline, ok := ctx.Deadline(); ok && !time.Now().Before(contextDeadline) {
-			return finish(0, handOver{}, endedBy(context.DeadlineExceeded))
+		if ended := endedCause(ctx); ended != nil {
+			return finish(0, handOver{}, endedBy(ended))
 		}
 		return finish(TimedOut, left, nil)
 	}
@@ -307,16 +307,13 @@ func endedBy(cause error) error {
 // failure turns a failed read, write or deadline setting into Negotiate's result. A passed
 // deadline is told apart by the clock, because the context may not have reported its end yet.
 func failure(ctx context.Context, cause error) (Outcome, error) {
-	if ended := ctx.Err(); ended != nil {
+	if ended := endedCause(ctx); ended != nil {
 		return 0, endedBy(ended)
 	}
 	switch {
 	case errors.Is(cause, io.EOF):
 		return 0, ErrCallerClosed
 	case errors.Is(cause, os.ErrDeadlineExceeded):
-		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-			return 0, endedBy(context.DeadlineExceeded)
-		}
 		return TimedOut, nil
 	}
 	return 0, fmt.Errorf("%w: %w", ErrConnectionFailed, cause)
