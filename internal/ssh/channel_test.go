@@ -38,9 +38,13 @@ func acceptCall(t *testing.T, terminal bool, before string, window uint32) openC
 	client.signIn("anyone")
 	out := message(messageChannelOpen).text("session").uint32Value(0).uint32Value(window).uint32Value(clientMaxPacket)
 	client.sendPacket(out.data)
-	if reply, err := client.next(time.Now().Add(5 * time.Second)); err != nil || reply[0] != messageChannelConfirmation {
+	reply, err := client.next(time.Now().Add(5 * time.Second))
+	if err != nil || reply[0] != messageChannelConfirmation {
 		t.Fatalf("the session channel: %v, %v", reply, err)
 	}
+	parser := &reader{t: t, data: reply[1:]}
+	parser.uint32Value()
+	client.engineChannel = parser.uint32Value()
 	if before != "" {
 		client.sendData(before)
 	}
@@ -339,8 +343,12 @@ func TestChannel(t *testing.T) {
 			name string
 			end  func(client *rawClient)
 		}{
-			{"end of file", func(client *rawClient) { client.sendPacket(message(messageChannelEOF).uint32Value(0).data) }},
-			{"the channel's close", func(client *rawClient) { client.sendPacket(message(messageChannelClose).uint32Value(0).data) }},
+			{"end of file", func(client *rawClient) {
+				client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
+			}},
+			{"the channel's close", func(client *rawClient) {
+				client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
+			}},
 			{"the connection's close", func(client *rawClient) { _ = client.connection.CloseWrite() }},
 		} {
 			t.Run("ab, then "+row.name+": a, b, then io.EOF", func(t *testing.T) {
@@ -657,7 +665,7 @@ func expectFailedAfter(t *testing.T, call openCall, cut []byte) {
 	if _, err := call.channel.RecvChar(ctx, time.Now().Add(time.Second)); !errors.Is(err, ssh.ErrConnectionFailed) {
 		t.Fatalf("RecvChar after the failed write gave %v, want ErrConnectionFailed", err)
 	}
-	call.client.sendPacket(message(messageWindowAdjust).uint32Value(0).uint32Value(clientWindow).data)
+	call.client.sendPacket(message(messageWindowAdjust).uint32Value(call.client.engineChannel).uint32Value(clientWindow).data)
 	for {
 		if _, err := call.client.next(time.Now().Add(quietFor)); err != nil {
 			break

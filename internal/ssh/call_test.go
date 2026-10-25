@@ -168,7 +168,7 @@ func TestCall(t *testing.T) {
 			client.readUntil(helloTo("bob"), time.Now().Add(5*time.Second))
 			expectClosingMessages(t, client, "")
 			client.expectStream(asked + helloTo("bob"))
-			client.sendPacket(message(messageChannelClose).uint32Value(0).data)
+			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
 			if kinds, _ := client.expectEnd(time.Now().Add(closingWait + margin + time.Second)); len(kinds) != 0 {
 				t.Fatalf("after the close the engine sent messages %v, want none", kinds)
 			}
@@ -515,7 +515,7 @@ func TestCall(t *testing.T) {
 					uint32Value(clientWindow).uint32Value(clientMaxPacket)
 				out.data = append(out.data, (&wire{}).text("127.0.0.1").uint32Value(9).text("127.0.0.1").uint32Value(1).data...)
 				client.sendPacket(out.data)
-				client.sendPacket(message(messageChannelRequest).uint32Value(0).text("env").boolean(true).text("A").text("B").data)
+				client.sendPacket(message(messageChannelRequest).uint32Value(client.engineChannel).text("env").boolean(true).text("A").text("B").data)
 			}
 			failures := map[byte]int{}
 			for range 2000 {
@@ -582,7 +582,7 @@ func TestCall(t *testing.T) {
 				client := callAtPrompt(t, program, true)
 				client.sendData("ab")
 				client.readUntil("ab", time.Now().Add(5*time.Second))
-				client.sendPacket(message(end.message).uint32Value(0).data)
+				client.sendPacket(message(end.message).uint32Value(client.engineChannel).data)
 				sent := time.Now()
 				kinds, ended := client.expectEnd(sent.Add(margin + time.Second))
 				if !bytes.Equal(kinds, end.replies) {
@@ -597,7 +597,7 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := readyClient(t, program.ssh, "anyone")
 			client.request("pty-req", true, ptyRequest("xterm", []byte{0}))
-			client.sendPacket(message(messageChannelEOF).uint32Value(0).data)
+			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
 			sent := time.Now()
 			kinds, ended := client.expectEnd(sent.Add(margin + time.Second))
 			if len(kinds) != 0 || len(client.received) != 0 {

@@ -123,6 +123,10 @@ type rawClient struct {
 	// windowFromServer is how much the client has let the engine send since it last adjusted.
 	windowFromServer uint32
 	adjustWindow     bool
+	// engineChannel is the number the engine gave the session in its confirmation, which every
+	// message about the channel must carry: the engine may number it other than 0, as when a
+	// channel it refused still held 0.
+	engineChannel uint32
 	// received holds the channel data and when each byte arrived, for the timed rows.
 	received   []byte
 	receivedAt []time.Time
@@ -638,7 +642,7 @@ func (client *rawClient) next(deadline time.Time) ([]byte, error) {
 			}
 			client.windowFromServer += wireLength(len(data))
 			if client.adjustWindow && client.windowFromServer > clientWindow/2 {
-				client.sendPacket(message(messageWindowAdjust).uint32Value(0).uint32Value(client.windowFromServer).data)
+				client.sendPacket(message(messageWindowAdjust).uint32Value(client.engineChannel).uint32Value(client.windowFromServer).data)
 				client.windowFromServer = 0
 			}
 		}
@@ -687,17 +691,17 @@ func (client *rawClient) openChannel(kind string, number uint32, extra []byte) [
 	if payload[0] == messageChannelConfirmation {
 		parser := &reader{t: client.t, data: payload[1:]}
 		parser.uint32Value()
-		parser.uint32Value()
+		client.engineChannel = parser.uint32Value()
 		client.windowToServer = parser.uint32Value()
 	}
 	return payload
 }
 
-// request sends a channel request on the engine's channel 0 and, when it wants a reply, returns
-// it.
+// request sends a channel request on the engine's session channel and, when it wants a reply,
+// returns it.
 func (client *rawClient) request(kind string, wantReply bool, extra []byte) []byte {
 	client.t.Helper()
-	out := message(messageChannelRequest).uint32Value(0).text(kind).boolean(wantReply)
+	out := message(messageChannelRequest).uint32Value(client.engineChannel).text(kind).boolean(wantReply)
 	out.data = append(out.data, extra...)
 	client.sendPacket(out.data)
 	if !wantReply {
@@ -714,15 +718,15 @@ func ptyRequest(term string, modes []byte) []byte {
 	return (&wire{}).text(term).uint32Value(80).uint32Value(24).uint32Value(640).uint32Value(480).bytesValue(modes).data
 }
 
-// sendData sends channel data on the engine's channel 0.
+// sendData sends channel data on the engine's session channel.
 func (client *rawClient) sendData(data string) {
 	client.t.Helper()
-	client.sendPacket(message(messageChannelData).uint32Value(0).text(data).data)
+	client.sendPacket(message(messageChannelData).uint32Value(client.engineChannel).text(data).data)
 }
 
 func (client *rawClient) sendExtended(data string) {
 	client.t.Helper()
-	client.sendPacket(message(messageExtendedData).uint32Value(0).uint32Value(1).text(data).data)
+	client.sendPacket(message(messageExtendedData).uint32Value(client.engineChannel).uint32Value(1).text(data).data)
 }
 
 // readData reads until the channel data received holds count bytes, by deadline, and fails the

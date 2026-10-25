@@ -375,18 +375,18 @@ func TestAccept(t *testing.T) {
 			{"the caller sends end of file on the session", func(t *testing.T, address string) {
 				t.Helper()
 				client := readyClient(t, address, "anyone")
-				client.sendPacket(message(messageChannelEOF).uint32Value(0).data)
+				client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
 			}},
 			{"the caller closes the session", func(t *testing.T, address string) {
 				t.Helper()
 				client := readyClient(t, address, "anyone")
-				client.sendPacket(message(messageChannelClose).uint32Value(0).data)
+				client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
 			}},
 			{"the caller sends end of file after a pty-req", func(t *testing.T, address string) {
 				t.Helper()
 				client := readyClient(t, address, "anyone")
 				client.request("pty-req", true, ptyRequest("xterm", []byte{0}))
-				client.sendPacket(message(messageChannelEOF).uint32Value(0).data)
+				client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
 			}},
 		}
 		for _, row := range rows {
