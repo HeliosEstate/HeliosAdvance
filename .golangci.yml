@@ -93,7 +93,7 @@ linters:
             # Its own path, so its black-box tests in package ssh_test can import it.
             - github.com/heliosestate/heliosadvance/internal/ssh
         listener:
-          files: ["**/internal/listener/**"]
+          files: ["**/internal/listener/**", "!$test"]
           list-mode: strict
           allow:
             - $gostd
@@ -101,6 +101,17 @@ linters:
             # connection (docs/architecture.md, Part 3's shape).
             - github.com/heliosestate/heliosadvance/internal/textio
             - github.com/heliosestate/heliosadvance/internal/session
+        # The Listener's tests drive it with a real kind of connection, Telnet's, never a fake;
+        # its approved rows for the Session and Text I/O run over a real Telnet Line. Its code
+        # still names no kind (developer, 2026-10-25).
+        listener-tests:
+          files: ["**/internal/listener/**_test.go"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/textio
+            - github.com/heliosestate/heliosadvance/internal/session
+            - github.com/heliosestate/heliosadvance/internal/telnet
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener
         hadv-service:
