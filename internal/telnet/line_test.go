@@ -271,6 +271,35 @@ func TestOpen(t *testing.T) {
 			}
 			expectWithin(t, "Open's return", got.returned, deadline, deadline.Add(margin))
 		})
+		t.Run("a reply's write ends after the 3 seconds, the call cancelled while it was under way: ErrDeadlineEnded and context.Canceled", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
+			call := openOn(ctx, held)
+			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			write(t, pair.client, request(doVerb, telnetTypeOption))
+			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
+			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("Open returned (%v, %v), want ErrDeadlineEnded and context.Canceled", got.outcome, got.err)
+			}
+			expectWithin(t, "Open's return", got.returned, held.released, held.released.Add(margin))
+		})
+		t.Run("the read meets end of file after the context's deadline, which the context reports only later: ErrDeadlineEnded and context.DeadlineExceeded", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			deadline := time.Now().Add(time.Second)
+			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
+			call := openOn(endsLate(t, deadline), held)
+			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			_ = pair.client.CloseWrite()
+			got := call.result(t, deadline.Add(holdPast+margin))
+			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
+				t.Fatalf("Open returned (%v, %v), want ErrDeadlineEnded and context.DeadlineExceeded", got.outcome, got.err)
+			}
+			expectWithin(t, "Open's return", got.returned, held.released, held.released.Add(margin))
+		})
 		t.Run("the context ended before the call: ErrDeadlineEnded, nothing written", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
