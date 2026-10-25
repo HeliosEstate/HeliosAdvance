@@ -37,8 +37,15 @@ jobs:
           fetch-depth: 0
       - name: Change set
         id: changes
+        # On a push the change set is everything the push brought, from the commit before it, not
+        # only the last commit; a new branch or an unreachable one runs everything (the codebase
+        # review, 2026-10-24).
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"; else base="HEAD^"; fi
+          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base="$BEFORE"
+          else echo "skip=0" >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
           printf '%s\n' "$files"
           rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
@@ -90,7 +97,7 @@ jobs:
           source .github/tool-versions
           bin="$(go env GOPATH)/bin"
           [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$bin" "$GOLANGCI_LINT"
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$bin" "$GOLANGCI_LINT"
           golangci-lint --version
           go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
           go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
@@ -216,9 +223,13 @@ jobs:
       # pull request into it comes from development, a release or hotfix branch, or a
       # github/* branch carrying .github/ into step. A stranger's PR defaults to main and
       # is refused here, not merged by accident.
+      # The branch name is a stranger's text, so it reaches the shell as data in the environment,
+      # never inside the script (the codebase review, 2026-10-24).
       - if: github.base_ref == 'main' && !(github.head_ref == 'development' || startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/') || startsWith(github.head_ref, 'github/'))
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          echo "::error::a pull request into main comes from development, release/*, hotfix/* or github/*, not ${{ github.head_ref }}"
+          echo "::error::a pull request into main comes from development, release/*, hotfix/* or github/*, not $HEAD_REF"
           exit 1
       - run: |
           test "${{ needs.changes.result }}" = success

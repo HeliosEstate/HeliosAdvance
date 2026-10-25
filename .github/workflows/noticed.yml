@@ -34,7 +34,7 @@ jobs:
   open:
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-lampetia[bot]"]'), github.event.sender.login))
+      (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-lampetia[bot]", "helios-phaethusa[bot]"]'), github.event.sender.login))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
