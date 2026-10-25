@@ -19,7 +19,12 @@ for folder in oracle/*/; do
     docker load -q -i "$saved"
   else
     docker build -q -t "$tag" "$folder"
-    rm -f "$cache/$name"-*.tar
+    # Only this oracle's own saves: its name, a hyphen and the 16-character hash. A glob on the
+    # name alone also caught another oracle's whose name starts with this one's plus a hyphen
+    # (the codebase review, 2026-10-24).
+    for old in "$cache/$name"-*.tar; do
+      [[ $(basename "$old") =~ ^"$name"-[0-9a-f]{16}\.tar$ ]] && rm -f -- "$old"
+    done
     docker save -o "$saved" "$tag"
   fi
 done
