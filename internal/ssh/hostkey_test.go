@@ -167,7 +167,7 @@ func TestReadHostKey(t *testing.T) {
 
 	t.Run("If the file cannot be read, then ReadHostKey shall return ErrHostKeyUnreadable.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a key file another holder keeps from being read", func(t *testing.T) {
+		t.Run("a key file the engine cannot read", func(t *testing.T) {
 			t.Parallel()
 			path := makeKey(t, "ed25519", "")
 			keepFromReading(t, path)

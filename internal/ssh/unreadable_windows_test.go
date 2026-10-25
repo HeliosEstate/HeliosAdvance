@@ -4,23 +4,20 @@
 package ssh_test
 
 import (
-	"syscall"
+	"os"
 	"testing"
 )
 
-// keepFromReading holds the file open with no sharing until the row ends, so that no other open
-// of it, the engine's among them, can read it: Windows' own way for an ordinary user to make a
-// file it owns unreadable.
+// keepFromReading puts a folder where the file was, which the engine can open but never read,
+// whatever its rights. A file held open with no sharing is not enough: an administrator whose
+// backup privilege is enabled, as on CI's Windows runner, reads past the hold, since Go's open
+// asks for backup semantics.
 func keepFromReading(t *testing.T, path string) {
 	t.Helper()
-	name, err := syscall.UTF16PtrFromString(path)
-	if err != nil {
-		t.Fatalf("the path %s: %v", path, err)
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing %s: %v", path, err)
 	}
-	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil, syscall.OPEN_EXISTING,
-		syscall.FILE_ATTRIBUTE_NORMAL, 0)
-	if err != nil {
-		t.Fatalf("holding %s with no sharing: %v", path, err)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("making a folder at %s: %v", path, err)
 	}
-	t.Cleanup(func() { _ = syscall.CloseHandle(handle) })
 }
