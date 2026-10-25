@@ -12,19 +12,19 @@ The engine, the board's server program.
 ### Part 1: Hello Helios Advance BBS
 
 The engine's first layer accepts a Telnet caller, answers the caller's option requests, writes a
-greeting and hangs up. Part 2 replaces how it ends a call.
+greeting and hangs up. Part 2 replaces how it ends a call, and Part 4 what it sends at accept and
+which options it takes.
 
 #### Greeting a caller
 
+What the engine sends at accept, and which option requests it takes or refuses, are Part 4's
+lines.
+
 - When it starts with no command-line option, the engine shall listen for Telnet callers on port
   23, and for no SSH caller.
-- When it accepts a Telnet caller, the engine shall send WILL ECHO and WILL SGA, and no other
-  option request.
-- If, during negotiation, the caller asks for a Telnet option other than ECHO and SGA, then the
-  engine shall refuse it.
 - The engine shall send at most one reply to each option request.
-- If, during negotiation, the caller sends anything that is not an option request, then the
-  engine shall discard it without reply.
+- If, during negotiation, the caller sends anything that is not an option request, AYT, AO or IP,
+  then the engine shall discard it without reply.
 
 #### Ending the call
 
@@ -78,9 +78,9 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 #### Asking the name
 
-- When a Telnet caller has answered both option requests, or 3 seconds after the engine sent
-  them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then
-  `What is your name? `.
+- When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine
+  sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF,
+  then `What is your name? `.
 - When the caller ends the name with CR or LF, the engine shall write `Hello `, the name and
   CR LF.
 - If the caller sends anything after the name ends, then the engine shall discard it without
@@ -94,11 +94,11 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 - When the caller sends a character from space to tilde (0x20 to 0x7E) and the name holds fewer
   than 30, the engine shall add it to the name.
-- Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after
-  negotiation or, over SSH, after `shell`, and every character past the 30th.
+- Apart from BS, DEL, Ctrl-U, CR and LF, the engine shall drop every other byte the caller sends
+  after negotiation or, over SSH, after `shell`, and every character past the 30th.
 - After negotiation ends and until a Telnet caller's name ends, the engine shall answer each
-  option request as it did during negotiation, and discard every other Telnet command without
-  reply.
+  option request as it did during negotiation, and each other Telnet command as Part 4's lines
+  under "Commands" say.
 
 #### The echo
 
@@ -110,8 +110,8 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 - When the caller sends BS or DEL while the name holds a character, the engine shall remove the
   last character.
-- If the caller sends BS, DEL, CR or LF while the name is empty, then the engine shall write
-  nothing and keep waiting.
+- If the caller sends BS, DEL, Ctrl-U, CR or LF while the name is empty, then the engine shall
+  write nothing and keep waiting.
 
 #### The whole call
 
@@ -173,3 +173,47 @@ that only a Telnet caller meets to a Telnet caller.
 
 - The engine shall not store, log or show the SSH username, nor anything a `pty-req` carries.
 - The engine shall not write any part of the host key to the local log.
+
+### Part 4: The rest of the Telnet server
+
+The engine negotiates the rest of the Telnet options a caller's terminal uses, BINARY in both
+directions and the options that describe the terminal, and answers the Telnet commands the
+standard requires. It keeps nothing a caller's terminal reports.
+
+#### Opening
+
+- When it accepts a Telnet caller, the engine shall send IAC WILL ECHO, IAC WILL SGA, IAC WILL
+  BINARY, IAC DO BINARY, IAC DO TTYPE, IAC DO NAWS, IAC DO NEW-ENVIRON and IAC DO TSPEED, in that
+  order, and no other option request.
+- The engine shall answer requests about ECHO, SGA and BINARY on its own side, and about SGA,
+  BINARY, TTYPE, NAWS, NEW-ENVIRON and TSPEED on the caller's side, by RFC 1143's rules.
+- If the caller sends WILL for a Telnet option other than SGA, BINARY, TTYPE, NAWS, NEW-ENVIRON
+  and TSPEED, or DO for one other than ECHO, SGA and BINARY, then the engine shall refuse it, WILL
+  with DONT and DO with WONT.
+- When the caller agrees to TTYPE or TSPEED, the engine shall send that option's SEND, at most
+  once in the call.
+- When the caller agrees to NEW-ENVIRON, the engine shall send SEND for the variable USER alone,
+  at most once in the call.
+
+#### Commands
+
+- When a Telnet caller sends AYT before its name ends, the engine shall write CR LF, `[Yes]` and
+  CR LF.
+- When a Telnet caller sends AO or IP before its name ends, the engine shall send IAC DM, with DM
+  as TCP urgent data.
+- When a Telnet caller sends EC after negotiation and before its name ends, the engine shall do
+  as it does for BS.
+- When a Telnet caller sends EL after negotiation and before its name ends, the engine shall
+  remove every character of the name, writing BS, space, BS for each while it echoes.
+- When a Telnet caller sends DM, NOP, GA, BRK, EOR or any other command, the engine shall discard
+  it without reply, and discard none of the data before it.
+
+#### Erasing a name
+
+- When the caller sends Ctrl-U (0x15) while the name holds a character, the engine shall remove
+  every character of the name.
+
+#### Nothing kept
+
+- The engine shall not store, log or show anything a caller sends inside a subnegotiation.
+- The engine shall write the same to a caller, whatever it sends inside a subnegotiation.
