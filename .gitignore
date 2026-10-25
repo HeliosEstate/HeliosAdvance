@@ -1,7 +1,7 @@
 /bin/
 /dist/
 /hadv-service
-/hadv-service.exe
+*.exe
 *.test
 *.out
 coverage.*
