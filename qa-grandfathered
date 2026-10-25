@@ -1,0 +1,23 @@
+# The QA commits made before QA commits were signed (2026-10-25): each counts as a QA commit
+# though it carries no signature. Every later QA commit is signed by a key in qa-signers.
+# One full commit id a line; a line starting with # is a comment. The developer's file: it only
+# ever shrinks, and check.sh reads it from the base, never from the branch being judged.
+1386d4bd062f8a588a0f85065836d66eb4a19fc2
+30c3133aee3df9e3c718fab5cadfb7e280761bd6
+4005fad83f4fbe9e9a99f259f2728e5e58ca968c
+4d41f937794f266314989f45c8d38d8400f5be59
+52b9031c1d50888b9c160632ebfcbc00d175a115
+59a3f96c1e2de628ec884d80776d4f1e92b8b507
+7969d4a1829c9360bb01c56a78582f20119983b2
+a6b452a61d8df881748146157020d46a14452acb
+a8b5d8cf404454ef75e82c038effee38d29fd415
+a97bba1340e0182eecb0a1ca017cfd5617753b56
+be67e2997aaf0f86ba90a51c15063a09d4be21d7
+c3734367fbdd0d54d6d3fd3dbbcd7e937faefeee
+c9d315872d84b53d12a840f08735073ff6f50a2b
+ca94bd8295e2c7d6fcf86e84be73e163d733634a
+cf5c68d57bfe9b699162d54bb4ddb95b5caef6eb
+d38ca4af1129c2f915bdf9654c24f6cfd9d8fb07
+e396b6f983ba418237f06fa1523d158b4b6f62ec
+e680ff6d64fbe4b2ba402708cfb5f7634d22b43a
+fbc694aaa36ad71f8ee3e32bc60b9fb9f763dd46

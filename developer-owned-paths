@@ -10,3 +10,5 @@ check.sh
 developer-owned-paths
 security-paths
 loop-identities
+qa-signers
+qa-grandfathered
