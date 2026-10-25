@@ -89,10 +89,24 @@ if [ "$MUTATION" = 0 ]; then
 fi
 
 # 4. Approved tests are locked from the QA commit on.
+# A QA commit carries the trailer "Helios-Role: qa" and is either signed by a key in qa-signers
+# (helios-aegle's, held by the QA session's account; developer, 2026-10-25) or listed in
+# qa-grandfathered, the QA commits from before signing. A trailer alone proves nothing: anyone can
+# type it (the codebase review, 2026-10-24). Both files come from the base, never the branch.
+signers=$(mktemp); trap 'rm -f "$signers"' EXIT
+if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-signers" 2>/dev/null; then git show "$BASE:qa-signers" > "$signers"
+elif [ -f qa-signers ]; then cp qa-signers "$signers"; fi
+if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-grandfathered" 2>/dev/null; then grandfathered=$(git show "$BASE:qa-grandfathered")
+elif [ -f qa-grandfathered ]; then grandfathered=$(cat qa-grandfathered); else grandfathered=; fi
+is_qa() {
+  git log -1 --format=%B "$1" | grep -q '^Helios-Role: qa$' || return 1
+  grep -qxF "$(git rev-parse "$1")" <<< "$grandfathered" && return 0
+  [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
+}
 # Paths are read NUL-separated and git quotes nothing, so a name with a space or a quote is judged
 # like any other; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
-qa=$(git log -1 --format=%H --grep='^Helios-Role: qa$' 2>/dev/null || true)
+qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
 if [ -n "$qa" ]; then
   changed=$(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go' | tr '\0' '\n') ||
     fail "git could not list the tests changed since the QA commit"
@@ -123,7 +137,7 @@ if [ "$MUTATION" = 0 ]; then
     [ -n "$f" ] || continue
     commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- "$f") || fail "git could not list the commits to $f"
     nonqa=$(for c in $commits; do
-      git log -1 --format=%B "$c" | grep -q '^Helios-Role: qa$' || echo "$c"; done)
+      is_qa "$c" || echo "$c"; done)
     [ -z "$nonqa" ] || { echo "$f: $nonqa"; fail "a test file on $BASE was changed or deleted by a non-QA commit"; }
   done <<< "$basetests"
 fi
@@ -134,7 +148,7 @@ onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
 while IFS= read -r -d '' f; do
   [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- "$f" && continue
   last=$(git log -1 --format=%H -- "$f")
-  git log -1 --format=%B "$last" | grep -q '^Helios-Role: qa$' && continue
+  is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
 done < <(git ls-files -z '*_test.go')
