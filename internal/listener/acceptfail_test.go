@@ -143,11 +143,13 @@ func failedSpell(t *testing.T, offset time.Duration) {
 	for index, call := range held[freedDescriptors:] {
 		stream := streams[index+freedDescriptors]
 		<-stream.done
-		if !slices.Equal(stream.received, []byte(greeting)) || !errors.Is(stream.end, io.EOF) {
-			t.Fatalf("held caller %d was not served through the failed spell: it got % x and %v, want the greeting and end of stream",
+		// A silent caller gets the greeting and the prompt at 3 seconds, then waits for its name,
+		// so its recording ends at its own deadline with nothing more.
+		if !slices.Equal(stream.received, asked) || !errors.Is(stream.end, os.ErrDeadlineExceeded) {
+			t.Fatalf("held caller %d was not served through the failed spell: it got % x and %v, want the greeting and the prompt, then nothing",
 				index+freedDescriptors+1, stream.received, stream.end)
 		}
-		expectWithin(t, "a held caller's greeting", stream.greetingAt(t),
+		expectWithin(t, "a held caller's greeting", stream.arrivedAt(t, 0),
 			call.dialed.Add(negotiationLimit), call.connected.Add(negotiationLimit+margin))
 	}
 

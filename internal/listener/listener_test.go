@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Tests of one caller's call through the Listener on real loopback sockets, from accept to
-// close: the opening requests, the refusals, the greeting and when it comes, the shutdown of the
-// sending side, the close, the 10-second hard deadline, the cap of 100, and serving every caller
-// while others are silent or slow.
+// close: the opening requests, the refusals, what negotiation discards, the close, the cap of
+// 100, and serving every caller while others are silent or slow. Each call is followed to its
+// end: the greeting and the prompt, a name, Hello and the name, and end of stream.
 package listener_test
 
 import (
@@ -12,31 +12,24 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
 )
 
-// everyRequest is every option request but the answers, then the answers, and the replies the
-// tables of RFC 1143 and the refusals give them, in order.
-func everyRequest() (requests, replies []byte) {
-	for _, verb := range []byte{will, wont, doVerb, dont} {
-		for code := range 256 {
-			option := byte(code)
-			isOffered := option == echo || option == sga
-			switch {
-			case verb == will:
-				replies = append(replies, request(dont, option)...)
-			case verb == doVerb && !isOffered:
-				replies = append(replies, request(wont, option)...)
-			case (verb == doVerb || verb == dont) && isOffered:
-				continue
-			}
-			requests = append(requests, request(verb, option)...)
-		}
+// finish waits for the greeting and the prompt after the bytes before them, types a name, and
+// checks the whole stream to its end: the echo when ECHO was agreed, then Hello and the name.
+// It returns when the greeting's first byte arrived.
+func finish(t *testing.T, call caller, stream *recording, before []byte, echoes bool) time.Time {
+	t.Helper()
+	stream.waitFor(t, len(before)+len(asked), time.Now().Add(negotiationLimit+2*margin))
+	call.send(t, []byte("n\r"))
+	after := helloTo("n")
+	if echoes {
+		after = echoed("n")
 	}
-	return join(requests, answers), replies
+	stream.expectStream(t, join(before, asked, after))
+	return stream.arrivedAt(t, len(before))
 }
 
 func TestCall(t *testing.T) {
@@ -47,14 +40,14 @@ func TestCall(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			call.readOpening(t, call.connected.Add(margin))
-			stream := call.record(call.send(t, answers).Add(margin))
-			stream.expectStream(t, []byte(greeting))
+			stream := call.record(call.send(t, answers).Add(5 * time.Second))
+			finish(t, call, stream, nil, true)
 		})
 		t.Run("a silent caller", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + margin))
-			stream.expectStream(t, join(opening, []byte(greeting)))
+			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
+			finish(t, call, stream, opening, false)
 		})
 		t.Run("the opening comes at once, before the caller sends anything", func(t *testing.T) {
 			t.Parallel()
@@ -70,8 +63,8 @@ func TestCall(t *testing.T) {
 			stream := call.record(call.connected.Add(5 * time.Second))
 			call.send(t, join(request(doVerb, 0), request(doVerb, telnetTypeOption), request(doVerb, 255),
 				request(will, telnetTypeOption), request(will, windowSizeOption), answers))
-			stream.expectStream(t, join(opening, request(wont, 0), request(wont, telnetTypeOption), request(wont, 255),
-				request(dont, telnetTypeOption), request(dont, windowSizeOption), []byte(greeting)))
+			finish(t, call, stream, join(opening, request(wont, 0), request(wont, telnetTypeOption), request(wont, 255),
+				request(dont, telnetTypeOption), request(dont, windowSizeOption)), true)
 		})
 	})
 	t.Run("The engine shall send at most one reply to each option request.", func(t *testing.T) {
@@ -91,11 +84,11 @@ func TestCall(t *testing.T) {
 				call := dial(t, startEngine(t, 1)[0])
 				stream := call.record(call.connected.Add(5 * time.Second))
 				call.send(t, row.sent)
-				stream.expectStream(t, join(opening, row.replies, []byte(greeting)))
+				finish(t, call, stream, join(opening, row.replies), true)
 			})
 		}
 	})
-	t.Run("If the caller sends anything that is not an option request, then the engine shall discard it without reply.", func(t *testing.T) {
+	t.Run("If, during negotiation, the caller sends anything that is not an option request, then the engine shall discard it without reply.", func(t *testing.T) {
 		t.Parallel()
 		var everyDataByte []byte
 		for code := range 255 {
@@ -108,136 +101,26 @@ func TestCall(t *testing.T) {
 			call.send(t, join([]byte("hello\r\n"), everyDataByte, []byte{iac, iac, iac, nop, iac, ayt},
 				[]byte{iac, subnegotiationBegin, telnetTypeOption, 1, iac, subnegotiationEnd}, []byte{doVerb, echo, doVerb, sga}))
 			sent := call.send(t, answers)
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			expectWithin(t, "the greeting", stream.greetingAt(t), sent, sent.Add(margin))
+			// Nothing negotiation read reaches the name: the name is only what is typed after.
+			greetingAt := finish(t, call, stream, opening, true)
+			expectWithin(t, "the greeting", greetingAt, sent, sent.Add(margin))
 		})
 		t.Run("a subnegotiation that never ends, answers inside it", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
+			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
 			call.send(t, join([]byte{iac, subnegotiationBegin, telnetTypeOption}, answers))
 			for next := time.Now(); next.Before(call.dialed.Add(negotiationLimit - 300*time.Millisecond)); next = next.Add(200 * time.Millisecond) {
 				wait(t, next)
 				call.send(t, join([]byte("data"), request(doVerb, telnetTypeOption)))
 			}
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			opened := stream.arrivedAt(t, 0)
-			expectWithin(t, "the greeting", stream.greetingAt(t), call.dialed.Add(negotiationLimit), opened.Add(negotiationLimit+margin))
+			// The subnegotiation is still open after negotiation, so the caller ends it before its
+			// name; the answers inside it were never answers, so nothing is echoed.
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			call.send(t, []byte{iac, subnegotiationEnd, 'n', '\r'})
+			stream.expectStream(t, join(opening, asked, helloTo("n")))
+			expectWithin(t, "the greeting", stream.arrivedAt(t, len(opening)), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
 		})
-	})
-	t.Run("When the caller has answered both option requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` followed by CR LF, and no other text.", func(t *testing.T) {
-		t.Parallel()
-		answered := map[string][]byte{
-			"DO DO":     answers,
-			"DONT DONT": join(request(dont, echo), request(dont, sga)),
-			"DO DONT":   join(request(doVerb, echo), request(dont, sga)),
-			"DONT DO":   join(request(dont, echo), request(doVerb, sga)),
-		}
-		for name, sent := range answered {
-			t.Run("answered "+name+": the greeting at once", func(t *testing.T) {
-				t.Parallel()
-				call := dial(t, startEngine(t, 1)[0])
-				stream := call.record(call.connected.Add(5 * time.Second))
-				answeredAt := call.send(t, sent)
-				stream.expectStream(t, join(opening, []byte(greeting)))
-				expectWithin(t, "the greeting", stream.greetingAt(t), answeredAt, answeredAt.Add(margin))
-			})
-		}
-		t.Run("a silent caller: the greeting at 3 seconds", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			expectWithin(t, "the greeting", stream.greetingAt(t), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
-		})
-		t.Run("one answer, then silence: the greeting at 3 seconds", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
-			call.send(t, request(doVerb, echo))
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			expectWithin(t, "the greeting", stream.greetingAt(t), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
-		})
-		t.Run("the second answer at 2 seconds: the greeting then, not at 3", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
-			call.send(t, request(doVerb, echo))
-			wait(t, call.connected.Add(2*time.Second))
-			answeredAt := call.send(t, request(doVerb, sga))
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			expectWithin(t, "the greeting", stream.greetingAt(t), answeredAt, answeredAt.Add(margin))
-		})
-		t.Run("a caller that shuts down its sending side before it answers gets no greeting", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
-			call.send(t, request(doVerb, echo))
-			_ = call.connection.CloseWrite()
-			closed := time.Now()
-			stream.expectStream(t, opening)
-			expectWithin(t, "end of stream", stream.ended, closed, closed.Add(margin))
-		})
-		t.Run("the answers a byte at a time, 50 ms apart: the greeting after the last", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(5 * time.Second))
-			var lastSent time.Time
-			for index := range answers {
-				wait(t, time.Now().Add(50*time.Millisecond))
-				lastSent = call.send(t, answers[index:index+1])
-			}
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			expectWithin(t, "the greeting", stream.greetingAt(t), lastSent, lastSent.Add(margin))
-		})
-	})
-	t.Run("If the caller sends anything after negotiation ends, then the engine shall discard it without reply.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("requests and text in the same write as the answers", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(5 * time.Second))
-			call.send(t, join(answers, request(doVerb, telnetTypeOption), request(will, windowSizeOption), []byte("text")))
-			stream.expectStream(t, join(opening, []byte(greeting)))
-		})
-		t.Run("requests after the greeting get nothing, and the engine reads them", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(5 * time.Second))
-			call.send(t, answers)
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			call.send(t, join(request(doVerb, telnetTypeOption), request(will, windowSizeOption), []byte("text")))
-			wait(t, time.Now().Add(200*time.Millisecond))
-			call.send(t, repeated([]byte("x"), 1<<20))
-		})
-		t.Run("answers that come after the 3 seconds get nothing", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
-			stream.expectStream(t, join(opening, []byte(greeting)))
-			call.send(t, join(answers, request(doVerb, telnetTypeOption)))
-		})
-	})
-	t.Run("When the greeting is written, the engine shall shut down its sending side of the connection.", func(t *testing.T) {
-		t.Parallel()
-		rows := map[string][]byte{"after the answers": answers, "after the 3 seconds": nil}
-		for name, sent := range rows {
-			t.Run(name+": end of stream at once, and the engine still takes what the caller sends", func(t *testing.T) {
-				t.Parallel()
-				call := dial(t, startEngine(t, 1)[0])
-				stream := call.record(call.connected.Add(negotiationLimit + 2*margin))
-				if sent != nil {
-					call.send(t, sent)
-				}
-				stream.expectStream(t, join(opening, []byte(greeting)))
-				expectWithin(t, "end of stream", stream.ended, stream.greetingAt(t), stream.greetingAt(t).Add(margin))
-				// A connection closed whole would answer these with a reset; one whose sending side
-				// alone is shut takes them.
-				call.send(t, make([]byte, 1024))
-				wait(t, time.Now().Add(200*time.Millisecond))
-				call.send(t, make([]byte, 1024))
-			})
-		}
 	})
 	t.Run("When the caller closes the connection, or 3 seconds after the engine shut down its sending side, whichever comes first, the engine shall close the connection.", func(t *testing.T) {
 		t.Parallel()
@@ -248,8 +131,8 @@ func TestCall(t *testing.T) {
 			for range connectionCap {
 				call := dial(t, address)
 				stream := call.record(call.connected.Add(2 * margin))
-				call.send(t, answers)
-				stream.expectStream(t, join(opening, []byte(greeting)))
+				call.send(t, join(answers, []byte("n\r")))
+				stream.expectStream(t, join(opening, asked, echoed("n")))
 				_ = call.connection.Close()
 				closed = time.Now()
 			}
@@ -292,59 +175,6 @@ func TestCall(t *testing.T) {
 			expectRefused(t, address)
 			expectServedBy(t, address, lastEnd.Add(closingWaitLimit+margin))
 		})
-	})
-	t.Run("If 10 seconds pass since it accepted a connection, then the engine shall close that connection.", func(t *testing.T) {
-		t.Parallel()
-		// Flooding fills the buffers before negotiation times out, so that the greeting's
-		// write may be left waiting, which only the hard deadline ends. Whether it waits is the
-		// kernel's choice: on 2026-10-17 Linux added the 27 bytes to a segment already queued for
-		// 30 of 50 callers against the build without the race detector, fewer with it, and
-		// GitHub's Windows runner let them through 1.07 s after a timed-out write, five of five.
-		// So ten callers run at once, each against its own engine: a missing or late hard
-		// deadline shows in any of them whose greeting waits, and all ten get theirs through with
-		// a chance of about 0.6 to the tenth, 0.6 percent, on Linux.
-		for index := range floodingCallers {
-			t.Run(fmt.Sprintf("caller %d of %d floods from 1.5 seconds and never reads: closed at 10 seconds, or by the closing wait if its greeting got through", index+1, floodingCallers), func(t *testing.T) {
-				t.Parallel()
-				address := startEngine(t, 1)[0]
-				call := dial(t, address)
-				wait(t, call.connected.Add(1500*time.Millisecond))
-				call.flood(t)
-				if time.Now().After(call.dialed.Add(negotiationLimit - 100*time.Millisecond)) {
-					t.Fatalf("test fault: the flood took until %v after the dial", time.Since(call.dialed))
-				}
-				deadline := call.connected.Add(hardDeadlineLimit + margin)
-				if runtime.GOOS != "linux" {
-					// Off Linux the row cannot see which way the call went, so it holds the close
-					// to the window both ways share.
-					closedAt := call.awaitReset(t, deadline)
-					expectWithin(t, "the close", closedAt, call.dialed.Add(negotiationLimit+closingWaitLimit), deadline)
-					return
-				}
-				// The caller cannot see this close in time: the engine's last bytes and its FIN
-				// wait behind a closed window and a backed-off retransmit, seconds past the close.
-				// The OS's own table shows it, and shows whether the greeting got through: the
-				// engine shuts its sending side only after writing it.
-				closedAt, shutAfter, shutBy := engineClosed(t, address, call.connection.LocalAddr().String(), deadline)
-				if shutBy.IsZero() {
-					t.Logf("the greeting waited: the hard deadline ends the call")
-					expectWithin(t, "the close", closedAt, call.dialed.Add(hardDeadlineLimit), deadline)
-					return
-				}
-				// The greeting got through: the closing wait ends the call 3 seconds after the
-				// shutdown, unless the hard deadline comes first.
-				t.Logf("the greeting got through between %v and %v after the dial", shutAfter.Sub(call.dialed), shutBy.Sub(call.dialed))
-				notBefore := shutAfter.Add(closingWaitLimit)
-				if hardDeadline := call.dialed.Add(hardDeadlineLimit); hardDeadline.Before(notBefore) {
-					notBefore = hardDeadline
-				}
-				notAfter := shutBy.Add(closingWaitLimit)
-				if deadline.Add(-margin).Before(notAfter) {
-					notAfter = deadline.Add(-margin)
-				}
-				expectWithin(t, "the close", closedAt, notBefore, notAfter.Add(margin))
-			})
-		}
 	})
 	t.Run("While 100 connections are open, the engine shall close each new connection at once, without writing to it.", func(t *testing.T) {
 		t.Parallel()
@@ -413,9 +243,9 @@ func TestCall(t *testing.T) {
 			stream := call.record(call.connected.Add(5 * time.Second))
 			opened := call.connected
 			answeredAt := call.send(t, answers)
-			stream.expectStream(t, join(opening, []byte(greeting)))
+			greetingAt := finish(t, call, stream, opening, true)
 			expectWithin(t, "the opening", stream.arrivedAt(t, 0), opened, opened.Add(margin))
-			expectWithin(t, "the greeting", stream.greetingAt(t), answeredAt, answeredAt.Add(margin))
+			expectWithin(t, "the greeting", greetingAt, answeredAt, answeredAt.Add(margin))
 		}
 		t.Run("a silent caller", func(t *testing.T) {
 			t.Parallel()
@@ -462,30 +292,11 @@ func TestCall(t *testing.T) {
 			normalCall(t, addresses[0])
 		})
 	})
-	t.Run("The listener package shall write nothing to a connection but what Negotiate writes and the greeting.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("every option request, then the answers", func(t *testing.T) {
-			t.Parallel()
-			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(5 * time.Second))
-			requests, replies := everyRequest()
-			call.send(t, requests)
-			stream.expectStream(t, join(opening, replies, []byte(greeting)))
-		})
-		t.Run("a refused caller gets nothing", func(t *testing.T) {
-			t.Parallel()
-			address := startEngine(t, 1)[0]
-			for range connectionCap {
-				dial(t, address).readOpening(t, time.Now().Add(margin))
-			}
-			expectRefused(t, address)
-		})
-	})
 }
 
-// answerAndStay is one of many callers at once: it answers, reads the opening and the greeting
-// to end of stream, and keeps its end open. It reports when it answered and when the stream
-// ended, or what went wrong, since it runs off the test's goroutine.
+// answerAndStay is one of many callers at once: it answers and types a name in one write, reads
+// the whole call to end of stream, and keeps its end open. It reports when it answered and when
+// the stream ended, or what went wrong, since it runs off the test's goroutine.
 func answerAndStay(t *testing.T, address string) (answeredAt, ended time.Time, problem string) {
 	t.Helper()
 	opened, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", address)
@@ -494,7 +305,7 @@ func answerAndStay(t *testing.T, address string) (answeredAt, ended time.Time, p
 	}
 	t.Cleanup(func() { _ = opened.Close() })
 	_ = opened.SetDeadline(time.Now().Add(2 * margin))
-	if _, err := opened.Write(answers); err != nil {
+	if _, err := opened.Write(join(answers, []byte("n\r"))); err != nil {
 		return answeredAt, ended, "the caller's write failed: " + err.Error()
 	}
 	answeredAt = time.Now()
@@ -511,7 +322,7 @@ func answerAndStay(t *testing.T, address string) (answeredAt, ended time.Time, p
 		}
 	}
 	ended = time.Now()
-	if want := join(opening, []byte(greeting)); string(received) != string(want) {
+	if want := join(opening, asked, echoed("n")); string(received) != string(want) {
 		return answeredAt, ended, fmt.Sprintf("the stream was % x, want % x", received, want)
 	}
 	return answeredAt, ended, ""

@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/session"
 	"github.com/heliosestate/heliosadvance/internal/telnet"
+	"github.com/heliosestate/heliosadvance/internal/textio"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
@@ -93,13 +95,12 @@ func (state *listenerState) givePlace() {
 	state.open--
 }
 
-// A failure in a call ends it without a log, since Part 1's local log holds only the start and
-// its failure.
+// A failure in a call ends it without a log: the local log holds only the start and its failure.
 func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time) {
-	ctx, cancel := context.WithDeadline(state.stopContext,
-		acceptedAt.Add(HardDeadlineSeconds*time.Second))
+	ceiling := acceptedAt.Add(CeilingSeconds * time.Second)
+	ctx, cancel := context.WithDeadline(state.stopContext, ceiling)
 	closed := make(chan struct{})
-	// The hard deadline, Stop and the end of the call all close the connection this one way.
+	// The ceiling, Stop and the end of the call all close the connection this one way.
 	context.AfterFunc(ctx, func() {
 		defer close(closed)
 		//nolint:errcheck // the call has ended, and a failed close has no one to tell
@@ -110,16 +111,21 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 		<-closed
 	}()
 
-	if _, err := telnet.Negotiate(ctx, connection); err != nil {
+	if err := keepUrgentInLine(connection); err != nil {
 		return
 	}
-	if _, err := connection.Write([]byte(Greeting)); err != nil {
+	line, _, err := telnet.Open(ctx, connection)
+	if err != nil {
+		return
+	}
+	if ending, err := session.Run(ctx, textio.New(line)); err != nil || ending != session.Answered {
 		return
 	}
 	if err := connection.CloseWrite(); err != nil {
 		return
 	}
-	if err := connection.SetReadDeadline(time.Now().Add(ClosingWaitSeconds * time.Second)); err != nil {
+	closingEnd := time.Now().Add(ClosingWaitSeconds * time.Second)
+	if err := connection.SetReadDeadline(closingEnd); err != nil {
 		return
 	}
 	var discard [DiscardBufferSize]byte
@@ -128,6 +134,20 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 			return
 		}
 	}
+}
+
+// keepUrgentInLine is set before anything is read, since a Synch whose DM byte leaves the stream
+// would leave its IAC to swallow the caller's next character.
+func keepUrgentInLine(connection *net.TCPConn) error {
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var setErr error
+	if err := raw.Control(func(descriptor uintptr) { setErr = setUrgentInLine(descriptor) }); err != nil {
+		return err
+	}
+	return setErr
 }
 
 // stop cancels before it closes the sockets so that an accept loop sees the stop before it sees
