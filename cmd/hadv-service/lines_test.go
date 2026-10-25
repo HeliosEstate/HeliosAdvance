@@ -28,6 +28,26 @@ type stopSignal struct {
 // canary marks what a caller sends, so the log can be searched for it.
 const canary = "helios-canary-5821"
 
+// The page's prompt, reply and name wait, written here so a changed constant in the engine
+// cannot move a test with it, and the name a caller types.
+const (
+	prompt    = "What is your name? "
+	reply     = "Hello "
+	nameLimit = 60 * time.Second
+	typedName = "Caller"
+)
+
+// typeName answers the option requests and types a name ended by CR, then reads what a caller
+// who agreed to ECHO sees, through Hello and the engine's shutdown of its sending side, so the
+// call is left in its closing wait.
+func (call caller) typeName(t *testing.T) {
+	t.Helper()
+	call.send(t, append(append([]byte{}, answers...), typedName+"\r"...))
+	call.readExactly(t, []byte(greeting+prompt+typedName+"\r\n"+reply+typedName+"\r\n"), time.Now().Add(margin))
+	shutdownFrom := time.Now()
+	call.expectEnd(t, shutdownFrom, shutdownFrom.Add(margin))
+}
+
 func TestProgram(t *testing.T) {
 	t.Parallel()
 
@@ -132,10 +152,10 @@ func TestProgram(t *testing.T) {
 				addresses := program.listening(t)
 				silent := expectServed(t, addresses[0])
 				closing := expectServed(t, addresses[len(addresses)-1])
-				closing.send(t, answers)
-				closing.readExactly(t, []byte(greeting), time.Now().Add(margin))
-				// Both calls are well inside the 3 seconds, so nothing but the stop ends them in
-				// the window.
+				closing.typeName(t)
+				// The silent call is inside its 3 seconds of negotiation, and the closing call,
+				// which shut down after the silent caller connected, inside its 3 seconds of
+				// closing wait, so nothing but the stop ends either in the window.
 				from, sentBy := send(t, program)
 				notAfter := sentBy.Add(margin)
 				if sentBy.After(silent.connected.Add(negotiationLimit)) {
@@ -205,8 +225,7 @@ func TestProgram(t *testing.T) {
 			program := startProgram(t, portOption, "0")
 			addresses := program.listening(t)
 			whole := expectServed(t, addresses[0])
-			whole.send(t, answers)
-			whole.readExactly(t, []byte(greeting), time.Now().Add(margin))
+			whole.typeName(t)
 			_ = whole.connection.Close()
 			expectServed(t, addresses[len(addresses)-1])
 			_, sentBy := send(t, program)
@@ -247,10 +266,12 @@ func TestProgram(t *testing.T) {
 			// before it, so the refusal shows the text above has been read.
 			during.send(t, []byte{iac, will, telnetTypeOption})
 			during.readExactly(t, []byte{iac, dont, telnetTypeOption}, time.Now().Add(margin))
-			// After negotiation the engine has shut its sending side and says nothing more, so the
-			// only sign it has read to the caller's end of stream is the call ending. With the
-			// engine full, a new caller is served only once a call has ended, and the silent
-			// callers' calls cannot end before their negotiation and closing wait run out.
+			// The text sent after negotiation becomes the name, cut at 30 characters, and once
+			// Hello is written the engine shuts its sending side and says nothing more, so the
+			// only sign it has read all of the text, to the caller's end of stream, is the call
+			// ending. With the engine full, a new caller is served only once a call has ended,
+			// and the silent callers' calls cannot end before their negotiation and name wait
+			// run out.
 			for range connectionCap - 2 {
 				expectServed(t, addresses[0])
 			}
@@ -268,10 +289,11 @@ func TestProgram(t *testing.T) {
 			for !served(t, addresses[0]) {
 				pause(t, 10*time.Millisecond)
 			}
-			// Past either moment, the closing wait's own end could have ended a call, and being
-			// served would no longer show the engine read to the caller's end of stream.
+			// Past the first moment the closing wait's own end, and past the second a silent
+			// call's name wait, could have ended a call, and being served would no longer show
+			// the engine read to the caller's end of stream.
 			if servedAt := time.Now(); servedAt.After(answeredAt.Add(closingWait)) ||
-				servedAt.After(firstConnected.Add(negotiationLimit+closingWait)) {
+				servedAt.After(firstConnected.Add(negotiationLimit+nameLimit)) {
 				t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
 					servedAt.Sub(answeredAt))
 			}
