@@ -150,9 +150,43 @@ func (program *run) read(stderr io.Reader) {
 	close(program.exited)
 }
 
-// listening waits for the program's first log line, which must be the started line, and returns
-// the addresses it names.
+// listening waits for the started line of a program with SSH off and returns the addresses it
+// names, each of which must be a Telnet listener's URL: the program listens for no SSH caller.
 func (program *run) listening(t *testing.T) []string {
+	t.Helper()
+	telnet, ssh := program.kinds(t)
+	if len(ssh) > 0 {
+		t.Fatalf("the started line names SSH listeners %q, with SSH off", ssh)
+	}
+	return telnet
+}
+
+// kinds waits for the started line and returns the addresses it names, Telnet's and SSH's, each
+// written as telnet://host:port or ssh://host:port, in the line's order; anything else in the
+// line fails the row.
+func (program *run) kinds(t *testing.T) (telnet, ssh []string) {
+	t.Helper()
+	return kindsOf(t, program.listeners(t))
+}
+
+// kindsOf sorts a started line's listeners into Telnet's addresses and SSH's.
+func kindsOf(t *testing.T, listeners []string) (telnet, ssh []string) {
+	t.Helper()
+	for _, listener := range listeners {
+		if address, found := strings.CutPrefix(listener, "telnet://"); found {
+			telnet = append(telnet, address)
+		} else if address, found := strings.CutPrefix(listener, "ssh://"); found {
+			ssh = append(ssh, address)
+		} else {
+			t.Fatalf("the started line names %q, which is not a telnet:// or an ssh:// listener", listener)
+		}
+	}
+	return telnet, ssh
+}
+
+// listeners waits for the program's first log line, which must be the started line, and returns
+// what it names, as written.
+func (program *run) listeners(t *testing.T) []string {
 	t.Helper()
 	timer := time.NewTimer(startLimit)
 	defer timer.Stop()

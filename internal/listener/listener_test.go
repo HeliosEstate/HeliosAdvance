@@ -34,7 +34,7 @@ func finish(t *testing.T, call caller, stream *recording, before []byte, echoes 
 
 func TestCall(t *testing.T) {
 	t.Parallel()
-	t.Run("When it accepts a caller, the engine shall send WILL ECHO and WILL SGA, and no other option request.", func(t *testing.T) {
+	t.Run("When it accepts a Telnet caller, the engine shall send WILL ECHO and WILL SGA, and no other option request.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a caller that answers DO DO", func(t *testing.T) {
 			t.Parallel()
@@ -122,7 +122,7 @@ func TestCall(t *testing.T) {
 			expectWithin(t, "the greeting", stream.arrivedAt(t, len(opening)), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
 		})
 	})
-	t.Run("When the caller closes the connection, or 3 seconds after the engine shut down its sending side, whichever comes first, the engine shall close the connection.", func(t *testing.T) {
+	t.Run("When a Telnet caller closes the connection, or 3 seconds after the engine shut down its sending side, whichever comes first, the engine shall close the connection.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("callers that close at once: their places are free at once", func(t *testing.T) {
 			t.Parallel()
@@ -167,11 +167,13 @@ func TestCall(t *testing.T) {
 			if t.Failed() {
 				t.FailNow()
 			}
-			if time.Now().After(firstAnswer.Add(closingWaitLimit - 500*time.Millisecond)) {
+			if time.Now().After(firstAnswer.Add(closingWaitLimit - time.Second)) {
 				t.Fatalf("test fault: a hundred callers took %v to set up", time.Since(firstAnswer))
 			}
 			expectRefused(t, address)
-			wait(t, firstAnswer.Add(closingWaitLimit-150*time.Millisecond))
+			// Half a second short of the 3 seconds, so that a probe the engine accepts late on a
+			// loaded runner still meets a full cap; the single caller's row holds the close to 3.
+			wait(t, firstAnswer.Add(closingWaitLimit-500*time.Millisecond))
 			expectRefused(t, address)
 			expectServedBy(t, address, lastEnd.Add(closingWaitLimit+margin))
 		})
@@ -305,10 +307,13 @@ func answerAndStay(t *testing.T, address string) (answeredAt, ended time.Time, p
 	}
 	t.Cleanup(func() { _ = opened.Close() })
 	_ = opened.SetDeadline(time.Now().Add(2 * margin))
+	// Taken before the write, a moment provably before the engine's shutdown: one taken after can
+	// lag it on a loaded runner, the goroutine descheduled between the write and the clock
+	// (ubuntu-latest, 2026-10-25, a caller over the cap served).
+	answeredAt = time.Now()
 	if _, err := opened.Write(join(answers, []byte("n\r"))); err != nil {
 		return answeredAt, ended, "the caller's write failed: " + err.Error()
 	}
-	answeredAt = time.Now()
 	var received []byte
 	chunk := make([]byte, 256)
 	for {

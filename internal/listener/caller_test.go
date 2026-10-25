@@ -7,6 +7,7 @@
 package listener_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
+	"github.com/heliosestate/heliosadvance/internal/telnet"
 )
 
 const (
@@ -84,9 +86,32 @@ func repeated(part []byte, count int) []byte {
 	return joined
 }
 
+// openTelnet is Telnet's kind as the program pairs it: the real Accept, giving a nil KindConnection
+// on an error, never one holding a nil Line.
+func openTelnet(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
+	line, err := telnet.Accept(ctx, connection)
+	if err != nil {
+		return nil, err
+	}
+	return line, nil
+}
+
 // startEngine opens the given number of listening sockets on 127.0.0.1, on ports the operating
-// system picks, starts the Listener on them, and stops it when the test ends.
+// system picks, starts the Listener on them as one Telnet kind, and stops it when the test ends.
 func startEngine(t *testing.T, sockets int) []string {
+	t.Helper()
+	return startKind(t, sockets, openTelnet)
+}
+
+// startKind is startEngine with the kind's Open given.
+func startKind(t *testing.T, sockets int, open listener.Open) []string {
+	t.Helper()
+	_, addresses := startListener(t, sockets, open)
+	return addresses
+}
+
+// startListener is startKind, also returning the Listener, for the rows that stop it themselves.
+func startListener(t *testing.T, sockets int, open listener.Open) (*listener.Listener, []string) {
 	t.Helper()
 	var listening []*net.TCPListener
 	var addresses []string
@@ -102,7 +127,7 @@ func startEngine(t *testing.T, sockets int) []string {
 		listening = append(listening, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.Start(listening)
+	engine, err := listener.Start([]listener.Kind{{Sockets: listening, Open: open}})
 	if err != nil {
 		for _, socket := range listening {
 			_ = socket.Close()
@@ -110,7 +135,7 @@ func startEngine(t *testing.T, sockets int) []string {
 		t.Fatalf("Start refused: %v", err)
 	}
 	t.Cleanup(engine.Stop)
-	return addresses
+	return engine, addresses
 }
 
 // caller is one scripted caller's connection.
