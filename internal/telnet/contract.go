@@ -8,8 +8,9 @@
 // for Telnet and one for SSH. The listeners' job is just to accept the connections. It then hands
 // each connection off to a shared execution path as a class. That class defines identical
 // primitives that the shared execution uses." Accept makes an accepted connection Telnet's object,
-// and the Line offers the identical primitives: SendChar, RecvChar, Flush, Echoes, and Close, the
-// kind's own close.
+// and the Line offers the identical primitives: SendChar and RecvChar, the page's; Flush and
+// Echoes, which the textio package's Chars asks of every kind of connection; and Close, the kind's
+// own close.
 //
 // During negotiation it owns the opening requests, WILL ECHO and WILL SGA; reading what the caller
 // sends through a fixed buffer; the Q-method state of ECHO and SGA on the engine's side (RFC 1143);
@@ -49,7 +50,9 @@
 // part of a command nor inside a subnegotiation, and the second IAC of each IAC IAC outside one;
 // one call appends at most one reply; the replies of Receive's calls and Strip's together are
 // never longer than all their input, and well-formed; and they are the same as when Strip takes
-// over at the first byte instead.
+// over at the first byte instead. Once the call is answered, Close reads what the caller still
+// sends into a fixed buffer of DiscardBufferSize and discards it unread, for at most
+// ClosingWaitSeconds.
 //
 // # Oracles
 //
@@ -173,7 +176,7 @@ const (
 	TimedOut
 )
 
-// Conn is the connection as Negotiate needs it; the Listener's accepted net.Conn satisfies it.
+// Conn is the connection as Negotiate needs it; an accepted net.Conn satisfies it.
 // Declared here, where it is used.
 type Conn interface {
 	// Read returns end of file, a passed deadline and any other failure as its error.
@@ -189,8 +192,8 @@ type Conn interface {
 
 var (
 	// ErrCallerClosed means the caller closed its side in order before negotiation ended: a read
-	// met end of file. A half-close cannot be told from a hang-up, so the Listener writes nothing
-	// after it.
+	// met end of file. A half-close cannot be told from a hang-up, so the shared execution path
+	// writes nothing after it.
 	ErrCallerClosed = errors.New("telnet: the caller closed the connection")
 	// ErrConnectionFailed means any other read or write failure on the connection, a reset
 	// included.
@@ -307,8 +310,8 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 	return negotiation.receive(input, replies)
 }
 
-// Negotiate negotiates over one connection; the Listener calls Open, which negotiates as Negotiate
-// does and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
+// Negotiate negotiates over one connection; Accept calls Open, which negotiates as Negotiate does
+// and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
 // ReadBufferSize, hands the bytes to Receive and writes its replies from a fixed buffer of
 // ReplyBufferSize, until Receive reports the end or NegotiationSeconds after the opening write.
 // The 3 seconds end a read that waits, never a write: a write waits until it is done or the
@@ -424,7 +427,8 @@ const SendBufferSize = 1024
 // SendBufferSize, and the negotiation, whose option states go on changing as the caller asks.
 // It reads in stream order, so an option request is answered, and ECHO changes, exactly where it
 // falls among the caller's characters. A Line not made by Open or Accept, or nil, fails every
-// call with ErrConnectionFailed, and its Echoes returns false. One goroutine per Line.
+// call with ErrConnectionFailed, and its Echoes returns false. Close needs a Line made by Accept:
+// on one made by Open it fails with ErrConnectionFailed. One goroutine per Line.
 //
 // Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
 // deadline given passed first; io.EOF when the caller closed its side; the context's error,
@@ -558,7 +562,7 @@ func (line *Line) RecvChar(ctx context.Context, deadline time.Time) (byte, error
 //
 //   - While the caller has agreed to ECHO, Echoes shall return true.
 //   - While the caller has not agreed to ECHO, Echoes shall return false.
-//   - If the Line was not made by Open, or is nil, then Echoes shall return false.
+//   - If the Line was not made by Open or Accept, or is nil, then Echoes shall return false.
 func (line *Line) Echoes() bool {
 	return line.echoes()
 }
@@ -578,8 +582,10 @@ func (line *Line) Echoes() bool {
 //   - Close shall read only into a buffer of DiscardBufferSize bytes, and keep no copy of what it
 //     reads. [read]
 //   - When the caller closes, or ClosingWaitSeconds pass, Close shall return no error.
-//   - If the context has ended when Close is called, or ends while it waits, then Close shall
-//     return the context's error, wrapped.
+//   - If the context has ended when Close is called, then Close shall return the context's
+//     error, wrapped, without touching the connection.
+//   - If the context ends while Close waits, then Close shall return the context's error,
+//     wrapped.
 //   - If shutting down the sending side or setting the read deadline fails, then Close shall
 //     return ErrConnectionFailed at once.
 //   - If the Line was not made by Accept, or is nil, then Close shall return ErrConnectionFailed
