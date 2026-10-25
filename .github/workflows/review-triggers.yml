@@ -78,9 +78,18 @@ jobs:
           # file, so the same text added by the build still counts.
           added() { awk '/^\+\+\+ /{file = substr($0, 7); next} /^\+/{print file "\t" $0}'; }
           # Found as check.sh's lock gate finds them: the trailer is a paragraph of its own, so
-          # git's trailer parsing does not see it.
+          # git's trailer parsing does not see it; and a trailer counts only on a commit signed by
+          # a key in qa-signers or listed in qa-grandfathered, both read from the base, since
+          # anyone can type it (the codebase review, issue 82).
+          signers=$(mktemp)
+          git show "$BASE:qa-signers" > "$signers" 2>/dev/null || : > "$signers"
+          grandfathered=$(git show "$BASE:qa-grandfathered" 2>/dev/null || true)
+          is_qa() {
+            grep -qxF "$1" <<< "$grandfathered" && return 0
+            [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
+          }
           qa_lines=$(git log --format=%H --grep='^Helios-Role: qa$' "$BASE..HEAD" |
-            while read -r commit; do git show -U0 --format= "$commit" -- '*.go' | added; done)
+            while read -r commit; do is_qa "$commit" && git show -U0 --format= "$commit" -- '*.go' | added; done)
           # Each line as the summary lists it: its file, then the line as added. The file ends at
           # the first tab; the line keeps its own, Go's indentation.
           flagged=$(git diff -U0 "$BASE...HEAD" -- '*.go' | added |
