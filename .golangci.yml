@@ -97,9 +97,8 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            # It negotiates each connection through the Telnet unit and hands the call to the
-            # Session through Text I/O (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            # It hands every kind's call to the Session through Text I/O, and names no kind of
+            # connection (docs/architecture.md, Part 3's shape).
             - github.com/heliosestate/heliosadvance/internal/textio
             - github.com/heliosestate/heliosadvance/internal/session
             # Its own path, so its black-box tests in package listener_test can import it.
@@ -109,9 +108,10 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            # It starts and stops the Listener (docs/architecture.md); Telnet, Text I/O and the
-            # Session are the Listener's.
+            # It starts and stops the Listener, and pairs each kind's sockets with its way in
+            # (docs/architecture.md, Part 3's shape); Text I/O and the Session are the Listener's.
             - github.com/heliosestate/heliosadvance/internal/listener
+            - github.com/heliosestate/heliosadvance/internal/telnet
     forbidigo:
       analyze-types: true
       forbid:
