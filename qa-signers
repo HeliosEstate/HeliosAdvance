@@ -1,0 +1,5 @@
+# The keys that sign QA commits, in git's allowed-signers form: the committer address, then the
+# public key. A QA commit counts only when a key here signed it (check.sh, review-triggers.yml);
+# the key is helios-aegle's, held by the QA session's account on the developer's PC and never by
+# a loop (developer, 2026-10-25). The developer's file, read from the base.
+337066937+helios-aegle[bot]@users.noreply.github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICYyRBnkTmPVam49ftD88Vtq8ER1/irJ2tiFLTz0K76Q helios-aegle-qa
