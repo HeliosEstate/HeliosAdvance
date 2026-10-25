@@ -91,7 +91,6 @@ func parseHostKey(contents []byte) (*HostKey, error) {
 	default:
 		return nil, ErrHostKeyNotEd25519
 	}
-	defer clear(key)
 	signer, err := cryptossh.NewSignerFromKey(key)
 	if err != nil {
 		return nil, ErrHostKeyNotOpenSSH
