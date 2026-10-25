@@ -44,7 +44,7 @@
 // negotiation Negotiate, or Open as Negotiate does, reads it and hands it to Receive; after it, the
 // Line reads it and hands it to Strip, one byte at a time. Receive and Strip are the fuzz targets.
 // Receive, on every run: it never crashes; one call's replies are never longer than five times its
-// input plus 10 bytes, and all the calls' replies together never longer than five times all their
+// input plus MostReply, and all the calls' replies together never longer than five times all their
 // input; every reply is a well-formed 3-byte WILL, WONT, DONT or DO, one of the three SENDs, or
 // AYT's answer, and nothing else; each SEND appears at most once over the negotiation; the same
 // bytes split into chunks any other way give the same replies, the same Synch requests and end at
@@ -52,8 +52,8 @@
 // Receive is fed the bytes one at a time up to a point the fuzzer picks, stopping early if it
 // returns true, and Strip the rest one at a time: it never crashes; it hands on as data exactly the
 // bytes that are neither part of a command nor inside a subnegotiation, the second IAC of each IAC
-// IAC outside one, and BS for each EC and Ctrl-U for each EL; one call appends at most one reply,
-// of at most MostReply bytes; the replies of Receive's calls and Strip's together are never longer
+// IAC outside one, and BS for each EC and Ctrl-U for each EL; one call appends at most MostReply
+// bytes; the replies of Receive's calls and Strip's together are never longer
 // than five times all their input, and well-formed; and they are the same as when Strip takes over
 // at the first byte instead. Nothing inside a subnegotiation changes a reply, a state or a byte
 // handed on. Once the call is answered, Close reads what the caller still sends into a fixed buffer
@@ -68,8 +68,9 @@
 // real loopback sockets, without this package's constants. Its callers answer yes, answer no,
 // answer some of the eight and not the rest, stay silent, ask for other options, agree, refuse and
 // agree again, never read, hang up halfway, break the connection, send subnegotiations that never
-// end, run long or hold IAC IAC, send AYT, AO and IP, send a Synch as urgent data, and send
-// requests a byte at a time. The Line over a socket: the same client typing after negotiation,
+// end, run long, hold escape codes or IAC IAC, or come for options never agreed, send NAWS of 0
+// and of 65535, send AYT, AO and IP, flood them while never reading, the call still ending at its
+// ceiling, send a Synch as urgent data, and send requests a byte at a time. The Line over a socket: the same client typing after negotiation,
 // with commands, EC, EL, IAC IAC and option requests among its characters, ahead of the prompt,
 // and across negotiation's end. Two Telnet clients others wrote, driven through their standard
 // input and output as outside programs, never read for their source: the stock Linux telnet
@@ -195,13 +196,15 @@ const (
 	OpeningLength = 24
 	// AYTAnswer is written for each AYT: visible evidence that the board is there (RFC 854).
 	AYTAnswer = "\r\n[Yes]\r\n"
-	// MostReply is the longest reply one byte can complete: NEW-ENVIRON's SEND, 10 bytes.
-	MostReply = 10
+	// MostReply is the most one byte can append: the last byte of a WILL NEW-ENVIRON after an
+	// earlier WONT, answered DO and then NEW-ENVIRON's SEND, 3 and 11 bytes.
+	MostReply = 14
 	// ReadBufferSize is the fixed buffer Negotiate reads into: nothing the caller sends grows it.
 	ReadBufferSize = 256
-	// ReplyBufferSize holds every reply one read can yield: at most five times the bytes read,
-	// AYT's 9 bytes for 2 being the most, and 10 more for a request split across reads.
-	ReplyBufferSize = 5*ReadBufferSize + 10
+	// ReplyBufferSize holds every reply one read can yield: at most five times the bytes read, AYT's
+	// 9 bytes for 2 and a WILL NEW-ENVIRON's 14 for 3 the most, and MostReply more for a request
+	// split across reads, whose first bytes came in the read before.
+	ReplyBufferSize = 5*ReadBufferSize + MostReply
 	// NegotiationSeconds is counted from the opening write. Fixed in this layer; a setting once
 	// configuration exists.
 	NegotiationSeconds = 3
@@ -348,8 +351,8 @@ func New() (*Negotiation, [OpeningLength]byte) {
 //   - Receive shall append its replies after the bytes already in replies and leave those bytes
 //     unchanged.
 //   - Receive shall append at most one reply per option request, and after it at most one SEND.
-//   - Receive shall append at most five times the length of input plus 10 bytes to replies in one
-//     call.
+//   - Receive shall append at most five times the length of input plus MostReply bytes to replies
+//     in one call.
 //   - Receive shall append, over all its calls on one negotiation, no more bytes than five times
 //     all their input held.
 //   - If input is empty, then Receive shall append nothing and return what it returned on the
@@ -371,20 +374,22 @@ func New() (*Negotiation, [OpeningLength]byte) {
 //     option.
 //   - While negotiation lasts, when the caller sends DO for a Telnet option other than ECHO, SGA
 //     and BINARY, Receive shall append IAC WONT and that Telnet option.
-//   - While negotiation lasts, when the caller sends WONT or DONT for a Telnet option the tables
-//     keep no state for, Receive shall append no reply.
+//   - While negotiation lasts, when the caller sends WONT for a Telnet option other than SGA,
+//     BINARY, TTYPE, NAWS, NEW-ENVIRON and TSPEED, or DONT for one other than ECHO, SGA and
+//     BINARY, Receive shall append no reply and change no state.
 //   - Receive shall let nothing inside a subnegotiation change a reply, a state or whether a
 //     Synch is owed.
 func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 	return negotiation.receive(input, replies)
 }
 
-// TakeSynch returns how many Synchs Receive and Strip owe, one for each AO and IP read since the
-// last TakeSynch, and clears the count: the writer writes the replies appended so far, then that
-// many Synchs.
+// TakeSynch returns how many Synchs Receive and Strip owe, one for each AO and IP their lines say
+// owes one, since the last TakeSynch, and clears the count: the writer writes the replies appended
+// so far, then that many Synchs.
 //
-//   - TakeSynch shall return the number of AO and IP read since the last TakeSynch, or since New.
-//   - After it returns, TakeSynch shall owe none until another AO or IP is read.
+//   - TakeSynch shall return the number of Synchs Receive's and Strip's lines have owed since the
+//     last TakeSynch, or since New.
+//   - After it returns, TakeSynch shall return zero until Receive or Strip owes another.
 //   - TakeSynch shall change no option state and no reply. [read]
 func (negotiation *Negotiation) TakeSynch() int {
 	return negotiation.takeSynch()
@@ -393,7 +398,7 @@ func (negotiation *Negotiation) TakeSynch() int {
 // Negotiate negotiates over one connection; Accept calls Open, which negotiates as Negotiate does
 // and goes on as the Line. It writes the opening requests, then reads into a fixed buffer of
 // ReadBufferSize, hands the bytes to Receive and writes its replies from a fixed buffer of
-// ReplyBufferSize, then the Synch when TakeSynch says one is owed, until Receive reports the end or
+// ReplyBufferSize, then the Synchs TakeSynch says are owed, until Receive reports the end or
 // NegotiationSeconds after the opening write. The 3 seconds end a read that waits, never a write:
 // a write, the Synch's included, waits until it is done or the context ends. A write cut short can
 // reach the caller whole while reporting nothing written, as Go on Windows reports a cancelled
@@ -418,11 +423,12 @@ func (negotiation *Negotiation) TakeSynch() int {
 //     error. [read]
 //   - When Receive appends replies and returns false, Negotiate shall write those replies before
 //     its next read.
-//   - When TakeSynch returns more than zero after a read, Negotiate shall write that read's
-//     replies, then IAC DM with WriteUrgent that many times, before its next read.
-//   - When Receive returns true, Negotiate shall write that call's replies and the Synchs owed,
-//     and, if neither that read nor those writes returned an error, return Answered with no
-//     error.
+//   - When TakeSynch returns more than zero after a read that returned no error, Negotiate shall
+//     write that read's replies, then IAC DM repeated that many times in one WriteUrgent, before
+//     its next read.
+//   - When Receive returns true on a read that returned no error, Negotiate shall write that
+//     call's replies and the Synchs owed and, if those writes returned no error, return Answered
+//     with no error.
 //   - If NegotiationSeconds pass after Negotiate begins the opening write, while a read is
 //     waiting, and the context has not ended, then Negotiate shall return TimedOut with no error.
 //   - While a write is waiting, Negotiate shall wait for it until it ends or the context ends,
@@ -449,7 +455,7 @@ func (negotiation *Negotiation) TakeSynch() int {
 //   - If a read or a write fails other than by end of file or a passed deadline, then Negotiate
 //     shall return ErrConnectionFailed.
 //   - Negotiate shall write nothing to the connection but the opening requests, the replies
-//     Receive appends, and IAC DM with WriteUrgent once for each Synch TakeSynch returns.
+//     Receive appends, and IAC DM written with WriteUrgent once for each Synch TakeSynch returns.
 //   - When it returns, Negotiate shall leave the connection's read and write deadlines at the
 //     context's deadline.
 //   - If the context has no deadline, then Negotiate shall leave the connection's read and write
@@ -488,8 +494,9 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 //
 // Lines:
 //
-//   - Strip shall return each data byte with true, and false for each byte of a Telnet command
-//     but EC's and EL's last.
+//   - Strip shall return true, with the byte to hand on, for each data byte, for the second IAC
+//     of IAC IAC outside a subnegotiation, and for the last byte of IAC EC and of IAC EL; and
+//     false for every other byte.
 //   - When the bytes hold IAC IAC outside a subnegotiation, Strip shall return false for the
 //     first IAC and the data byte 255 with true for the second.
 //   - When the bytes hold IAC EC, Strip shall return false for IAC and BS, 0x08, with true for
@@ -505,7 +512,7 @@ func Negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 //   - When a sequence is split across negotiation's end, Strip shall read it as it would had the
 //     sequence come after it whole.
 //   - Strip shall append its reply after the bytes already in replies, and leave those unchanged.
-//   - Strip shall append at most one reply, of at most MostReply bytes, in one call.
+//   - Strip shall append at most MostReply bytes in one call.
 //   - Strip shall append to replies, over all its calls and Receive's on one negotiation, no more
 //     bytes than five times all their input held.
 //   - After Strip's first call, Receive shall append no reply and change no state on that
@@ -518,8 +525,9 @@ func (negotiation *Negotiation) Strip(character byte, replies []byte) ([]byte, b
 }
 
 // SendBufferSize is the Line's fixed send buffer. When it is full, the call adding to it writes
-// it out first, so nothing the caller does grows it.
-const SendBufferSize = 1024
+// it out first, so nothing the caller does grows it. It holds at least ReplyBufferSize, so the
+// replies negotiation still owed when its last read failed fit in it whole.
+const SendBufferSize = 2048
 
 // Line is a caller's Telnet connection once negotiation is over: the Telnet side of the textio
 // package's Chars. It keeps a receive buffer of the caller's bytes not yet read, a send buffer of
@@ -559,8 +567,8 @@ type Line struct {
 //     Negotiate's through errors.Is.
 //   - When Open returns ErrCallerClosed, the error shall also match io.EOF.
 //   - When negotiation ends with an outcome, Open shall return a Line that writes first, in order,
-//     the replies and the Synch of a read that returned bytes with a passed deadline, which
-//     Negotiate did not write.
+//     the replies and then the Synchs owed of a read that returned bytes with a passed deadline,
+//     which Negotiate did not write.
 //   - When negotiation ends with an outcome after Receive returned true, Open shall return a Line
 //     whose receive buffer holds, unread and in order, every byte negotiation's last read
 //     returned after the byte at which Receive returned true, and no other byte.
@@ -638,18 +646,20 @@ func (line *Line) Flush(ctx context.Context) error {
 // RecvChar returns the caller's next data byte, with EC handed on as BS and EL as Ctrl-U. It hands
 // Strip the receive buffer's bytes one at a time, queues Strip's replies, writes the Synch when one
 // is owed, and stops at the first byte Strip hands on, reading nothing after it. It writes the
-// send buffer out before it waits for the caller, when a reply needs room, and before a Synch, all
-// no later than deadline.
+// send buffer out before it waits for the caller and when a reply needs room, and a Synch after
+// the replies queued before it, all no later than deadline. Whether the data bytes queued before an
+// AO or IP are written or thrown away is not pinned here: Part 4's page leaves it to the first
+// long screen.
 //
 //   - RecvChar shall return the caller's data bytes in the order sent, BS for each EC and Ctrl-U
 //     for each EL among them, and no other byte of a Telnet command.
 //   - RecvChar shall read no byte after the byte it returns.
 //   - RecvChar shall queue Strip's replies as they are, unescaped, in order.
-//   - Before it hands Strip a byte, RecvChar shall have room for one reply of MostReply bytes,
-//     writing the send buffer out as Flush does, under deadline, when it has not.
-//   - When TakeSynch returns more than zero after Strip, RecvChar shall write the send buffer out
-//     as Flush does, then IAC DM with WriteUrgent, under deadline, before it hands Strip another
-//     byte.
+//   - Before it hands Strip a byte, RecvChar shall have room for MostReply bytes, writing the send
+//     buffer out as Flush does, under deadline, when it has not.
+//   - When TakeSynch returns more than zero after Strip, RecvChar shall write IAC DM with
+//     WriteUrgent, under deadline, after every reply queued before it and before it hands Strip
+//     another byte.
 //   - Before it waits for the caller, RecvChar shall write the send buffer out as Flush does,
 //     under deadline.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes in
