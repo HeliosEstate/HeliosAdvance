@@ -156,7 +156,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			expectReturn(t, call.result(t, readingAt.Add(margin)), telnet.TimedOut, nil, readingAt, readingAt.Add(margin))
 		})
 	})
-	t.Run("If NegotiationSeconds have passed when a write ends without an error, and Receive has not returned true, then Negotiate shall return TimedOut with no error, reading nothing more.", func(t *testing.T) {
+	t.Run("If NegotiationSeconds have passed when a write ends without an error, Receive has not returned true, and the context has not ended, then Negotiate shall return TimedOut with no error, reading nothing more.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a caller that floods, then reads from 4 seconds: TimedOut, each request answered once or still unread, in order", func(t *testing.T) {
 			t.Parallel()

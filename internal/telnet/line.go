@@ -59,16 +59,22 @@ func (line *Line) usable() bool {
 	return line != nil && line.state.connection != nil
 }
 
-// contextEnded lets the clock judge the deadline, since a connection's deadline can wake a call
+// endedCause lets the clock judge the deadline, since a connection's deadline can wake a call
 // before the context's own timer reports that the context has ended.
+func endedCause(ctx context.Context) error {
+	if cause := ctx.Err(); cause != nil {
+		return cause
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func contextEnded(ctx context.Context) error {
-	cause := ctx.Err()
+	cause := endedCause(ctx)
 	if cause == nil {
-		deadline, ok := ctx.Deadline()
-		if !ok || time.Now().Before(deadline) {
-			return nil
-		}
-		cause = context.DeadlineExceeded
+		return nil
 	}
 	return fmt.Errorf("telnet: the call's context ended: %w", cause)
 }
