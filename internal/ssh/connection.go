@@ -43,69 +43,62 @@ func newConnection() *connection {
 	return &connection{ended: make(chan struct{})}
 }
 
-func (c *connection) recordSocketError(err error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	if c.socketError == nil {
-		c.socketError = err
+func (connection *connection) recordSocketError(err error) {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	if connection.socketError == nil {
+		connection.socketError = err
 	}
 }
 
-func (c *connection) note(err error) {
+func (connection *connection) note(err error) {
 	if err == nil {
 		return
 	}
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	if c.noted == nil {
-		c.noted = err
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	if connection.noted == nil {
+		connection.noted = err
 	}
 }
 
-func (c *connection) finish(err error) {
-	c.mutex.Lock()
-	c.endError = err
-	c.mutex.Unlock()
-	close(c.ended)
+func (connection *connection) finish(err error) {
+	connection.mutex.Lock()
+	connection.endError = err
+	connection.mutex.Unlock()
+	close(connection.ended)
 }
 
-func (c *connection) hasEnded() bool {
+func (connection *connection) hasEnded() bool {
 	select {
-	case <-c.ended:
+	case <-connection.ended:
 		return true
 	default:
 		return false
 	}
 }
 
-// socketReset is whether the socket failed in any way but the caller closing in order.
-func (c *connection) socketReset() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.socketError != nil && !errors.Is(c.socketError, io.EOF)
-}
-
 // socketClosed is whether the socket ended in order.
-func (c *connection) socketClosed() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return errors.Is(c.socketError, io.EOF)
+func (connection *connection) socketClosed() bool {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	return errors.Is(connection.socketError, io.EOF)
 }
 
 // failed is whether the engine knows the connection failed, as the caller closing it is not.
-func (c *connection) failed() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	if c.socketError != nil && !errors.Is(c.socketError, io.EOF) {
+func (connection *connection) failed() bool {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	if connection.socketError != nil && !errors.Is(connection.socketError, io.EOF) {
 		return true
 	}
-	if c.noted != nil {
+	if connection.noted != nil {
 		return true
 	}
-	if c.endError == nil || errors.Is(c.endError, io.EOF) {
+	if connection.endError == nil || errors.Is(connection.endError, io.EOF) {
 		return false
 	}
-	return !strings.HasPrefix(c.endError.Error(), disconnectPrefix)
+	return !strings.HasPrefix(connection.endError.Error(), disconnectPrefix)
 }
 
 // callerClosed is the error for a caller that ended its side in order.
@@ -114,8 +107,8 @@ func callerClosed() error {
 }
 
 // sessionEnd reads how a connection or its session ended, once the session has no more to give.
-func (c *connection) sessionEnd() error {
-	if c.failed() {
+func (connection *connection) sessionEnd() error {
+	if connection.failed() {
 		return ErrConnectionFailed
 	}
 	return callerClosed()
@@ -151,10 +144,10 @@ type recordingConn struct {
 	owner *connection
 }
 
-func (c recordingConn) Read(buffer []byte) (int, error) {
-	count, err := c.Conn.Read(buffer)
+func (socket recordingConn) Read(buffer []byte) (int, error) {
+	count, err := socket.Conn.Read(buffer)
 	if err != nil {
-		c.owner.recordSocketError(err)
+		socket.owner.recordSocketError(err)
 	}
 	return count, err
 }
@@ -162,11 +155,11 @@ func (c recordingConn) Read(buffer []byte) (int, error) {
 // wakeOnEnd makes a read or write that is waiting return when ctx ends, by setting both deadlines
 // long past. The release it returns waits for a wake-up that has started, so nothing of the
 // package's runs once the call that registered it returns.
-func (c *connection) wakeOnEnd(ctx context.Context, socket net.Conn) (release func()) {
+func (connection *connection) wakeOnEnd(ctx context.Context, socket net.Conn) (release func()) {
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(done)
-		c.note(errors.Join(
+		connection.note(errors.Join(
 			socket.SetReadDeadline(wokenDeadline), socket.SetWriteDeadline(wokenDeadline)))
 	})
 	return func() {

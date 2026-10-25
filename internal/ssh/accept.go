@@ -104,7 +104,7 @@ func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKe
 // serveChannels hands the first session channel to Accept undecided and refuses every other,
 // then takes the library's Wait as the connection's end, so that no call waits on a connection
 // that has gone.
-func (c *connection) serveChannels(
+func (connection *connection) serveChannels(
 	server *cryptossh.ServerConn, channels <-chan cryptossh.NewChannel, sessions chan<- cryptossh.NewChannel,
 ) {
 	first := true
@@ -121,17 +121,17 @@ func (c *connection) serveChannels(
 		}
 		// A refusal that cannot be sent means the connection is failing, which the read side
 		// reports; the failure is kept for the caller's call to find.
-		c.note(newChannel.Reject(reason, ""))
+		connection.note(newChannel.Reject(reason, ""))
 	}
-	c.finish(server.Wait())
+	connection.finish(server.Wait())
 }
 
 // refuseRequests answers every request with failure until the library ends the channel. A reply
 // that cannot be sent means the connection is failing; the failure is kept, and the draining goes
 // on, since the library's reader blocks on a full queue.
-func (c *connection) refuseRequests(requests <-chan *cryptossh.Request) {
+func (connection *connection) refuseRequests(requests <-chan *cryptossh.Request) {
 	for request := range requests {
-		c.note(request.Reply(false, nil))
+		connection.note(request.Reply(false, nil))
 	}
 }
 
