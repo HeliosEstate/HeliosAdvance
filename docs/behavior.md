@@ -165,10 +165,9 @@ that only a Telnet caller meets to a Telnet caller.
   channel.
 - The engine shall accept `pty-req` and `shell` on the session channel until the first `shell`,
   and refuse every other channel request and every global request.
-- The engine shall discard what an SSH caller sends on the channel before `shell`, and everything
-  it sends as extended data.
+- The engine shall discard everything an SSH caller sends as extended data.
 - If an SSH caller sends end of file or closes the channel before the name ends, then the engine
-  shall close the connection without writing more.
+  shall close the connection, writing nothing more but the channel close SSH requires in reply.
 
 #### Nothing kept
 
