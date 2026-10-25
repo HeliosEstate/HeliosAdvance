@@ -33,13 +33,20 @@
 //
 // Every byte the caller sends crosses the trust boundary at the network listener. Before the shell
 // the library reads it: the version line, the key exchange, sign-in, channels and requests; this
-// package answers what the library hands it by the table on Accept, and keeps none of it: the
-// username and everything a pty-req carries are read and discarded, never stored, logged or shown.
-// After the shell the Channel reads the caller's channel data, one byte at a time, for the textio
-// package's Edit, and discards extended data. The library holds at most one channel window, 2 MiB,
-// of a caller's data per channel, and the engine opens one channel per connection. The host key
-// file is the sysop's, not the caller's; it is read once, at most HostKeyMostBytes. There is no
-// fuzz target here: the library parses the wire.
+// package answers what the library hands it by the table on Accept. The engine keeps none of it:
+// the username and everything a pty-req carries are never stored, logged or shown by the engine;
+// the library alone keeps the username, on its connection, for the connection's life. Signing in
+// with none proves nothing about the caller, so the Channel carries no identity (the map's section
+// 2, item 10: the board's own prompt is the only way in). The Channel reads every byte of the
+// caller's channel data, one byte at a time, for the textio package's Edit, those sent before the
+// shell included: the library keeps channel data and requests in separate queues, so a byte sent
+// before the shell cannot be told from one typed ahead with it. Extended data is discarded. Per
+// connection the library holds at most one channel window, 2 MiB, of channel data for the one
+// channel the engine opens, and two request queues, the connection's and the channel's, 16
+// requests deep, each request one packet of at most 256 KiB. No error this package returns holds
+// the library's text, which can quote what the caller sent. The host key file is the sysop's, not
+// the caller's; it is read once, at most HostKeyMostBytes. There is no fuzz target here: the
+// library parses the wire.
 //
 // # Oracles
 //
@@ -60,7 +67,7 @@
 // # The wire format
 //
 // SSH (RFC 4253, RFC 4252, RFC 4254) frames the stream; the library writes and reads it. What this
-// package sets in it:
+// package sets in the version line and the key exchange's fields:
 //
 //	The version line      SSH-2.0-HeliosAdvance, then CR LF
 //	Key exchanges         mlkem768x25519-sha256, curve25519-sha256,
@@ -74,12 +81,22 @@
 //	Host key              ssh-ed25519
 //	Sign-in               none, under any username
 //
+// What the library sends of its own, which this package does not choose: to a caller that offers
+// ext-info-c, the extensions message after the first key exchange (RFC 8308), with server-sig-algs,
+// which this package sets to ssh-ed25519 alone, and ping@openssh.com, which the library answers
+// itself with a pong; and the channel close SSH requires in reply to the caller's.
+//
 // # Lines for the package
 //
-//   - The ssh package shall offer the caller no algorithm, sign-in method or version line but the
-//     ones the table above gives. [read]
+//   - The ssh package shall set the version line and the key exchange's fields, the key
+//     exchanges, ciphers, MAC, compression and host key, to the table's values and no others.
+//     [read]
+//   - The ssh package shall set server-sig-algs to ssh-ed25519 alone. [read]
 //   - The ssh package shall not store, log or show the SSH username, nor anything a pty-req
 //     carries. [read]
+//   - The ssh package shall give the Channel no identity of the caller. [read]
+//   - No error the ssh package returns shall hold, in its text, any byte the caller sent or the
+//     username. [read]
 //   - The ssh package shall write nothing to the local log. [read]
 //   - Once the connection is closed, the ssh package shall leave no goroutine of its own, or of
 //     the library's for that connection, running. [read]
@@ -115,8 +132,8 @@ var (
 	ErrHostKeyMissing = errors.New("ssh: the host key file does not exist")
 	// ErrHostKeyUnreadable means the file is there but cannot be read.
 	ErrHostKeyUnreadable = errors.New("ssh: the host key file cannot be read")
-	// ErrHostKeyNotOpenSSH means the file is not a private key in OpenSSH's format, or is longer
-	// than HostKeyMostBytes.
+	// ErrHostKeyNotOpenSSH means the file is not one PEM block of type "OPENSSH PRIVATE KEY", or
+	// is longer than HostKeyMostBytes.
 	ErrHostKeyNotOpenSSH = errors.New("ssh: the host key file is not a private key in OpenSSH's format")
 	// ErrHostKeyPassphrase means the key is protected by a passphrase.
 	ErrHostKeyPassphrase = errors.New("ssh: the host key is protected by a passphrase")
@@ -132,7 +149,7 @@ var (
 	// through errors.Is.
 	ErrCallerClosed = errors.New("ssh: the caller closed the connection")
 	// ErrConnectionFailed means any other failure: a handshake that fails, a sign-in method other
-	// than none, a read or write that fails.
+	// than none, a read or write that fails. It never carries the library's text.
 	ErrConnectionFailed = errors.New("ssh: the connection failed")
 	// ErrDeadlineEnded means Accept's context ended first: the call's ceiling or a stop. It is
 	// returned wrapping context.DeadlineExceeded or context.Canceled, so errors.Is matches both.
@@ -145,16 +162,21 @@ type HostKey struct {
 	state hostKeyState
 }
 
-// ReadHostKey reads the host key file at path once: an Ed25519 private key in OpenSSH's format
-// with no passphrase, as ssh-keygen makes it. Each error names the problem and holds no part of
-// the file's contents, so the program can write it to the local log as it is.
+// ReadHostKey reads the host key file at path once: an Ed25519 private key with no passphrase in
+// OpenSSH's format, a PEM block of type "OPENSSH PRIVATE KEY" as ssh-keygen makes it; every other
+// PEM type the library reads, such as "PRIVATE KEY" (PKCS#8) or "RSA PRIVATE KEY", is refused.
+// Each error names the problem and holds no part of the file's contents, so the program can write
+// it to the local log as it is. The checks run in the order of the lines below, and the first that
+// applies is the result.
 //
+//   - ReadHostKey shall check the file in the order of these lines and return the first refusal
+//     that applies.
 //   - If no file is at path, then ReadHostKey shall return ErrHostKeyMissing.
 //   - If, on Linux, the file's mode lets its group or others read it, then ReadHostKey shall
 //     return ErrHostKeyReadableByOthers without reading the file.
 //   - If the file cannot be read, then ReadHostKey shall return ErrHostKeyUnreadable.
-//   - If the file is not a private key in OpenSSH's format, or is longer than HostKeyMostBytes,
-//     then ReadHostKey shall return ErrHostKeyNotOpenSSH.
+//   - If the file is longer than HostKeyMostBytes, or is not one PEM block of type "OPENSSH
+//     PRIVATE KEY", then ReadHostKey shall return ErrHostKeyNotOpenSSH.
 //   - If the key is protected by a passphrase, then ReadHostKey shall return
 //     ErrHostKeyPassphrase.
 //   - If the key is not an Ed25519 key, then ReadHostKey shall return ErrHostKeyNotEd25519.
@@ -167,8 +189,10 @@ func ReadHostKey(path string) (*HostKey, error) {
 // Accept makes one accepted TCP connection SSH's object for the shared execution path: it does the
 // handshake with key, signs the caller in with none, and waits for the first session channel and
 // its shell, answering everything the caller opens or sends by the table below, then returns the
-// Channel. It does not close the connection; the shared execution path does, on an error too. On an
-// error it returns a nil Channel.
+// Channel. The library closes the connection itself when the handshake or sign-in fails; otherwise
+// the shared execution path closes it, after an error too. On an error it returns a nil Channel.
+// When two happen at once, the context ending wins, then a failure: a context whose deadline has
+// passed has ended, by the clock, whatever the failure.
 //
 //	The caller opens or sends            Accept answers
 //	sign-in none, any username           accepted
@@ -180,13 +204,14 @@ func ReadHostKey(path string) (*HostKey, error) {
 //	shell, the first                     accepted; Accept returns the Channel
 //	any other channel request            refused
 //	any global request                   refused
-//	data on the channel before shell     discarded
+//	ping@openssh.com                     the library's pong
+//	data on the channel                  kept, in order, for the Channel
 //	extended data                        discarded
 //
 // Refused means nothing changes and, where the caller asks for a reply, the reply is failure.
 //
-//   - Accept shall send VersionLine and CR LF, and offer only the algorithms the package's table
-//     gives.
+//   - Accept shall send VersionLine and CR LF, and set the key exchange's fields to the package's
+//     table.
 //   - When the caller offers strict key exchange, Accept shall use it.
 //   - Accept shall answer each thing the caller opens or sends before the shell as the table above
 //     gives.
@@ -198,6 +223,8 @@ func ReadHostKey(path string) (*HostKey, error) {
 //     it, before the shell, then Accept shall return ErrCallerClosed.
 //   - If the context has ended when Accept is called, or ends while it waits, then Accept shall
 //     return ErrDeadlineEnded wrapping the context's error, without writing more.
+//   - If the context has ended when anything else fails, then Accept shall return
+//     ErrDeadlineEnded, whatever the failure.
 //   - If key is nil or not made by ReadHostKey, then Accept shall return ErrConnectionFailed
 //     without writing to the connection.
 //   - If the handshake or anything else fails, then Accept shall return ErrConnectionFailed.
@@ -209,16 +236,20 @@ func Accept(ctx context.Context, connection *net.TCPConn, key *HostKey) (*Channe
 // textio package's Chars. It keeps a receive buffer of the caller's data not yet read and a send
 // buffer of SendBufferSize, and goes on answering what the caller opens or sends: a second shell,
 // a pty-req after the shell and every other request or channel are refused, so the greeting never
-// comes twice and the echo never changes mid-name. A Channel not made by Accept, or nil, fails
-// every call with ErrConnectionFailed, and its Echoes returns false. One goroutine per Channel.
+// comes twice and the echo never changes mid-name. When the caller sends end of file or closes the
+// channel, the library answers with the channel close SSH requires, the one write after it. A
+// Channel not made by Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes
+// returns false. One goroutine per Channel.
 //
 // Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
 // deadline given passed first; io.EOF when the caller sent end of file, closed the channel or
 // closed the connection; the context's error, wrapped, when the context ended first;
-// ErrConnectionFailed, wrapping the cause, for any other failure. When two happen at once, the
-// context ending wins, then a failure, then a passed deadline; a context whose deadline has
-// passed has ended, by the clock. A context ending wakes a waiting call at once. Once a write
-// fails, the Channel writes nothing more.
+// ErrConnectionFailed, without the library's text, for any other failure. When two happen at
+// once, the context ending wins, then a failure, then a passed deadline; a context whose deadline
+// has passed has ended, by the clock. A context ending wakes a waiting call at once. The library
+// gives a channel write no deadline, so a write cut short by a deadline or the context counts as
+// failed, as one that fails does: the Channel writes nothing more, and what that write handed the
+// library may still go out before the connection closes.
 type Channel struct {
 	state channelState
 }
@@ -253,8 +284,8 @@ func (channel *Channel) Flush(ctx context.Context) error {
 // RecvChar returns the caller's next byte of channel data. It writes the send buffer out before it
 // waits for the caller, no later than deadline.
 //
-//   - RecvChar shall return the caller's channel data bytes in the order sent, those sent between
-//     the shell and the call included, and no byte of extended data.
+//   - RecvChar shall return the caller's channel data bytes in the order sent, those sent before
+//     the call included, and no byte of extended data.
 //   - Before it waits for the caller, RecvChar shall write the send buffer out as Flush does,
 //     under deadline.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes
@@ -283,14 +314,20 @@ func (channel *Channel) Echoes() bool {
 
 // Close is SSH's own close, called once the call is answered: it sends exit status 0 and end of
 // file, closes the channel, then waits until the caller closes the connection or
-// ClosingWaitSeconds pass, no later than the context's deadline. It writes nothing else, what is
-// still queued included, and leaves closing the connection to the shared execution path.
+// ClosingWaitSeconds pass, no later than the context's deadline. It writes nothing of its own but
+// those, what is still queued included, and leaves closing the connection to the shared execution
+// path. During its wait the caller's requests and channels are still refused, and the library may
+// still answer on its own: its channel close in reply to the caller's, and a ping's pong.
 //
 //   - Close shall send exit status 0, then end of file, then close the channel.
 //   - Close shall wait until the caller closes the connection or ClosingWaitSeconds pass, no later
-//     than the context's deadline, and then return no error.
-//   - If the context has ended when Close is called, or ends while it waits, then Close shall
-//     return the context's error, wrapped.
+//     than the context's deadline.
+//   - When the caller closes the connection, or ClosingWaitSeconds pass, Close shall return no
+//     error.
+//   - If the context has ended when Close is called, then Close shall return the context's
+//     error, wrapped, without touching the connection.
+//   - If the context ends while Close waits, then Close shall return the context's error,
+//     wrapped.
 //   - If sending any of them fails, then Close shall return ErrConnectionFailed at once.
 //   - If the Channel was not made by Accept, or is nil, then Close shall return
 //     ErrConnectionFailed without touching the connection.

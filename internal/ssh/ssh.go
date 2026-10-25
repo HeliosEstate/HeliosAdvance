@@ -5,6 +5,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
 
@@ -24,15 +25,18 @@ type channelState struct {
 	channel cryptossh.Channel
 }
 
+// errNotBuilt is what a placeholder returns until its issue builds it.
+var errNotBuilt = errors.New("ssh: not built yet")
+
 func readHostKey(_ string) (*HostKey, error) {
-	return nil, ErrHostKeyUnreadable
+	return nil, errNotBuilt
 }
 
 func accept(_ context.Context, _ *net.TCPConn, key *HostKey) (*Channel, error) {
 	if key == nil || key.state.signer == nil {
 		return nil, ErrConnectionFailed
 	}
-	return nil, ErrConnectionFailed
+	return nil, errNotBuilt
 }
 
 func (channel *Channel) sendChar(_ context.Context, _ byte) error {
