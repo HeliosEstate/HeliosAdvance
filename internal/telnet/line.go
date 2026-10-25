@@ -59,8 +59,8 @@ func (line *Line) usable() bool {
 	return line != nil && line.state.connection != nil
 }
 
-// contextEnded is the context's error, wrapped, when it has ended. A deadline that has passed by
-// the clock counts as ended, whether or not the context reports it yet.
+// contextEnded lets the clock judge the deadline, since a connection's deadline can wake a call
+// before the context's own timer reports that the context has ended.
 func contextEnded(ctx context.Context) error {
 	cause := ctx.Err()
 	if cause == nil {
@@ -113,8 +113,8 @@ func (line *Line) check(ctx context.Context) error {
 	return nil
 }
 
-// writeOut writes the send buffer in one Write. Any error marks the Line failed, whatever the
-// write got out, since what a write cut short sent cannot be known.
+// A failed write marks the Line failed whatever it got out, since what a write cut short sent
+// cannot be known.
 func (line *Line) writeOut(ctx context.Context, deadline time.Time) error {
 	state := &line.state
 	if state.sendLength == 0 {
@@ -172,10 +172,15 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 		if err := line.check(ctx); err != nil {
 			return 0, err
 		}
+		state := &line.state
+		// A stored end or failure outranks a passed deadline once no bytes are left, as the Line's
+		// order has it; with bytes waiting the deadline still comes first.
+		if state.receiveNext >= state.receiveEnd && state.readError != nil {
+			return 0, state.readError
+		}
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return 0, os.ErrDeadlineExceeded
 		}
-		state := &line.state
 		if state.receiveNext < state.receiveEnd {
 			if SendBufferSize-state.sendLength < replyRoom {
 				if err := line.writeOut(ctx, deadline); err != nil {
@@ -192,9 +197,6 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 				return character, nil
 			}
 			continue
-		}
-		if state.readError != nil {
-			return 0, state.readError
 		}
 		if err := line.writeOut(ctx, deadline); err != nil {
 			return 0, err

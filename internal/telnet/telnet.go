@@ -240,14 +240,8 @@ func negotiateWith(
 	}
 
 	timeout := time.Now().Add(NegotiationSeconds * time.Second)
-	readDeadline := timeout
-	var writeDeadline time.Time
-	if contextDeadline, ok := ctx.Deadline(); ok {
-		writeDeadline = contextDeadline
-		if contextDeadline.Before(readDeadline) {
-			readDeadline = contextDeadline
-		}
-	}
+	readDeadline := connectionDeadline(ctx, timeout)
+	writeDeadline := connectionDeadline(ctx, time.Time{})
 	if err := setDeadlines(connection, readDeadline, writeDeadline); err != nil {
 		return fail(err)
 	}

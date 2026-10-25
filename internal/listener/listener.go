@@ -125,7 +125,7 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 		return
 	}
 	closingEnd := time.Now().Add(ClosingWaitSeconds * time.Second)
-	if err := connection.SetReadDeadline(earlier(closingEnd, ceiling)); err != nil {
+	if err := connection.SetReadDeadline(closingEnd); err != nil {
 		return
 	}
 	var discard [DiscardBufferSize]byte
@@ -134,13 +134,6 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 			return
 		}
 	}
-}
-
-func earlier(first, second time.Time) time.Time {
-	if second.Before(first) {
-		return second
-	}
-	return first
 }
 
 // keepUrgentInLine is set before anything is read, since a Synch whose DM byte leaves the stream

@@ -73,8 +73,8 @@ func (conn *Conn) sendString(ctx context.Context, text string) error {
 	return chars.Flush(ctx)
 }
 
-// contextEnded counts a deadline that has passed by the clock as the context's end, whether or not
-// the context reports it yet.
+// contextEnded lets the clock judge the deadline, since a connection's deadline can wake a call
+// before the context's own timer reports that the context has ended.
 func contextEnded(ctx context.Context) error {
 	cause := ctx.Err()
 	if cause == nil {
