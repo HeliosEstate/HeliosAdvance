@@ -94,8 +94,8 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 - When the caller sends a character from space to tilde (0x20 to 0x7E) and the name holds fewer
   than 30, the engine shall add it to the name.
-- Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after
-  negotiation or, over SSH, after `shell`, and every character past the 30th.
+- Apart from BS, DEL, Ctrl-U, CR and LF, the engine shall drop every other byte the caller sends
+  after negotiation or, over SSH, after `shell`, and every character past the 30th.
 - After negotiation ends and until a Telnet caller's name ends, the engine shall answer each
   option request as it did during negotiation, and each other Telnet command as Part 4's lines
   under "Commands" say.
@@ -110,8 +110,8 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 - When the caller sends BS or DEL while the name holds a character, the engine shall remove the
   last character.
-- If the caller sends BS, DEL, CR or LF while the name is empty, then the engine shall write
-  nothing and keep waiting.
+- If the caller sends BS, DEL, Ctrl-U, CR or LF while the name is empty, then the engine shall
+  write nothing and keep waiting.
 
 #### The whole call
 
@@ -207,6 +207,11 @@ standard requires. It keeps nothing a caller's terminal reports.
   remove every character of the name, writing BS, space, BS for each while it echoes.
 - When a Telnet caller sends DM, NOP, GA, BRK, EOR or any other command, the engine shall discard
   it without reply, and discard none of the data before it.
+
+#### Erasing a name
+
+- When the caller sends Ctrl-U (0x15) while the name holds a character, the engine shall remove
+  every character of the name.
 
 #### Nothing kept
 
