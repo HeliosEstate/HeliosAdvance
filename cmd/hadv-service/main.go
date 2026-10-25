@@ -64,7 +64,7 @@ func run(arguments []string, logOutput io.Writer) int {
 		return exitFailed
 	}
 
-	engine, err := listener.Start(sockets)
+	engine, err := listener.Start([]listener.Kind{{Sockets: sockets}})
 	if err != nil {
 		err = errors.Join(err, closeAll(sockets))
 		log("start_failed", err.Error())
