@@ -45,6 +45,10 @@ linters:
           allow:
             - $gostd
             - github.com/heliosestate/heliosadvance
+            # The SSH unit's handshake and channel, and only that package of the module: complete
+            # and kept by the Go team, and watched by govulncheck and Dependabot here, where writing
+            # our own would put thousands of lines of cryptographic protocol at the trust boundary.
+            - golang.org/x/crypto/ssh$
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -78,6 +82,16 @@ linters:
             - $gostd
             # Its own path, so its black-box tests in package textio_test can import it.
             - github.com/heliosestate/heliosadvance/internal/textio
+        ssh:
+          files: ["**/internal/ssh/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # The handshake and the channel are the library's (docs/architecture.md); its other
+            # packages, such as ssh/agent, are not allowed.
+            - golang.org/x/crypto/ssh$
+            # Its own path, so its black-box tests in package ssh_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/ssh
         listener:
           files: ["**/internal/listener/**"]
           list-mode: strict
