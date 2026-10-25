@@ -136,7 +136,15 @@ if [ "$MUTATION" = 0 ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- "$f") || fail "git could not list the commits to $f"
+    # A merge whose copy of the file is one of its parents' adds nothing of its own: git lists it
+    # when that parent is on the base and the other side's copy differs, and every change on the
+    # other side is a commit of its own, judged here or on the base. A merge that writes what
+    # neither parent had is judged like any commit.
     nonqa=$(for c in $commits; do
+      parents=$(git rev-list --parents -n 1 "$c" | cut -s -d' ' -f2-)
+      case $parents in *' '*)
+        for p in $parents; do git diff --quiet "$p" "$c" -- "$f" && continue 2; done ;;
+      esac
       is_qa "$c" || echo "$c"; done)
     [ -z "$nonqa" ] || { echo "$f: $nonqa"; fail "a test file on $BASE was changed or deleted by a non-QA commit"; }
   done <<< "$basetests"
