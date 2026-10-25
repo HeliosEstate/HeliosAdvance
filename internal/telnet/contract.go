@@ -306,11 +306,11 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 // When two things happen at once, the context ending wins, then any read or write failure, whose
 // replies are not written; Answered only when nothing failed. Whether the context has ended is
 // judged by the clock, as on the Line, whatever the failure: a context whose deadline has passed
-// has ended, with context.DeadlineExceeded, whether or not it reports it yet. So a read or write
-// that gives up on a passed deadline is ErrDeadlineEnded if the context's deadline had passed by
-// then, else TimedOut. On return, with an outcome or an error, it leaves nothing behind: the
-// connection's read and write deadlines at the context's deadline, cleared if it has none, and
-// nothing of its own running. Results: ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
+// has ended, with context.DeadlineExceeded, whether or not it reports it yet. So a read that gives
+// up on a passed deadline is TimedOut only if the context has not ended when Negotiate judges it.
+// On return, with an outcome or an error, it leaves nothing behind: the connection's read and
+// write deadlines at the context's deadline, cleared if it has none, and nothing of its own
+// running. Results: ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
 //
 //   - If the context has ended when Negotiate is called, then Negotiate shall return
 //     ErrDeadlineEnded without writing to the connection.
