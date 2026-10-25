@@ -331,8 +331,8 @@ func (negotiation *Negotiation) Receive(input, replies []byte) ([]byte, bool) {
 //   - If NegotiationSeconds have passed when a write ends without an error, Receive has not
 //     returned true, and the context has not ended, then Negotiate shall return TimedOut with no
 //     error, reading nothing more.
-//   - If NegotiationSeconds have passed when a write ends without an error, Receive has not
-//     returned true, and the context has ended, then Negotiate shall return ErrDeadlineEnded.
+//   - If NegotiationSeconds have passed when a read or a write ends, Receive has not returned
+//     true, and the context has ended, then Negotiate shall return ErrDeadlineEnded.
 //   - If the context's deadline passes while a write is waiting, or at or before
 //     NegotiationSeconds after the opening write began while a read is waiting, then Negotiate
 //     shall return ErrDeadlineEnded.
