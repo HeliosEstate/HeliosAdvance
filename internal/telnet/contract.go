@@ -407,14 +407,17 @@ func (negotiation *Negotiation) TakeSynch() int {
 // When two things happen at once, the context ending wins, then any read or write failure, whose
 // replies are not written; Answered only when nothing failed. Whether the context has ended is
 // judged by the clock, as on the Line, whatever the failure: a context whose deadline has passed
-// has ended, with context.DeadlineExceeded, whether or not it reports it yet. TimedOut is only
-// ever the result while the context has not ended.
+// has ended, with context.DeadlineExceeded, whether or not it reports it yet. Answered and TimedOut
+// are only ever the result while the context has not ended.
 // On return, with an outcome or an error, it leaves nothing behind: the connection's read and
 // write deadlines at the context's deadline, cleared if it has none, and nothing of its own
 // running. Results: ErrCallerClosed, ErrConnectionFailed, ErrDeadlineEnded.
 //
-//   - If the context has ended when Negotiate is called, then Negotiate shall return
-//     ErrDeadlineEnded without writing to the connection.
+//   - If the context has ended when Negotiate is called, judged by the clock, then Negotiate shall
+//     return ErrDeadlineEnded without writing to the connection.
+//   - Negotiate shall return Answered or TimedOut only while the context has not ended, judged by
+//     the clock; once it has ended, Negotiate shall write nothing more and return
+//     ErrDeadlineEnded.
 //   - When it is called, Negotiate shall write the opening requests New returns before it reads
 //     from the connection.
 //   - Negotiate shall read into a buffer of ReadBufferSize bytes and write its replies from a
