@@ -802,12 +802,22 @@ func TestLine(t *testing.T) {
 		t.Run("a thousand DO 24 at once: every reply, whole and in order", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, join(repeated(request(doVerb, telnetTypeOption), 1000), []byte("x")))
+			// The reader hands back what it got, whatever it got, so a short read fails the row
+			// rather than leaving it waiting.
 			received := make(chan []byte, 1)
-			go func() { received <- readExactly(t, pair.client, 3000, time.Now().Add(5*time.Second)) }()
+			go func() {
+				_ = pair.client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				replies := make([]byte, 3000)
+				got, err := io.ReadFull(pair.client, replies)
+				if err != nil {
+					t.Logf("the caller's read stopped after %d bytes: %v", got, err)
+				}
+				received <- replies[:got]
+			}()
 			expectData(t, line, []byte("x"))
 			flush(t, line)
 			if got := <-received; !bytes.Equal(got, repeated(request(wont, telnetTypeOption), 1000)) {
-				t.Fatalf("the replies to a thousand DO 24 were not a thousand WONT 24")
+				t.Fatalf("the replies to a thousand DO 24 were %d bytes, not a thousand WONT 24", len(got))
 			}
 		})
 	})
