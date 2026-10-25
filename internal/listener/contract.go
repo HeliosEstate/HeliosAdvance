@@ -1,107 +1,100 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package listener accepts callers on the engine's listening sockets and serves each one, from
-// accept to close.
+// Package listener is the listeners and the shared execution path: it accepts callers on the
+// engine's listening sockets and serves each one, from accept to close, whichever way it came in.
 //
-// It owns accepting callers on the listening sockets the program opened and hands it, one accept
-// loop per listening socket, until Stop; the cap of 100 open connections across them, and closing
-// a connection over the cap at once without writing to it; and each connection's life, from the
-// 70-second ceiling on the whole call, counted from accept, through keeping TCP urgent data in
-// line, the telnet package's Open and the session's Run, to shutting down its sending side,
-// reading and discarding until the caller closes or 3 seconds pass, and the close. Each
-// connection's context is made by Start, carries the ceiling, and is ended at once by Stop. After
-// a failed accept, unless Stop closed that socket, it pauses and accepts again, and writes
-// nothing; after Stop closes a socket, its accept loop ends.
+// It is built on the developer's design for Part 3, in his words: "There are two listeners, one
+// for Telnet and one for SSH. The listeners' job is just to accept the connections. It then hands
+// each connection off to a shared execution path as a class. That class defines identical
+// primitives that the shared execution uses." His Telnet listener and SSH listener are each a
+// Kind: one kind of connection's listeners, in the glossary's sense, one listening socket each,
+// and its Open. The class is KindConnection, the identical primitives: SendChar and RecvChar, the
+// page's; Flush and Echoes, which textio's Chars asks of every kind of connection; and Close, the
+// kind's own close. Telnet's is the telnet package's Line, made by its Accept; SSH's is the ssh
+// package's Channel. Each accepted connection is handed to the shared execution path with its
+// kind's Open, and the path makes it the kind's object there, so that negotiation and the
+// handshake count toward the cap and the ceiling: the developer's decision of 2026-10-25.
 //
-// It does not own negotiation or the Telnet side of the caller's characters, which are the telnet
-// package's; reading a line and its echo, which are the textio package's; nor what the call says
-// and asks, the greeting and the name among them, which is the session's. The command line,
-// opening the listening sockets, the root check, the local log and the stop signals belong to the
-// program. Later layers own the per-source cap, settings and the central audit system. It has no
-// files and writes no local log.
+// It owns the listeners: one accept loop per listening socket, which only accepts, until Stop;
+// after a failed accept, unless Stop closed that socket, it pauses and accepts again, and writes
+// nothing; after Stop closes a socket, its accept loop ends. It owns the shared execution path:
+// the cap of 100 open connections across every listener, and closing a connection over the cap at
+// once without writing to it; and each connection's life, from the 70-second ceiling on the whole
+// call, counted from accept, through its kind's Open, textio.New over the KindConnection and the
+// session's Run, to the KindConnection's Close once the call is answered, and the close. Each
+// connection's context is made by Start, carries the ceiling, and is ended at once by Stop.
+//
+// It does not own negotiation, the handshake, urgent data or either kind's own close, which are
+// each kind of connection's; it imports neither. Reading a line and its echo are the textio
+// package's; what the call says and asks, the greeting and the name among them, is the session's.
+// The command line, opening the listening sockets, reading the host key, the root check, the local
+// log and the stop signals belong to the program, which pairs each kind's sockets with its Open.
+// Later layers own the per-source cap, settings and the central audit system. It has no files and
+// writes no local log.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
 //
 // # Untrusted input
 //
-// Two things cross the trust boundary at the network listener. Every byte the caller sends: until
-// Run returns, the telnet package reads it and the textio package edits it; after Run returns
-// Answered, this package reads it into a fixed buffer and discards it unread, and what the Line
-// had read and not handed on is dropped with the Line. And how the caller behaves: how many
-// connections and how fast, silence, never reading; the cap and the ceiling bound both. There is
-// no fuzz target here: this package parses nothing, and every byte read for meaning goes to
-// telnet's Receive and Strip and textio's Edit.
+// Two things cross the trust boundary at the network listeners. Every byte the caller sends: the
+// kind of connection reads it, through Open, the KindConnection and its Close, and the textio
+// package edits it; this package reads none. And how the caller behaves: how many connections and
+// how fast, silence, never reading, a handshake or a negotiation that never ends; the cap and the
+// ceiling bound all of them, for every kind alike. There is no fuzz target here: this package
+// parses nothing.
 //
 // # What it needs from its callers
 //
 // Listening TCP sockets, already open, each handed to one Start only and not used by the caller
-// after a Start that returned a Listener; after a refused Start, the caller closes them.
+// after a Start that returned a Listener; after a refused Start, the caller closes them. For each
+// kind, an Open that makes an accepted connection its kind's object under the context it is given,
+// returns an error with a nil KindConnection rather than a KindConnection holding a nil object,
+// and leaves nothing of its own running once the connection is closed.
 //
 // # Each connection
 //
-// Urgent data is kept in line (SO_OOBINLINE) because RFC 6093 section 6 requires it of an
-// application that still uses urgent data, as Telnet's Synch does: without it a Synch's DM byte
-// leaves the stream, and the lone IAC before it would swallow the caller's next character. The
-// standard library has no call for it, so it is set through the connection's SyscallConn with
-// syscall.SetsockoptInt, at the socket level: on Linux the value is syscall.SO_OOBINLINE, 0x0A; on
-// Windows, where the syscall package names none, it is Winsock's SO_OOBINLINE, 0x0100. Set after
-// accept, it also keeps in line urgent data that arrived before accept (probed on both).
-//
 // These lines are for a connection kept under the cap; one over it is closed at once, as above.
-// A close with the caller's bytes still unread may reach the caller as a reset rather than an
-// orderly end of stream; either is the close the lines below ask for.
 //
-//   - The listener package shall keep the caller's urgent data in line, so that a Synch, IAC with
-//     DM sent as urgent data, reaches the telnet package whole and, after negotiation, the
-//     caller's next character after it is read as data.
-//   - The listener package shall set SO_OOBINLINE on the connection before it reads from or writes
-//     to it. [read]
-//   - If SO_OOBINLINE cannot be set, then the listener package shall close the connection without
-//     writing to it. [read]
-//   - Once SO_OOBINLINE is set, the listener package shall call telnet.Open and then, with
-//     textio.New over the Line Open returns, session.Run, each once, under the connection's
-//     context, from the connection's own goroutine, whichever Outcome Open returns. [read]
-//   - When Run returns session.Answered, the listener package shall shut down the connection's
-//     sending side, then read and discard until the caller closes or ClosingWaitSeconds pass, no
-//     later than the ceiling, then close the connection.
-//   - If shutting down the sending side or setting the closing wait's read deadline fails, then
-//     the listener package shall close the connection at once. [read]
-//   - When Open returns an error, or Run returns anything but session.Answered, the listener
-//     package shall close the connection without writing to it.
-//   - The listener package shall set the read deadline for the closing wait itself, and rely on no
-//     deadline a call of the telnet or textio package left. [read]
+//   - The listener package shall call the kind's Open once, under the connection's context, from
+//     the connection's own goroutine. [read]
+//   - When Open returns a KindConnection and no error, the listener package shall call
+//     session.Run once, with textio.New over it, under the connection's context, from the
+//     connection's own goroutine. [read]
+//   - When Run returns session.Answered, the listener package shall call the KindConnection's
+//     Close once, under the connection's context, and then close the connection.
+//   - When Open returns an error or a nil KindConnection, or Run returns anything but
+//     session.Answered, the listener package shall close the connection without writing to it and
+//     without calling Close.
+//   - When the connection's context ends, the listener package shall close the connection at once.
 //
 // # Lines for the package
 //
-//   - The listener package shall read a caller's bytes itself only after Run returns Answered, only
-//     into a buffer of DiscardBufferSize bytes, and keep no copy of them. [read]
-//   - The listener package shall write nothing to a connection itself: every byte it sends goes
-//     through the telnet package's Open and Line. [read]
+//   - The listener package shall read nothing from a connection and write nothing to one itself:
+//     every byte goes through its kind's Open and KindConnection. [read]
+//   - The listener package's code shall treat every Kind alike, and name no kind of connection.
+//     [read]
 //   - The listener package shall write nothing to standard output or standard error. [read]
-//   - The listener package shall import nothing outside the Go standard library and the telnet,
-//     textio and session packages. [read]
+//   - The listener package shall import nothing outside the Go standard library and the textio
+//     and session packages. [read]
 package listener
 
 import (
+	"context"
 	"errors"
 	"net"
+
+	"github.com/heliosestate/heliosadvance/internal/textio"
 )
 
 const (
 	// ConnectionCap is the number of open connections across every listening socket. Fixed in
 	// this layer, as are the times below; settings once configuration exists.
 	ConnectionCap = 100
-	// CeilingSeconds is the whole call, counted from accept, over negotiation, the name, the
-	// shutdown and the closing wait. It is what ends a caller that never reads, whose stalled
-	// writes the name's own 60 seconds may never reach.
+	// CeilingSeconds is the whole call, counted from accept, over Open, the name and the kind's
+	// Close, for every kind alike. It is what ends a caller that never reads, whose stalled writes
+	// the name's own 60 seconds may never reach.
 	CeilingSeconds = 70
-	// ClosingWaitSeconds is the wait after shutting down the sending side, for the caller to
-	// close.
-	ClosingWaitSeconds = 3
-	// DiscardBufferSize is the fixed buffer read into after Run returns Answered: nothing the
-	// caller sends grows it.
-	DiscardBufferSize = 256
 	// AcceptPauseFirstMilliseconds is the first pause before the next Accept after a failure; it
 	// doubles after each further failure, up to AcceptPauseMostMilliseconds.
 	AcceptPauseFirstMilliseconds = 5
@@ -109,24 +102,54 @@ const (
 	AcceptPauseMostMilliseconds = 1000
 )
 
-// ErrNoListeners means Start was given no listening socket, or one that is nil.
-var ErrNoListeners = errors.New("listener: no listening socket, or a nil one")
+// ErrNoListeners means Start was given no Kind, a Kind with no listening socket or a nil one, or
+// a Kind with no Open.
+var ErrNoListeners = errors.New("listener: no listener, or one without sockets or Open")
 
-// Listener is one run's accepting: its listening sockets, its cap and its connections. A Listener
-// not made by Start, or nil, does nothing, and Stop on it returns at once.
+// KindConnection is a connection as its kind's object: the class of the developer's design, whose
+// identical primitives the shared execution path uses. Declared here, where it is used.
+type KindConnection interface {
+	// SendChar, RecvChar, Flush and Echoes are the kind's character calls, which textio builds
+	// the session's calls on.
+	textio.Chars
+	// Close is the kind's own close once the call is answered, waiting no later than the
+	// context's deadline: for Telnet, shutting down the sending side and the closing wait; for
+	// SSH, the end of the channel and its wait. It leaves closing the connection to this package.
+	Close(ctx context.Context) error
+}
+
+// Open makes one accepted connection its kind's object under the call's context: Telnet's
+// negotiation, SSH's handshake and channel. On an error it returns a nil KindConnection, never one
+// holding a nil object, and the shared execution path closes the connection without writing to
+// it. A kind whose way in returns its own type, as telnet.Accept returns *telnet.Line, is adapted
+// by the program so that an error gives a nil KindConnection.
+type Open func(ctx context.Context, connection *net.TCPConn) (KindConnection, error)
+
+// Kind is one kind of connection: its listeners, one listening socket each, and its Open.
+type Kind struct {
+	// Sockets are the kind's listening TCP sockets, which the program opened.
+	Sockets []*net.TCPListener
+	// Open makes each connection accepted on Sockets the kind's object.
+	Open Open
+}
+
+// Listener is one run's listeners and shared execution path: its listening sockets, its cap and
+// its connections. A Listener not made by Start, or nil, does nothing, and Stop on it returns at
+// once.
 type Listener struct {
 	state listenerState
 }
 
-// Start is the one call that puts the engine's listening sockets to work: the operating system's
-// TCP sockets, which the program opened, so that each accepted connection is a *net.TCPConn whose
-// sending side can be shut down on its own. It starts one accept loop per listening socket and
-// returns at once; each loop runs until Stop. Each accepted connection is served on its own
-// goroutine. It refuses before it accepts anything, leaves nothing running, and returns a nil
-// Listener with ErrNoListeners, its only error. When it refuses, it closes none of the sockets
-// it was given: they stay the caller's to close.
-func Start(listeners []*net.TCPListener) (*Listener, error) {
-	return start(listeners)
+// Start is the one call that puts the engine's listeners to work, every kind's at once, on one
+// shared execution path, so that the cap counts every kind together: the operating system's TCP
+// sockets, which the program opened, so that each accepted connection is a *net.TCPConn. It starts
+// one accept loop per listening socket and returns at once; each loop runs until Stop. Each
+// accepted connection is served on its own goroutine, with the Open of the Kind whose socket
+// accepted it. It refuses before it accepts anything, leaves nothing running, and returns a nil
+// Listener with ErrNoListeners, its only error. When it refuses, it closes none of the sockets it
+// was given: they stay the caller's to close.
+func Start(kinds []Kind) (*Listener, error) {
+	return start(kinds)
 }
 
 // Stop closes every listening socket and every open connection at once, and returns when nothing
