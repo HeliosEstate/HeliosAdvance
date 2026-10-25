@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"time"
 )
@@ -19,7 +20,10 @@ const replyRoom = 3
 // lineState keeps a read's error until the bytes that came with it are read, since the caller's
 // last words arrive together with its closing and must not be lost to it.
 type lineState struct {
-	connection    Conn
+	connection Conn
+	// accepted is the connection Accept made this Line over: only Close needs it, to shut down the
+	// sending side, and its being set is what makes a Line Accept's.
+	accepted      *net.TCPConn
 	negotiation   *Negotiation
 	receiveBuffer [ReadBufferSize]byte
 	receiveNext   int
@@ -237,4 +241,29 @@ func (line *Line) readMore(ctx context.Context, deadline time.Time) error {
 
 func (line *Line) echoes() bool {
 	return line.usable() && line.state.negotiation.state.echo == stateYes
+}
+
+func (line *Line) close(ctx context.Context) error {
+	if !line.usable() || line.state.accepted == nil {
+		return ErrConnectionFailed
+	}
+	if err := contextEnded(ctx); err != nil {
+		return err
+	}
+	connection := line.state.accepted
+	if err := connection.CloseWrite(); err != nil {
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	waitEnd := time.Now().Add(ClosingWaitSeconds * time.Second)
+	if err := connection.SetReadDeadline(connectionDeadline(ctx, waitEnd)); err != nil {
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	release := wakeOnEnd(ctx, connection)
+	defer release()
+	var discard [DiscardBufferSize]byte
+	for {
+		if _, err := connection.Read(discard[:]); err != nil {
+			return contextEnded(ctx)
+		}
+	}
 }
