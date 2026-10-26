@@ -147,8 +147,8 @@ var (
 )
 
 var (
-	// ErrCallerClosed means the caller closed the connection before the shell. It matches io.EOF
-	// through errors.Is.
+	// ErrCallerClosed means the caller closed the connection or the session channel before the
+	// shell. It matches io.EOF through errors.Is.
 	ErrCallerClosed = errors.New("ssh: the caller closed the connection")
 	// ErrConnectionFailed means any other failure: a handshake that fails, a sign-in method other
 	// than none, a read or write that fails. It never carries the library's text.
@@ -203,10 +203,11 @@ func ReadHostKey(path string) (*HostKey, error) {
 // a failure; a disconnect message is the caller's close at any point. The races, where either
 // may come back: a plain close in the handshake's middle (the developer's, 2026-10-25), a
 // request queued just before the channel's close, and a refusal that fails after the caller's
-// close. Until the shell, the Channel holds at most ReadBufferSize bytes of channel data and asks
-// for no more once that is full, and the library shows an end of file only once the data before
-// it is read: a caller that sends ReadBufferSize bytes or more before the shell and then end of
-// file is waited on until the shell or the context's end.
+// close.
+//
+// End of file before the shell changes nothing (Part 7, the developer's of 2026-10-26): the
+// channel stays open after it (RFC 4254), so Accept goes on waiting, and once the shell has
+// started the Channel returns the data sent before the end of file, then io.EOF.
 //
 //	The caller opens or sends            Accept answers
 //	sign-in none, any username           accepted
@@ -220,6 +221,7 @@ func ReadHostKey(path string) (*HostKey, error) {
 //	any global request                   refused
 //	ping@openssh.com                     the library's pong
 //	data on the channel                  kept, in order, for the Channel
+//	end of file, before shell            nothing changes; Accept waits on
 //	extended data                        discarded
 //
 // Refused means nothing changes and, where the caller asks for a reply, the reply is failure.
@@ -235,8 +237,8 @@ func ReadHostKey(path string) (*HostKey, error) {
 //     ErrConnectionFailed.
 //   - If the caller closes the connection after the handshake, sends a disconnect message, or
 //     closes the session channel, before the shell, then Accept shall return ErrCallerClosed.
-//   - If the caller sends end of file on the session channel before the shell, having sent fewer
-//     than ReadBufferSize bytes of channel data, then Accept shall return ErrCallerClosed.
+//   - If the caller sends end of file on the session channel before the shell, then Accept shall
+//     not return because of it; every other line still applies.
 //   - If the context has ended when Accept is called, or ends while it waits, then Accept shall
 //     return ErrDeadlineEnded wrapping the context's error, without writing more.
 //   - If the context has ended when anything else fails, then Accept shall return
@@ -252,8 +254,9 @@ func Accept(ctx context.Context, connection *net.TCPConn, key *HostKey) (*Channe
 // textio package's Chars. It keeps a receive buffer of the caller's data not yet read and a send
 // buffer of SendBufferSize, and goes on answering what the caller opens or sends: a second shell,
 // a pty-req after the shell and every other request or channel are refused, so the greeting never
-// comes twice and the echo never changes mid-name. When the caller sends end of file or closes the
-// channel, the library answers with the channel close SSH requires, the one write after it. A
+// comes twice and the echo never changes mid-name. When the caller closes the channel, the
+// library answers with the channel close SSH requires, the one write after it; end of file needs
+// no answer. A
 // Channel not made by Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes
 // returns false. One goroutine per Channel.
 //
