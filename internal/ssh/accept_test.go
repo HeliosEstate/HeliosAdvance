@@ -388,6 +388,32 @@ func TestAccept(t *testing.T) {
 				client.request("pty-req", true, ptyRequest("xterm", []byte{0}))
 				client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
 			}},
+			// A disconnect is the caller closing on purpose, which the engine can tell from a
+			// failure at every stage; the socket stays open, so that only the disconnect ends the
+			// handshake.
+			{"the caller sends a disconnect after the version lines", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.sendVersion()
+				if _, err := client.readVersion(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatalf("the engine's version line: %v", err)
+				}
+				client.sendPacket(disconnectMessage())
+			}},
+			{"the caller sends a disconnect after both key exchange offers", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.sendVersion()
+				client.readServerKexInit(time.Now().Add(5 * time.Second))
+				client.sendKexInit(defaultOffer("curve25519-sha256", true))
+				client.sendPacket(disconnectMessage())
+			}},
+			{"the caller sends a disconnect after the key exchange, before signing in", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.handshake(curveExchange(t, "curve25519-sha256"), true)
+				client.sendPacket(disconnectMessage())
+			}},
 		}
 		for _, row := range rows {
 			t.Run(row.name+": ErrCallerClosed", func(t *testing.T) {
@@ -592,6 +618,12 @@ func expectNothingMore(t *testing.T, channel *ssh.Channel) {
 	if got, err := channel.RecvChar(t.Context(), time.Now().Add(quietFor)); !errors.Is(err, errDeadline) {
 		t.Fatalf("RecvChar gave %q, %v, want its deadline to pass", got, err)
 	}
+}
+
+// disconnectMessage is SSH_MSG_DISCONNECT with reason 11, by application, as RFC 4253 section 11.1
+// lays it out.
+func disconnectMessage() []byte {
+	return message(messageDisconnect).uint32Value(11).text("bye").text("").data
 }
 
 // expectNothingWritten sends a request that would be answered and sees no answer: the engine
