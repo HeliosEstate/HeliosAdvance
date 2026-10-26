@@ -568,19 +568,10 @@ func TestName(t *testing.T) {
 		t.Run("callers that close once Hello arrives: their places are free at once", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			var closed time.Time
-			var lastSent sending
-			for range connectionCap {
-				call := dial(t, address)
-				stream := call.record(call.connected.Add(progressLimit))
-				lastSent = call.send(t, join(answers, []byte("n\r")))
-				stream.expectStream(t, join(opening, asked, echoed("n")))
-				_ = call.connection.Close()
-				closed = time.Now()
-			}
-			// The nearest fault frees a place only when the last caller's closing wait's 3
-			// seconds end, and that wait began no sooner than its write.
-			expectServedBy(t, address, windowEnd(t, closed, lastSent.began.Add(closingWaitLimit)))
+			released, closed := helloAndClose(t, address)
+			// The nearest fault frees a place only when a closing wait's 3 seconds end, and none
+			// began before the names were sent.
+			expectServedBy(t, address, windowEnd(t, closed, released.Add(closingWaitLimit)))
 		})
 		t.Run("a caller that stays: closed 3 seconds after the shutdown, not before, its bytes read meanwhile", func(t *testing.T) {
 			t.Parallel()
@@ -612,16 +603,26 @@ func TestName(t *testing.T) {
 		t.Run("a caller that closes mid-name: nothing after its close, and its place free", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			for range connectionCap {
-				call := dial(t, address)
-				stream := call.record(call.connected.Add(5 * time.Second))
-				call.send(t, join(refused, []byte("ab")))
-				stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
+			// The hundred are set up first, mid-name, and then half-close together, so the window
+			// below does not depend on how long a runner took to dial them.
+			callers := make([]caller, connectionCap)
+			streams := make([]*recording, connectionCap)
+			for index := range callers {
+				callers[index] = dial(t, address)
+				streams[index] = callers[index].record(callers[index].connected.Add(nameLimit))
+				callers[index].send(t, join(refused, []byte("ab")))
+				streams[index].waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
+			}
+			halfClosed := time.Now()
+			for _, call := range callers {
 				_ = call.connection.CloseWrite()
+			}
+			for _, stream := range streams {
 				stream.expectStream(t, join(opening, asked))
 			}
-			// The nearest fault misses the close and holds the place for the name's 60 seconds.
-			expectServedBy(t, address, time.Now().Add(wideMargin))
+			// The nearest fault runs a closing wait after the half-close and holds each place up
+			// to its 3 seconds; one that misses the close holds it for the name's 60 seconds.
+			expectServedBy(t, address, windowEnd(t, time.Now(), halfClosed.Add(closingWaitLimit)))
 		})
 		t.Run("a caller that resets mid-name: its place free", func(t *testing.T) {
 			t.Parallel()

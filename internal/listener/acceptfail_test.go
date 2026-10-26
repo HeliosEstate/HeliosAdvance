@@ -101,13 +101,15 @@ func failedSpell(t *testing.T, offset time.Duration) {
 	child := startChild(t)
 
 	held := make([]caller, child.free)
+	streams := make([]*recording, len(held))
 	for index := range held {
 		held[index] = dial(t, child.addresses[index%len(child.addresses)])
 		held[index].readOpening(t, held[index].connected.Add(progressLimit))
-	}
-	streams := make([]*recording, len(held))
-	for index, call := range held[freedDescriptors:] {
-		streams[index+freedDescriptors] = call.record(call.connected.Add(negotiationLimit + 2*wideMargin))
+		// Recorded from its opening on, so a greeting is timed when it came, however long the
+		// rest took to set up.
+		if index >= freedDescriptors {
+			streams[index] = held[index].record(held[index].connected.Add(negotiationLimit + 2*wideMargin))
+		}
 	}
 
 	var waiting []caller

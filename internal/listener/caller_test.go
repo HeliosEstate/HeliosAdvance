@@ -254,16 +254,46 @@ func expectRefused(t *testing.T, address string) {
 // the cap. A caller served after it says nothing of the cap, since a place may rightly have come
 // back first: the engine can accept a caller late on a loaded runner (287 ms after its dial,
 // while the cap was full, ubuntu-24.04-arm, 2026-10-26).
+// A probe dialed at or after held did not reach the row's case, and fails as a test fault
+// whatever its outcome. The engine's timers may wake early, so held allows early.
 func expectRefusedUntil(t *testing.T, address string, held time.Time) {
 	t.Helper()
-	isServed, _, arrived := served(t, address)
+	isServed, call, arrived := served(t, address)
 	switch {
+	case !call.dialed.Before(held):
+		t.Fatalf("test fault: the probe was dialed %v after a place could come back, so it tells nothing of the cap", call.dialed.Sub(held))
 	case !isServed:
-	case arrived.Before(held):
+	case arrived.Before(held.Add(-early)):
 		t.Fatalf("a caller over the cap was served, %v before a place could come back", held.Sub(arrived))
 	default:
-		t.Fatalf("test fault: the engine accepted the caller %v after a place could come back, so it tells nothing of the cap", arrived.Sub(held))
+		t.Fatalf("cannot tell a caller over the cap from one served after a place could come back: dialed %v before, served %v after", held.Sub(call.dialed), arrived.Sub(held))
 	}
+}
+
+// helloAndClose fills the cap with callers waiting at the prompt, then types their names
+// together and closes each once it has seen the shutdown. It returns when the names' writes
+// began, before which no closing wait can start, and when the last close was made. Set up
+// first, the hundred's closing waits start together, however long a runner took to dial them.
+func helloAndClose(t *testing.T, address string) (released, closed time.Time) {
+	t.Helper()
+	callers := make([]caller, connectionCap)
+	streams := make([]*recording, connectionCap)
+	for index := range callers {
+		callers[index] = dial(t, address)
+		streams[index] = callers[index].record(callers[index].connected.Add(nameLimit))
+		callers[index].send(t, answers)
+		streams[index].waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
+	}
+	released = time.Now()
+	for _, call := range callers {
+		call.send(t, []byte("n\r"))
+	}
+	for index, stream := range streams {
+		// End of stream is the shutdown: the caller is now in Close's wait.
+		stream.expectStream(t, join(opening, asked, echoed("n")))
+		_ = callers[index].connection.Close()
+	}
+	return released, time.Now()
 }
 
 // windowEnd closes a window that opens at from, for a claim whose nearest fault comes no sooner
@@ -284,16 +314,17 @@ func windowEnd(t *testing.T, from, fault time.Time) time.Time {
 }
 
 // expectServedBy dials until a caller is served, which must happen by the deadline: a caller
-// refused before then is tried again.
+// refused before then is tried again. Served is when the opening arrived, not when the dial
+// connected: a caller's connect completes before the engine accepts it.
 func expectServedBy(t *testing.T, address string, deadline time.Time) time.Time {
 	t.Helper()
 	for {
-		if isServed, call, _ := served(t, address); isServed {
-			if call.connected.After(deadline) {
-				t.Fatalf("no caller was served until %v past the deadline", call.connected.Sub(deadline))
+		if isServed, _, arrived := served(t, address); isServed {
+			if arrived.After(deadline) {
+				t.Fatalf("no caller was served until %v past the deadline", arrived.Sub(deadline))
 			}
-			t.Logf("a caller was served %v before the deadline", deadline.Sub(call.connected))
-			return call.connected
+			t.Logf("a caller was served %v before the deadline", deadline.Sub(arrived))
+			return arrived
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("every caller was refused until the deadline")

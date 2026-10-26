@@ -131,19 +131,10 @@ func TestCall(t *testing.T) {
 		t.Run("callers that close at once: their places are free at once", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			var closed time.Time
-			var lastSent sending
-			for range connectionCap {
-				call := dial(t, address)
-				stream := call.record(call.connected.Add(progressLimit))
-				lastSent = call.send(t, join(answers, []byte("n\r")))
-				stream.expectStream(t, join(opening, asked, echoed("n")))
-				_ = call.connection.Close()
-				closed = time.Now()
-			}
-			// The nearest fault frees a place only when the last caller's closing wait's 3
-			// seconds end, and that wait began no sooner than its write.
-			expectServedBy(t, address, windowEnd(t, closed, lastSent.began.Add(closingWaitLimit)))
+			released, closed := helloAndClose(t, address)
+			// The nearest fault frees a place only when a closing wait's 3 seconds end, and none
+			// began before the names were sent.
+			expectServedBy(t, address, windowEnd(t, closed, released.Add(closingWaitLimit)))
 		})
 		t.Run("callers that stay: closed 3 seconds after the shutdown, not before", func(t *testing.T) {
 			t.Parallel()
@@ -212,8 +203,12 @@ func TestCall(t *testing.T) {
 			for range 3 {
 				expectRefused(t, address)
 			}
-			_ = callers[0].connection.Close()
-			expectServedBy(t, address, time.Now().Add(wideMargin))
+			// The last caller dialed leaves, so the nearest fault, one that misses its close and
+			// frees the place only when its negotiation's 3 seconds end, is timed from a moment
+			// just before the window, however long a runner took to dial the hundred.
+			leaving := callers[len(callers)-1]
+			_ = leaving.connection.Close()
+			expectServedBy(t, address, windowEnd(t, time.Now(), leaving.dialed.Add(negotiationLimit)))
 			expectRefused(t, address)
 		})
 		for _, sockets := range []int{1, 2} {
