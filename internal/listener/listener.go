@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/session"
-	"github.com/heliosestate/heliosadvance/internal/telnet"
 	"github.com/heliosestate/heliosadvance/internal/textio"
 )
 
@@ -29,16 +28,25 @@ type listenerState struct {
 	open     int
 }
 
-func start(sockets []*net.TCPListener) (*Listener, error) {
-	if len(sockets) == 0 || slices.Contains(sockets, nil) {
+func start(kinds []Kind) (*Listener, error) {
+	if len(kinds) == 0 {
 		return nil, ErrNoListeners
+	}
+	for _, kind := range kinds {
+		if len(kind.Sockets) == 0 || slices.Contains(kind.Sockets, nil) || kind.Open == nil {
+			return nil, ErrNoListeners
+		}
 	}
 	listener := &Listener{}
 	state := &listener.state
-	state.sockets = slices.Clone(sockets)
 	state.stopContext, state.cancel = context.WithCancel(context.Background())
-	for _, socket := range state.sockets {
-		state.goroutines.Go(func() { state.acceptLoop(socket) })
+	for _, kind := range kinds {
+		state.sockets = append(state.sockets, kind.Sockets...)
+	}
+	for _, kind := range kinds {
+		for _, socket := range kind.Sockets {
+			state.goroutines.Go(func() { state.acceptLoop(socket, kind.Open) })
+		}
 	}
 	return listener, nil
 }
@@ -46,7 +54,7 @@ func start(sockets []*net.TCPListener) (*Listener, error) {
 // acceptLoop's pause is its own, so one socket failing to accept never slows another. The pause
 // is capped at AcceptPauseMostMilliseconds, which is what keeps "accept again within 1 second"
 // true however long accepting keeps failing.
-func (state *listenerState) acceptLoop(socket *net.TCPListener) {
+func (state *listenerState) acceptLoop(socket *net.TCPListener, open Open) {
 	pause := time.Duration(AcceptPauseFirstMilliseconds) * time.Millisecond
 	longest := time.Duration(AcceptPauseMostMilliseconds) * time.Millisecond
 	for {
@@ -74,7 +82,7 @@ func (state *listenerState) acceptLoop(socket *net.TCPListener) {
 		}
 		state.goroutines.Go(func() {
 			defer state.givePlace()
-			state.serve(connection, acceptedAt)
+			state.serve(connection, open, acceptedAt)
 		})
 	}
 }
@@ -96,7 +104,7 @@ func (state *listenerState) givePlace() {
 }
 
 // A failure in a call ends it without a log: the local log holds only the start and its failure.
-func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time) {
+func (state *listenerState) serve(connection *net.TCPConn, open Open, acceptedAt time.Time) {
 	ceiling := acceptedAt.Add(CeilingSeconds * time.Second)
 	ctx, cancel := context.WithDeadline(state.stopContext, ceiling)
 	closed := make(chan struct{})
@@ -111,43 +119,15 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 		<-closed
 	}()
 
-	if err := keepUrgentInLine(connection); err != nil {
+	kindConnection, err := open(ctx, connection)
+	if err != nil || kindConnection == nil {
 		return
 	}
-	line, _, err := telnet.Open(ctx, connection)
-	if err != nil {
+	if ending, err := session.Run(ctx, textio.New(kindConnection)); err != nil || ending != session.Answered {
 		return
 	}
-	if ending, err := session.Run(ctx, textio.New(line)); err != nil || ending != session.Answered {
-		return
-	}
-	if err := connection.CloseWrite(); err != nil {
-		return
-	}
-	closingEnd := time.Now().Add(ClosingWaitSeconds * time.Second)
-	if err := connection.SetReadDeadline(closingEnd); err != nil {
-		return
-	}
-	var discard [DiscardBufferSize]byte
-	for {
-		if _, err := connection.Read(discard[:]); err != nil {
-			return
-		}
-	}
-}
-
-// keepUrgentInLine is set before anything is read, since a Synch whose DM byte leaves the stream
-// would leave its IAC to swallow the caller's next character.
-func keepUrgentInLine(connection *net.TCPConn) error {
-	raw, err := connection.SyscallConn()
-	if err != nil {
-		return err
-	}
-	var setErr error
-	if err := raw.Control(func(descriptor uintptr) { setErr = setUrgentInLine(descriptor) }); err != nil {
-		return err
-	}
-	return setErr
+	//nolint:errcheck // the connection is closed next whatever the kind's close returns
+	kindConnection.Close(ctx)
 }
 
 // stop cancels before it closes the sockets so that an accept loop sees the stop before it sees

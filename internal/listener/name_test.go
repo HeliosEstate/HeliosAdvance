@@ -9,6 +9,7 @@ package listener_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -18,6 +19,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/listener"
+	"github.com/heliosestate/heliosadvance/internal/telnet"
 )
 
 // The page's prompt and limits, written here so a changed constant in the engine cannot move a
@@ -116,7 +120,7 @@ func runNameRow(t *testing.T, row nameRow) {
 
 func TestName(t *testing.T) {
 	t.Parallel()
-	t.Run("When the caller has answered both option requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.", func(t *testing.T) {
+	t.Run("When a Telnet caller has answered both option requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.", func(t *testing.T) {
 		t.Parallel()
 		rows := []struct {
 			name   string
@@ -255,7 +259,7 @@ func TestName(t *testing.T) {
 			call.send(t, make([]byte, 1024))
 		})
 	})
-	t.Run("When `Hello <name>` is written, the engine shall shut down its sending side of the connection.", func(t *testing.T) {
+	t.Run("When `Hello <name>` is written to a Telnet caller, the engine shall shut down its sending side of the connection.", func(t *testing.T) {
 		t.Parallel()
 		for name, typed := range map[string]string{"CR": "bob\r", "LF": "bob\n"} {
 			t.Run("a name ended by "+name+": end of stream at once after Hello, and the engine still takes what the caller sends", func(t *testing.T) {
@@ -340,7 +344,7 @@ func TestName(t *testing.T) {
 			})
 		}
 	})
-	t.Run("Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after negotiation, and every character past the 30th.", func(t *testing.T) {
+	t.Run("Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
 		t.Parallel()
 		var others []byte
 		for code := range 255 {
@@ -369,7 +373,7 @@ func TestName(t *testing.T) {
 			})
 		}
 	})
-	t.Run("After negotiation ends and until the name ends, the engine shall answer each option request as it did during negotiation, and discard every other Telnet command without reply.", func(t *testing.T) {
+	t.Run("After negotiation ends and until a Telnet caller's name ends, the engine shall answer each option request as it did during negotiation, and discard every other Telnet command without reply.", func(t *testing.T) {
 		t.Parallel()
 		rows := []nameRow{
 			{name: "ab, DO 24, c CR: WONT 24 in its place among the echo", answer: answers, typed: join([]byte("ab"), request(doVerb, telnetTypeOption), []byte("c\r")),
@@ -438,7 +442,7 @@ func TestName(t *testing.T) {
 			t.Logf("%d replies before the greeting, %d after", (askedAt-len(opening))/3, answered-(askedAt-len(opening))/3)
 		})
 	})
-	t.Run("While the caller has agreed to ECHO, the engine shall echo each character it adds to the name, write BS, space, BS for each it removes, and write CR LF when the name ends.", func(t *testing.T) {
+	t.Run("While a Telnet caller has agreed to ECHO, the engine shall echo each character it adds to the name, write BS, space, BS for each it removes, and write CR LF when the name ends.", func(t *testing.T) {
 		t.Parallel()
 		rows := []nameRow{
 			{name: "abc CR", answer: answers, typed: []byte("abc\r"), after: echoed("abc")},
@@ -462,7 +466,7 @@ func TestName(t *testing.T) {
 			stream.expectStream(t, join(opening, asked, []byte("b\r\n"), helloTo("ab")))
 		})
 	})
-	t.Run("While the caller has not agreed to ECHO, the engine shall echo nothing.", func(t *testing.T) {
+	t.Run("While a Telnet caller has not agreed to ECHO, the engine shall echo nothing.", func(t *testing.T) {
 		t.Parallel()
 		rows := []nameRow{
 			{name: "refused: abc BS d CR", answer: refused, typed: []byte("abc\x08d\r"), after: helloTo("abd")},
@@ -519,7 +523,7 @@ func TestName(t *testing.T) {
 		t.Parallel()
 		ceilingRows(t)
 	})
-	t.Run("The listener package shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as urgent data, reaches the telnet package whole and, after negotiation, the caller's next character after it is read as data.", func(t *testing.T) {
+	t.Run("Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as urgent data, reaches negotiation whole and, after negotiation, the caller's next character after it is read as data.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("ab, IAC, DM as urgent data, c CR, after negotiation: Hello abc", func(t *testing.T) {
 			t.Parallel()
@@ -548,7 +552,7 @@ func TestName(t *testing.T) {
 			stream.expectAskedAt(t, len(opening), sent, sent.Add(margin))
 		})
 	})
-	t.Run("When Run returns session.Answered, the listener package shall shut down the connection's sending side, then read and discard until the caller closes or ClosingWaitSeconds pass, no later than the ceiling, then close the connection.", func(t *testing.T) {
+	t.Run("When Run returns session.Answered, the listener package shall call the KindConnection's Close once, under the connection's context, and then close the connection.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("callers that close once Hello arrives: their places are free at once", func(t *testing.T) {
 			t.Parallel()
@@ -566,19 +570,22 @@ func TestName(t *testing.T) {
 		})
 		t.Run("a caller that stays: closed 3 seconds after the shutdown, not before, its bytes read meanwhile", func(t *testing.T) {
 			t.Parallel()
-			call, stream, _ := answeredCall(t, answers, []byte("n\r"), 5*time.Second)
+			call, stream, sent := answeredCall(t, answers, []byte("n\r"), 5*time.Second)
 			stream.expectStream(t, join(opening, asked, echoed("n")))
 			shutAt := stream.ended
 			// Bytes sent during the closing wait are read, so the close comes as no reset until it.
+			// The window opens 3 seconds after the name's CR went, a moment provably before the
+			// engine's shutdown: the caller's own sight of the shutdown can lag it on a loaded
+			// runner (ubuntu-24.04-arm, 2026-10-25, 74 ms early by that sight).
 			closedAt := call.awaitReset(t, shutAt.Add(closingWaitLimit+2*margin))
-			expectWithin(t, "the close", closedAt, shutAt.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
+			expectWithin(t, "the close", closedAt, sent.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
 		})
 		t.Run("Hello after 68 seconds: closed at the ceiling, not 3 seconds after the shutdown", func(t *testing.T) {
 			t.Parallel()
 			clampRows(t)
 		})
 	})
-	t.Run("When Open returns an error, or Run returns anything but session.Answered, the listener package shall close the connection without writing to it.", func(t *testing.T) {
+	t.Run("When Open returns an error or a nil KindConnection, or Run returns anything but session.Answered, the listener package shall close the connection without writing to it and without calling Close.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a caller that closes during negotiation: nothing after the opening", func(t *testing.T) {
 			t.Parallel()
@@ -612,6 +619,60 @@ func TestName(t *testing.T) {
 				_ = call.connection.Close()
 			}
 			expectServedBy(t, address, time.Now().Add(margin))
+		})
+		t.Run("a caller that half-closes mid-name: closed at once, with no closing wait", func(t *testing.T) {
+			t.Parallel()
+			call, stream, _ := answeredCall(t, refused, []byte("ab"), 5*time.Second)
+			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(margin))
+			closedAt := time.Now()
+			_ = call.connection.CloseWrite()
+			stream.expectStream(t, join(opening, asked))
+			expectWithin(t, "the engine's end", stream.ended, closedAt, closedAt.Add(margin))
+		})
+		t.Run("NoName at 60 seconds: closed then, with no closing wait", func(t *testing.T) {
+			t.Parallel()
+			call, stream, _ := answeredCall(t, answers, nil, nameLimit+negotiationLimit+5*time.Second)
+			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(margin))
+			promptAt := stream.byteAt(t, len(opening)+len(asked)-1)
+			// Whatever the caller sends after the 60 seconds meets a closed connection, not a
+			// closing wait that would take it.
+			closedAt := call.awaitReset(t, promptAt.Add(nameLimit+2*margin))
+			expectWithin(t, "the close", closedAt, call.connected.Add(nameLimit), promptAt.Add(nameLimit+margin))
+		})
+		t.Run("an Open that runs the real Accept and returns a nil KindConnection: closed at once after the opening, no greeting", func(t *testing.T) {
+			t.Parallel()
+			nilOpen := func(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
+				if _, err := telnet.Accept(ctx, connection); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			}
+			call := dial(t, startKind(t, 1, nilOpen)[0])
+			stream := call.record(call.connected.Add(5 * time.Second))
+			sent := call.send(t, answers)
+			stream.expectStream(t, opening)
+			expectWithin(t, "the engine's end", stream.ended, sent, sent.Add(margin))
+		})
+	})
+	t.Run("When the connection's context ends, the listener package shall close the connection at once.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("Stop with a silent caller and one in Close's wait: both closed at once", func(t *testing.T) {
+			t.Parallel()
+			engine, addresses := startListener(t, 1, openTelnet)
+			silent := dial(t, addresses[0])
+			silentStream := silent.record(silent.connected.Add(10 * time.Second))
+			closing := dial(t, addresses[0])
+			closingStream := closing.record(closing.connected.Add(10 * time.Second))
+			closing.send(t, join(answers, []byte("n\r")))
+			// End of stream is the shutdown: the closing caller is now in Close's wait.
+			closingStream.expectStream(t, join(opening, asked, echoed("n")))
+			silentStream.waitFor(t, len(opening), time.Now().Add(margin))
+			stoppedAt := time.Now()
+			go engine.Stop()
+			closedAt := closing.awaitReset(t, stoppedAt.Add(2*margin))
+			expectWithin(t, "the closing caller's close", closedAt, stoppedAt, stoppedAt.Add(margin))
+			silentStream.expectStream(t, opening)
+			expectWithin(t, "the silent caller's end", silentStream.ended, stoppedAt, stoppedAt.Add(margin))
 		})
 	})
 }

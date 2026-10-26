@@ -1086,8 +1086,14 @@ func TestLine(t *testing.T) {
 			}
 		})
 	})
-	t.Run("If the Line was not made by Open, or is nil, then Echoes shall return false.", func(t *testing.T) {
+	t.Run("If the Line was not made by Open or Accept, or is nil, then Echoes shall return false.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("a Line Accept made after DO ECHO: true", func(t *testing.T) {
+			t.Parallel()
+			if _, line := acceptedLine(t); !line.Echoes() {
+				t.Fatalf("a Line Accept made after DO DO does not echo")
+			}
+		})
 		t.Run("a nil Line", func(t *testing.T) {
 			t.Parallel()
 			var line *telnet.Line

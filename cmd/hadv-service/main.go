@@ -22,10 +22,12 @@ import (
 	"syscall"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
+	"github.com/heliosestate/heliosadvance/internal/ssh"
 )
 
 const (
-	defaultPort = "23"
+	defaultPort    = "23"
+	defaultSSHPort = "22"
 	// The addresses are the only ones the engine listens on, IPv4 first.
 	ipv4Address = "127.0.0.1"
 	ipv6Address = "::1"
@@ -47,10 +49,21 @@ func run(arguments []string, logOutput io.Writer) int {
 		return exitFailed
 	}
 
-	port, err := parseCommandLine(arguments)
+	options, err := parseCommandLine(arguments)
 	if err != nil {
 		log("start_failed", "malformed command line: "+err.Error())
 		return exitFailed
+	}
+
+	// Read before anything listens, so that a refused key opens no socket. The error is the ssh
+	// package's, which names the refusal and holds nothing of the file.
+	var hostKey *ssh.HostKey
+	if options.hostKeyPath != "" {
+		hostKey, err = ssh.ReadHostKey(options.hostKeyPath)
+		if err != nil {
+			log("start_failed", err.Error())
+			return exitFailed
+		}
 	}
 
 	// Registered before anything listens: a stop sent as soon as the started line is read must
@@ -58,20 +71,35 @@ func run(arguments []string, logOutput io.Writer) int {
 	stopContext, release := signal.NotifyContext(context.Background(), stopSignals()...)
 	defer release()
 
-	sockets, addresses, err := listen(stopContext, port)
+	telnetSockets, telnetAddresses, err := listen(stopContext, options.telnetPort)
 	if err != nil {
+		log("start_failed", "telnet listeners: "+err.Error())
+		return exitFailed
+	}
+	kinds := []listener.Kind{{Sockets: telnetSockets, Open: openTelnet}}
+	listeners := urls("telnet", telnetAddresses)
+
+	if hostKey != nil {
+		sshSockets, sshAddresses, err := listen(stopContext, options.sshPort)
+		if err != nil {
+			err = errors.Join(fmt.Errorf("ssh listeners: %w", err), closeAll(telnetSockets))
+			log("start_failed", err.Error())
+			return exitFailed
+		}
+		kinds = append(kinds, listener.Kind{Sockets: sshSockets, Open: sshOpener(hostKey)})
+		listeners = append(listeners, urls("ssh", sshAddresses)...)
+	}
+
+	engine, err := listener.Start(kinds)
+	if err != nil {
+		for _, kind := range kinds {
+			err = errors.Join(err, closeAll(kind.Sockets))
+		}
 		log("start_failed", err.Error())
 		return exitFailed
 	}
 
-	engine, err := listener.Start(sockets)
-	if err != nil {
-		err = errors.Join(err, closeAll(sockets))
-		log("start_failed", err.Error())
-		return exitFailed
-	}
-
-	log("started", strings.Join(addresses, ","))
+	log("started", strings.Join(listeners, ","))
 
 	<-stopContext.Done()
 	engine.Stop()
@@ -97,27 +125,64 @@ func newLocalLog(output io.Writer) func(key, value string) {
 	}
 }
 
-// parseCommandLine returns the port as its decimal string. A port given twice takes the last.
-func parseCommandLine(arguments []string) (string, error) {
-	port := defaultPort
-	flags := flag.NewFlagSet("hadv-service", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.Func("port", "port to listen on", func(value string) error {
-		// ParseUint with base 10 refuses the 0x prefix, a sign and underscores that flag.Int takes.
+// commandLine is what the sysop asked for: the ports as decimal strings, and the host key file
+// that turns SSH on.
+type commandLine struct {
+	telnetPort  string
+	sshPort     string
+	hostKeyPath string
+}
+
+// portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
+// prefix, a sign and underscores that flag.Int takes.
+func portFlag(port *string) func(string) error {
+	return func(value string) error {
 		parsed, err := strconv.ParseUint(value, 10, 16)
 		if err != nil {
 			return err
 		}
-		port = strconv.FormatUint(parsed, 10)
+		*port = strconv.FormatUint(parsed, 10)
+		return nil
+	}
+}
+
+// parseCommandLine takes the last of an option given twice.
+func parseCommandLine(arguments []string) (commandLine, error) {
+	options := commandLine{telnetPort: defaultPort, sshPort: defaultSSHPort}
+	sshPortGiven := false
+	flags := flag.NewFlagSet("hadv-service", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Func("port", "port to listen on for Telnet", portFlag(&options.telnetPort))
+	flags.Func("ssh-port", "port to listen on for SSH", func(value string) error {
+		sshPortGiven = true
+		return portFlag(&options.sshPort)(value)
+	})
+	flags.Func("ssh-host-key", "host key file, which turns SSH on", func(value string) error {
+		if value == "" {
+			return errors.New("the host key file's path is empty")
+		}
+		options.hostKeyPath = value
 		return nil
 	})
 	if err := flags.Parse(arguments); err != nil {
-		return "", err
+		return commandLine{}, err
 	}
 	if flags.NArg() > 0 {
-		return "", fmt.Errorf("unexpected argument %q", flags.Arg(0))
+		return commandLine{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
-	return port, nil
+	if sshPortGiven && options.hostKeyPath == "" {
+		return commandLine{}, errors.New("-ssh-port needs -ssh-host-key")
+	}
+	return options, nil
+}
+
+// urls writes each address as the kind's URL, which is how the started line names a listener.
+func urls(kind string, addresses []string) []string {
+	named := make([]string, len(addresses))
+	for index, address := range addresses {
+		named[index] = kind + "://" + address
+	}
+	return named
 }
 
 func stopSignals() []os.Signal {

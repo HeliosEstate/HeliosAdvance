@@ -96,7 +96,7 @@ func TestProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("When the sysop passes a port on the command line, the engine shall listen on that port in place of port 23.", func(t *testing.T) {
+	t.Run("When the sysop passes a Telnet port on the command line, the engine shall listen on that port in place of port 23.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("with -port and a free port, it names and serves that port at both addresses", func(t *testing.T) {
 			t.Parallel()
@@ -170,7 +170,7 @@ func TestProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("When it has started listening, the engine shall write one `started` line to the local log naming the address and port of every listener.", func(t *testing.T) {
+	t.Run("When it has started listening, the engine shall write one `started` line to the local log naming the kind, address and port of every listener.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("one started line, written once both listen: a caller at each, dialed as the line arrives, is served", func(t *testing.T) {
 			t.Parallel()
@@ -185,13 +185,35 @@ func TestProgram(t *testing.T) {
 			program.exit(t, sentBy.Add(margin))
 			_ = from
 			values := program.expectLog(t, "started")
-			if values[0] != strings.Join(addresses, ",") {
-				t.Fatalf("the started line's value was %q, want %q", values[0], strings.Join(addresses, ","))
+			want := "telnet://" + strings.Join(addresses, ",telnet://")
+			if values[0] != want {
+				t.Fatalf("the started line's value was %q, want %q", values[0], want)
+			}
+		})
+		t.Run("with SSH on: one started line naming each listener as a URL, Telnet's then SSH's, each served by its kind", func(t *testing.T) {
+			t.Parallel()
+			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			listeners := program.listeners(t)
+			telnet, ssh := kindsOf(t, listeners)
+			telnetIPv4, telnetIPv6 := loopbackPorts(t, telnet)
+			sshIPv4, sshIPv6 := loopbackPorts(t, ssh)
+			want := []string{
+				"telnet://" + net.JoinHostPort(ipv4Loopback, telnetIPv4), "telnet://" + net.JoinHostPort(ipv6Loopback, telnetIPv6),
+				"ssh://" + net.JoinHostPort(ipv4Loopback, sshIPv4), "ssh://" + net.JoinHostPort(ipv6Loopback, sshIPv6),
+			}
+			if strings.Join(listeners, ",") != strings.Join(want, ",") {
+				t.Fatalf("the started line named %q, want %q", listeners, want)
+			}
+			for _, address := range telnet {
+				expectServed(t, address)
+			}
+			for _, address := range ssh {
+				expectSSHServed(t, address)
 			}
 		})
 	})
 
-	t.Run("If a command-line option is malformed or the engine fails to listen at both addresses, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH is on, for SSH, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, options := range [][]string{
 			{portOption},
@@ -344,10 +366,12 @@ func TestLinuxRoot(t *testing.T) {
 // there; Linux's runners hand out 32768 to 60999.
 func TestLinuxHighestPort(t *testing.T) {
 	t.Parallel()
-	t.Run("When the sysop passes a port on the command line, the engine shall listen on that port in place of port 23.", func(t *testing.T) {
+	t.Run("When the sysop passes a Telnet port on the command line, the engine shall listen on that port in place of port 23.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("with -port 65535, the highest port, it names and serves it", func(t *testing.T) {
 			t.Parallel()
+			highestPort.Lock()
+			defer highestPort.Unlock()
 			for _, address := range []string{"127.0.0.1:65535", "[::1]:65535"} {
 				held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
 				if err != nil {
@@ -361,13 +385,15 @@ func TestLinuxHighestPort(t *testing.T) {
 			for _, address := range addresses {
 				expectServed(t, address)
 			}
+			_ = program.command.Process.Kill()
+			<-program.exited
 		})
 	})
 }
 
 func TestLinuxLowPort(t *testing.T) {
 	t.Parallel()
-	t.Run("If a command-line option is malformed or the engine fails to listen at both addresses, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH is on, for SSH, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("with no option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()

@@ -5,17 +5,35 @@ package telnet
 
 import (
 	"context"
+	"fmt"
 	"net"
 )
 
-// Accept and Close hand their work to the unexported functions below, so the contract builds
-// before they are built and the build never needs to change the contract. Each placeholder here
-// is replaced by the issue that builds it, and fails until then, so nothing calls it yet.
-
-func accept(_ context.Context, _ *net.TCPConn) (*Line, error) {
-	return nil, ErrConnectionFailed
+func accept(ctx context.Context, connection *net.TCPConn) (*Line, error) {
+	if connection == nil {
+		return nil, ErrConnectionFailed
+	}
+	if err := keepUrgentInLine(connection); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	line, _, err := open(ctx, connection)
+	if err != nil {
+		return nil, err
+	}
+	line.state.accepted = connection
+	return line, nil
 }
 
-func (line *Line) close(_ context.Context) error {
-	return ErrConnectionFailed
+// keepUrgentInLine is set before anything is read, since a Synch whose DM byte leaves the stream
+// would leave its IAC to swallow the caller's next character.
+func keepUrgentInLine(connection *net.TCPConn) error {
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var setErr error
+	if err := raw.Control(func(descriptor uintptr) { setErr = setUrgentInLine(descriptor) }); err != nil {
+		return err
+	}
+	return setErr
 }

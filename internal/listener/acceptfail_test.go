@@ -301,7 +301,7 @@ func holdListener(t *testing.T) {
 		sockets = append(sockets, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.Start(sockets)
+	engine, err := listener.Start([]listener.Kind{{Sockets: sockets, Open: openTelnet}})
 	if err != nil {
 		for _, socket := range sockets {
 			_ = socket.Close()

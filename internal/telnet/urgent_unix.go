@@ -3,7 +3,7 @@
 
 //go:build unix
 
-package listener
+package telnet
 
 import "syscall"
 

@@ -12,6 +12,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -96,12 +97,18 @@ func nextLine(t *testing.T, lines chan string, limit time.Duration) string {
 	return ""
 }
 
+// portTwentyTwo keeps the rows that read port 22 apart: one that dials 22 must not meet the
+// other's program listening there.
+var portTwentyTwo sync.Mutex
+
 func TestWindowsDefaultPort(t *testing.T) {
 	t.Parallel()
-	t.Run("When it starts with no command-line option, the engine shall listen for callers on port 23.", func(t *testing.T) {
+	t.Run("When it starts with no command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH caller.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with no option, it names and serves 127.0.0.1:23 and [::1]:23", func(t *testing.T) {
+		t.Run("with no option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 refused where it was free", func(t *testing.T) {
 			t.Parallel()
+			portTwentyTwo.Lock()
+			defer portTwentyTwo.Unlock()
 			// Port 23 is one port for every user of the machine: one held by anything else is
 			// a fault of the machine the test runs on, named as one.
 			for _, address := range []string{"127.0.0.1:23", "[::1]:23"} {
@@ -111,12 +118,35 @@ func TestWindowsDefaultPort(t *testing.T) {
 				}
 				_ = held.Close()
 			}
+			// Port 22 is often held by the machine's own SSH server; only where it was free can a
+			// dial there tell that the engine does not listen for SSH.
+			var freeTwentyTwo []string
+			for _, address := range []string{"127.0.0.1:22", "[::1]:22"} {
+				if held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address); err == nil {
+					_ = held.Close()
+					freeTwentyTwo = append(freeTwentyTwo, address)
+				}
+			}
 			program := startProgram(t)
 			addresses := program.listening(t)
 			expectAddresses(t, addresses, "127.0.0.1:23", "[::1]:23")
 			for _, address := range addresses {
 				expectServed(t, address)
 			}
+			for _, address := range freeTwentyTwo {
+				expectRefused(t, address)
+			}
+			_ = program.command.Process.Kill()
+			<-program.exited
+		})
+	})
+	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listeners.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("with a host key and no SSH port: at 22 where it is free at both addresses; else refused, where an SSH port the system picks starts", func(t *testing.T) {
+			t.Parallel()
+			portTwentyTwo.Lock()
+			defer portTwentyTwo.Unlock()
+			defaultSSHPortRow(t)
 		})
 	})
 }
