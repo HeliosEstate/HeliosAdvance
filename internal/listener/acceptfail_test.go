@@ -103,11 +103,11 @@ func failedSpell(t *testing.T, offset time.Duration) {
 	held := make([]caller, child.free)
 	for index := range held {
 		held[index] = dial(t, child.addresses[index%len(child.addresses)])
-		held[index].readOpening(t, held[index].connected.Add(margin))
+		held[index].readOpening(t, held[index].connected.Add(progressLimit))
 	}
 	streams := make([]*recording, len(held))
 	for index, call := range held[freedDescriptors:] {
-		streams[index+freedDescriptors] = call.record(call.connected.Add(negotiationLimit + 2*margin))
+		streams[index+freedDescriptors] = call.record(call.connected.Add(negotiationLimit + 2*wideMargin))
 	}
 
 	var waiting []caller
@@ -149,8 +149,10 @@ func failedSpell(t *testing.T, offset time.Duration) {
 			t.Fatalf("held caller %d was not served through the failed spell: it got % x and %v, want the greeting and the prompt, then nothing",
 				index+freedDescriptors+1, stream.received, stream.end)
 		}
+		// The faults this line catches show in what a held caller gets, not when, so its
+		// greeting has the wider window.
 		expectWithin(t, "a held caller's greeting", stream.arrivedAt(t, 0),
-			call.dialed.Add(negotiationLimit), call.connected.Add(negotiationLimit+margin))
+			call.dialed.Add(negotiationLimit), call.connected.Add(negotiationLimit+wideMargin))
 	}
 
 	for index, result := range results {

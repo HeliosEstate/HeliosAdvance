@@ -22,7 +22,7 @@ import (
 // It returns when the greeting's first byte arrived.
 func finish(t *testing.T, call caller, stream *recording, before []byte, echoes bool) time.Time {
 	t.Helper()
-	stream.waitFor(t, len(before)+len(asked), time.Now().Add(negotiationLimit+2*margin))
+	stream.waitFor(t, len(before)+len(asked), time.Now().Add(negotiationLimit+progressLimit))
 	call.send(t, []byte("n\r"))
 	after := helloTo("n")
 	if echoes {
@@ -39,8 +39,8 @@ func TestCall(t *testing.T) {
 		t.Run("a caller that answers DO DO", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			call.readOpening(t, call.connected.Add(margin))
-			stream := call.record(call.send(t, answers).Add(5 * time.Second))
+			call.readOpening(t, call.connected.Add(progressLimit))
+			stream := call.record(call.send(t, answers).done.Add(5 * time.Second))
 			finish(t, call, stream, nil, true)
 		})
 		t.Run("a silent caller", func(t *testing.T) {
@@ -52,7 +52,8 @@ func TestCall(t *testing.T) {
 		t.Run("the opening comes at once, before the caller sends anything", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			call.readOpening(t, call.connected.Add(margin))
+			// The nearest fault waits for the caller's first byte, which never comes.
+			call.readOpening(t, call.connected.Add(wideMargin))
 		})
 	})
 	t.Run("If, during negotiation, the caller asks for a Telnet option other than ECHO and SGA, then the engine shall refuse it.", func(t *testing.T) {
@@ -103,7 +104,10 @@ func TestCall(t *testing.T) {
 			sent := call.send(t, answers)
 			// Nothing negotiation read reaches the name: the name is only what is typed after.
 			greetingAt := finish(t, call, stream, opening, true)
-			expectWithin(t, "the greeting", greetingAt, sent, sent.Add(margin))
+			// The nearest fault misses the answers, so the greeting waits for negotiation's 3
+			// seconds from the dial.
+			expectWithin(t, "the greeting", greetingAt, sent.began,
+				windowEnd(t, sent.done, call.dialed.Add(negotiationLimit)))
 		})
 		t.Run("a subnegotiation that never ends, answers inside it", func(t *testing.T) {
 			t.Parallel()
@@ -116,7 +120,7 @@ func TestCall(t *testing.T) {
 			}
 			// The subnegotiation is still open after negotiation, so the caller ends it before its
 			// name; the answers inside it were never answers, so nothing is echoed.
-			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte{iac, subnegotiationEnd, 'n', '\r'})
 			stream.expectStream(t, join(opening, asked, helloTo("n")))
 			expectWithin(t, "the greeting", stream.arrivedAt(t, len(opening)), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
@@ -128,53 +132,50 @@ func TestCall(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
 			var closed time.Time
+			var lastSent sending
 			for range connectionCap {
 				call := dial(t, address)
-				stream := call.record(call.connected.Add(2 * margin))
-				call.send(t, join(answers, []byte("n\r")))
+				stream := call.record(call.connected.Add(progressLimit))
+				lastSent = call.send(t, join(answers, []byte("n\r")))
 				stream.expectStream(t, join(opening, asked, echoed("n")))
 				_ = call.connection.Close()
 				closed = time.Now()
 			}
-			expectServedBy(t, address, closed.Add(margin))
+			// The nearest fault frees a place only when the last caller's closing wait's 3
+			// seconds end, and that wait began no sooner than its write.
+			expectServedBy(t, address, windowEnd(t, closed, lastSent.began.Add(closingWaitLimit)))
 		})
 		t.Run("callers that stay: closed 3 seconds after the shutdown, not before", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			// The hundred are set up at once, so the window before the first closes does not
-			// depend on how fast a runner dials a hundred times.
-			var mutex sync.Mutex
-			var firstAnswer, lastEnd time.Time
-			var calling sync.WaitGroup
-			for range connectionCap {
-				calling.Go(func() {
-					answeredAt, ended, problem := answerAndStay(t, address)
-					mutex.Lock()
-					defer mutex.Unlock()
-					if problem != "" {
-						t.Error(problem)
-						return
-					}
-					if firstAnswer.IsZero() || answeredAt.Before(firstAnswer) {
-						firstAnswer = answeredAt
-					}
-					if ended.After(lastEnd) {
-						lastEnd = ended
-					}
-				})
-			}
-			calling.Wait()
-			if t.Failed() {
-				t.FailNow()
-			}
-			if time.Now().After(firstAnswer.Add(closingWaitLimit - time.Second)) {
-				t.Fatalf("test fault: a hundred callers took %v to set up", time.Since(firstAnswer))
+			// The hundred are set up first, each answered and waiting at the prompt with its place
+			// held, and then type their names together. No place can come back before 3 seconds
+			// after the first of those writes began, however long a runner took to set them up
+			// (2.2 seconds under twice the usual load, 2026-10-25).
+			callers := make([]caller, connectionCap)
+			streams := make([]*recording, connectionCap)
+			for index := range callers {
+				callers[index] = dial(t, address)
+				streams[index] = callers[index].record(callers[index].connected.Add(nameLimit))
+				callers[index].send(t, answers)
+				streams[index].waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 			}
 			expectRefused(t, address)
-			// Half a second short of the 3 seconds, so that a probe the engine accepts late on a
-			// loaded runner still meets a full cap; the single caller's row holds the close to 3.
-			wait(t, firstAnswer.Add(closingWaitLimit-500*time.Millisecond))
-			expectRefused(t, address)
+			released := time.Now()
+			for _, call := range callers {
+				call.send(t, []byte("n\r"))
+			}
+			// A second short of the 3 seconds, so that a probe the engine accepts late on a loaded
+			// runner still meets a full cap; the single caller's row holds the close to 3.
+			wait(t, released.Add(closingWaitLimit-time.Second))
+			expectRefusedUntil(t, address, released.Add(closingWaitLimit))
+			var lastEnd time.Time
+			for _, stream := range streams {
+				stream.expectStream(t, join(opening, asked, echoed("n")))
+				if stream.ended.After(lastEnd) {
+					lastEnd = stream.ended
+				}
+			}
 			expectServedBy(t, address, lastEnd.Add(closingWaitLimit+margin))
 		})
 	})
@@ -185,7 +186,7 @@ func TestCall(t *testing.T) {
 			address := startEngine(t, 1)[0]
 			for range connectionCap {
 				call := dial(t, address)
-				call.readOpening(t, call.connected.Add(margin))
+				call.readOpening(t, call.connected.Add(progressLimit))
 			}
 			expectRefused(t, address)
 			expectRefused(t, address)
@@ -195,7 +196,7 @@ func TestCall(t *testing.T) {
 			addresses := startEngine(t, 2)
 			for index := range connectionCap {
 				call := dial(t, addresses[index%2])
-				call.readOpening(t, call.connected.Add(margin))
+				call.readOpening(t, call.connected.Add(progressLimit))
 			}
 			expectRefused(t, addresses[0])
 			expectRefused(t, addresses[1])
@@ -206,13 +207,13 @@ func TestCall(t *testing.T) {
 			callers := make([]caller, connectionCap)
 			for index := range callers {
 				callers[index] = dial(t, address)
-				callers[index].readOpening(t, callers[index].connected.Add(margin))
+				callers[index].readOpening(t, callers[index].connected.Add(progressLimit))
 			}
 			for range 3 {
 				expectRefused(t, address)
 			}
 			_ = callers[0].connection.Close()
-			expectServedBy(t, address, time.Now().Add(margin))
+			expectServedBy(t, address, time.Now().Add(wideMargin))
 			expectRefused(t, address)
 		})
 		for _, sockets := range []int{1, 2} {
@@ -239,27 +240,35 @@ func TestCall(t *testing.T) {
 	})
 	t.Run("While one caller is silent or slow, the engine shall serve every other caller without waiting on that one.", func(t *testing.T) {
 		t.Parallel()
-		normalCall := func(t *testing.T, address string) {
+		// otherDialed is when the silent or slow caller this one must not wait on was dialed.
+		normalCall := func(t *testing.T, address string, otherDialed time.Time) {
 			t.Helper()
 			call := dial(t, address)
 			stream := call.record(call.connected.Add(5 * time.Second))
 			opened := call.connected
-			answeredAt := call.send(t, answers)
+			answered := call.send(t, answers)
 			greetingAt := finish(t, call, stream, opening, true)
-			expectWithin(t, "the opening", stream.arrivedAt(t, 0), opened, opened.Add(margin))
-			expectWithin(t, "the greeting", greetingAt, answeredAt, answeredAt.Add(margin))
+			// The nearest fault negotiates one caller at a time, so this one's opening waits out
+			// the other's 3 seconds of negotiation, which began at its dial.
+			expectWithin(t, "the opening", stream.arrivedAt(t, 0), opened,
+				windowEnd(t, opened, otherDialed.Add(negotiationLimit)))
+			// The nearest fault misses the answers, so the greeting waits for negotiation's 3
+			// seconds from the dial; one that serves a caller at a time waits for the other's whole
+			// call, later still.
+			expectWithin(t, "the greeting", greetingAt, answered.began,
+				windowEnd(t, answered.done, call.dialed.Add(negotiationLimit)))
 		}
 		t.Run("a silent caller", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			dial(t, address)
-			normalCall(t, address)
+			normalCall(t, address, dial(t, address).dialed)
 		})
 		t.Run("a caller that floods and never reads", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			dial(t, address).flood(t)
-			normalCall(t, address)
+			flooder := dial(t, address)
+			flooder.flood(t)
+			normalCall(t, address, flooder.dialed)
 		})
 		t.Run("a caller that sends a byte every 200 ms", func(t *testing.T) {
 			t.Parallel()
@@ -274,67 +283,30 @@ func TestCall(t *testing.T) {
 				}
 			}()
 			wait(t, slow.connected.Add(500*time.Millisecond))
-			normalCall(t, address)
+			normalCall(t, address, slow.dialed)
 			<-done
 		})
 		t.Run("ninety-nine silent callers", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
+			var lastDialed time.Time
 			for range connectionCap - 1 {
-				dial(t, address)
+				lastDialed = dial(t, address).dialed
 			}
-			normalCall(t, address)
+			normalCall(t, address, lastDialed)
 		})
 		t.Run("a silent caller on one socket, a caller on the other", func(t *testing.T) {
 			t.Parallel()
 			addresses := startEngine(t, 2)
-			dial(t, addresses[0])
-			normalCall(t, addresses[1])
-			dial(t, addresses[1])
-			normalCall(t, addresses[0])
+			normalCall(t, addresses[1], dial(t, addresses[0]).dialed)
+			normalCall(t, addresses[0], dial(t, addresses[1]).dialed)
 		})
 	})
 }
 
-// answerAndStay is one of many callers at once: it answers and types a name in one write, reads
-// the whole call to end of stream, and keeps its end open. It reports when it answered and when
-// the stream ended, or what went wrong, since it runs off the test's goroutine.
-func answerAndStay(t *testing.T, address string) (answeredAt, ended time.Time, problem string) {
-	t.Helper()
-	opened, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", address)
-	if err != nil {
-		return answeredAt, ended, "dial failed: " + err.Error()
-	}
-	t.Cleanup(func() { _ = opened.Close() })
-	_ = opened.SetDeadline(time.Now().Add(2 * margin))
-	// Taken before the write, a moment provably before the engine's shutdown: one taken after can
-	// lag it on a loaded runner, the goroutine descheduled between the write and the clock
-	// (ubuntu-latest, 2026-10-25, a caller over the cap served).
-	answeredAt = time.Now()
-	if _, err := opened.Write(join(answers, []byte("n\r"))); err != nil {
-		return answeredAt, ended, "the caller's write failed: " + err.Error()
-	}
-	var received []byte
-	chunk := make([]byte, 256)
-	for {
-		got, err := opened.Read(chunk)
-		received = append(received, chunk[:got]...)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return answeredAt, ended, fmt.Sprintf("the stream did not end in order: %v, after % x", err, received)
-		}
-	}
-	ended = time.Now()
-	if want := join(opening, asked, echoed("n")); string(received) != string(want) {
-		return answeredAt, ended, fmt.Sprintf("the stream was % x, want % x", received, want)
-	}
-	return answeredAt, ended, ""
-}
-
 // callOnce is one of many callers dialing at once: it reports "served", "refused", or what went
-// wrong, since it runs off the test's goroutine.
+// wrong, since it runs off the test's goroutine. Its row counts the two; the rows of the hundred
+// and first caller hold the refusal to "at once", so its wait is a progress one.
 func callOnce(t *testing.T, address string) string {
 	t.Helper()
 	opened, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", address)
@@ -342,7 +314,7 @@ func callOnce(t *testing.T, address string) string {
 		return "dial failed: " + err.Error()
 	}
 	t.Cleanup(func() { _ = opened.Close() })
-	_ = opened.SetReadDeadline(time.Now().Add(2 * margin))
+	_ = opened.SetReadDeadline(time.Now().Add(progressLimit))
 	received := make([]byte, len(opening))
 	got, err := io.ReadFull(opened, received)
 	switch {
