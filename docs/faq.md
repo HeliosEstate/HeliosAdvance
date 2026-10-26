@@ -19,7 +19,7 @@ goals.
 **What were your BBSes called?**
 The River Styx, Cataclysm BBS, and Genocide BBS.
 
-**Who wrote the code?**
+**Who writes the code?**
 It is a mix of myself and AI coding agents: Anthropic's Claude and OpenAI's Codex.
 
 **Why use AI for coding?**
@@ -34,15 +34,21 @@ collaborative endeavor.
 No, not in the sense of typing prompts into a chat and taking whatever comes back. AI is one
 of many tools in this project, and the project follows a strict discipline:
 
-1. Every feature starts in my own words and is worked into a brief with me, one question at a
-   time.
-2. From the approved brief come the behavior specifications and a contract for each part of
-   the code. I approve every line.
-3. The tests are written from those lines and locked before any code exists. Where an
-   independent program already does the job, the tests run against it.
-4. AI coding agents write the code until the locked tests pass. They can't change the tests.
-5. Every change is reviewed before it merges, with a security review of anything
-   security-sensitive.
+1. Every feature starts in my own words and is worked into a written specification with me,
+   one question at a time, one small piece at a time.
+2. From that specification come the behavior lines and a contract for each part of the code.
+   I approve every line.
+3. The tests are written from those lines in a separate step, apart from the code, and locked
+   before the code is written. Where an independent program already does the job, the tests
+   run against it.
+4. The tests are proved able to catch mistakes: faults are planted, one at a time, in copies of
+   a reference version, and the tests must catch every one a user, the sysop or the log would
+   notice.
+5. AI coding agents write the code until the locked tests pass. They can't change the tests.
+   If a review finds something the tests missed, the testing step adds the tests; the coding
+   agent never does.
+6. Before I review, the same planted faults are replayed against the real code. Every change
+   is reviewed before it merges, with a security review of anything security-sensitive.
 
 When a review finds a flaw in the design, the specification is fixed first, and the code
 follows it.
@@ -50,9 +56,9 @@ follows it.
 **Why write tests before code?**
 When you write your tests after the code, you tend to write them so that the code passes. If
 you do it in reverse, you tend to do the opposite. I don't have an independent QA engineer
-writing tests, so it's a safeguard: the tests are written in a step of their own, from the
-specification alone, and locked before the code is written. The agents that write the code
-can't change them.
+writing tests, so a separate step does that job: the tests are written from the specification
+alone and locked before the code is written, and they're proved to catch planted mistakes
+before and after the code exists. The agents that write the code can't change them.
 
 **Why disclose that you're using AI?**
 People have a lot of strong feelings about GenAI/LLMs. It's not just about the risk of
