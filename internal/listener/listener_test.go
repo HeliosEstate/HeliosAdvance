@@ -143,19 +143,9 @@ func TestCall(t *testing.T) {
 			// held, and then type their names together. No place can come back before 3 seconds
 			// after the first of those writes began, however long a runner took to set them up
 			// (2.2 seconds under twice the usual load, 2026-10-25).
-			callers := make([]caller, connectionCap)
-			streams := make([]*recording, connectionCap)
-			for index := range callers {
-				callers[index] = dial(t, address)
-				streams[index] = callers[index].record(callers[index].connected.Add(nameLimit))
-				callers[index].send(t, answers)
-				streams[index].waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
-			}
+			callers, streams := fillAtPrompt(t, address)
 			expectRefused(t, address)
-			released := time.Now()
-			for _, call := range callers {
-				call.send(t, []byte("n\r"))
-			}
+			released := sendNames(t, callers)
 			// A second short of the 3 seconds, so that a probe the engine accepts late on a loaded
 			// runner still meets a full cap; the single caller's row holds the close to 3.
 			wait(t, released.Add(closingWaitLimit-time.Second))
