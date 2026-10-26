@@ -5,6 +5,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"net"
 
 	cryptossh "golang.org/x/crypto/ssh"
@@ -51,6 +52,10 @@ func accept(ctx context.Context, tcp *net.TCPConn, key *HostKey) (*Channel, erro
 	// The context's deadline may have passed by the clock before the context reports it, so the
 	// call is judged after the wake is released, whatever it returned.
 	if cause := endedCause(ctx); cause != nil {
+		// The release can stop a wake that had not begun, and the library goes on answering the
+		// caller until the socket's deadlines are past, so they are set here as well.
+		shared.note(errors.Join(
+			tcp.SetReadDeadline(wokenDeadline), tcp.SetWriteDeadline(wokenDeadline)))
 		return nil, deadlineEnded(cause)
 	}
 	if err != nil {

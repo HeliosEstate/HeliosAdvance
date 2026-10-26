@@ -151,14 +151,19 @@ func (channel *Channel) write(ctx context.Context, deadline time.Time, job func(
 		}
 		return nil
 	case <-state.connection.ended:
+		// The writer answers a job it holds even after the connection's end, so the job's own
+		// result is awaited: judging by which of the two comes first calls a finished write failed.
 		select {
 		case err := <-state.written:
-			if err == nil {
-				return nil
+			if err != nil {
+				return giveUp(ErrConnectionFailed)
 			}
-		default:
+			return nil
+		case <-ctx.Done():
+			return giveUp(ErrConnectionFailed)
+		case <-limit:
+			return giveUp(os.ErrDeadlineExceeded)
 		}
-		return giveUp(ErrConnectionFailed)
 	case <-ctx.Done():
 		return giveUp(ErrConnectionFailed)
 	case <-limit:
