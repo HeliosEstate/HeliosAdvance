@@ -98,7 +98,12 @@ func (connection *connection) failed() bool {
 	if connection.endError == nil || errors.Is(connection.endError, io.EOF) {
 		return false
 	}
-	return !strings.HasPrefix(connection.endError.Error(), disconnectPrefix)
+	return !disconnected(connection.endError)
+}
+
+// disconnected is whether err is the library's report of a disconnect message the caller sent.
+func disconnected(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), disconnectPrefix)
 }
 
 // callerClosed is the error for a caller that ended its side in order.

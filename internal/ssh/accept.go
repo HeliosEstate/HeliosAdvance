@@ -70,7 +70,9 @@ func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKe
 	server, channels, requests, err := cryptossh.NewServerConn(
 		recordingConn{Conn: tcp, owner: shared}, serverConfig(key))
 	if err != nil {
-		if shared.socketClosed() {
+		// A disconnect message is the caller ending the connection on purpose, as after the
+		// handshake.
+		if shared.socketClosed() || disconnected(err) {
 			return nil, callerClosed()
 		}
 		return nil, ErrConnectionFailed

@@ -278,18 +278,27 @@ func (channel *Channel) recvChar(ctx context.Context, deadline time.Time) (byte,
 		if err := channel.check(ctx); err != nil {
 			return 0, err
 		}
+		waiting := state.receiveNext < state.receiveEnd
+		// A stored end or failure is the answer when no byte is waiting, even after the deadline.
+		if !waiting && state.readError != nil {
+			return 0, state.readFailure()
+		}
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return 0, os.ErrDeadlineExceeded
 		}
-		if state.receiveNext < state.receiveEnd {
+		if waiting {
 			character := state.receive[state.receiveNext]
 			state.receiveNext++
 			return character, nil
 		}
-		if state.readError != nil {
-			return 0, state.readFailure()
-		}
 		if err := channel.writeOut(ctx, deadline); err != nil {
+			if errors.Is(err, ErrConnectionFailed) && state.connection.hasEnded() && !state.connection.failed() {
+				// The caller closed in order while an echo was queued: the queued bytes have no one
+				// to go to, and what RecvChar owes is the end.
+				state.failed = false
+				state.readError = io.EOF
+				return 0, io.EOF
+			}
 			return 0, err
 		}
 		channel.awaitRead(ctx, deadline)
