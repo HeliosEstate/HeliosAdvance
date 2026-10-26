@@ -250,12 +250,12 @@ func expectRefused(t *testing.T, address string) {
 }
 
 // expectRefusedUntil checks a new caller is closed at once while every place is held, as every
-// place is until the moment held: a caller served whose opening arrives before then is one over
-// the cap. A caller served after it says nothing of the cap, since a place may rightly have come
-// back first: the engine can accept a caller late on a loaded runner (287 ms after its dial,
-// while the cap was full, ubuntu-24.04-arm, 2026-10-26).
-// A probe dialed at or after held did not reach the row's case, and fails as a test fault
-// whatever its outcome. The engine's timers may wake early, so held allows early.
+// place is until the moment held, less early, since the engine's timers may wake that much
+// before their time: a caller served whose opening arrives before then is one over the cap. A
+// caller served after it says nothing of the cap, since a place may rightly have come back
+// first: the engine can accept a caller late on a loaded runner (287 ms after its dial, while
+// the cap was full, ubuntu-24.04-arm, 2026-10-26). A probe dialed at or after that moment did
+// not reach the row's case, and fails as a test fault whatever its outcome.
 func expectRefusedUntil(t *testing.T, address string, held time.Time) {
 	t.Helper()
 	isServed, call, arrived := served(t, address)
@@ -287,8 +287,8 @@ func helloAndClose(t *testing.T, address string) (released, closed time.Time) {
 }
 
 // fillAtPrompt fills the cap with callers that answered and wait at the prompt, each recorded
-// from its dial. Their recordings run to the name's 60 seconds, however long the set-up takes,
-// until sendNames bounds them.
+// from its connect. Each recording may run 60 seconds from that connect, however long the set-up
+// takes, until sendNames bounds them.
 func fillAtPrompt(t *testing.T, address string) ([]caller, []*recording) {
 	t.Helper()
 	callers := make([]caller, connectionCap)
