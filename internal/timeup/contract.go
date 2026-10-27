@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package deadline holds, once, the rule for whether a call's time has run out and the wake that
+// Package timeup holds, once, the rule for whether a call's time has run out and the wake that
 // makes a waiting read or write return when it has, for every unit that reads or writes a
 // caller's connection: Telnet, SSH and Text I/O.
 //
@@ -15,9 +15,9 @@
 //
 // # Lines for the package
 //
-//   - The deadline package shall write nothing to standard output or standard error. [read]
-//   - The deadline package shall import nothing outside the Go standard library. [read]
-package deadline
+//   - The timeup package shall write nothing to standard output or standard error. [read]
+//   - The timeup package shall import nothing outside the Go standard library. [read]
+package timeup
 
 import (
 	"context"
