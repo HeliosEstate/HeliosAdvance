@@ -178,8 +178,31 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 					_ = server.SetWriteDeadline(passed)
 				})
 			}
+			type urgentResult struct {
+				count int
+				err   error
+			}
+			// A send no deadline wakes never returns; the row's own bound fails it by name instead
+			// of leaving the test binary to its timeout.
+			finished := make(chan urgentResult, 1)
 			started := time.Now()
-			count, err := server.WriteUrgent([]byte{TelnetDM})
+			go func() {
+				sent, sendErr := server.WriteUrgent([]byte{TelnetDM})
+				finished <- urgentResult{sent, sendErr}
+			}()
+			var result urgentResult
+			select {
+			case result = <-finished:
+			case <-time.After(row.below + 2*time.Second):
+				_ = server.Close()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("WriteUrgent was still waiting after %v and closing the connection did not wake it", time.Since(started))
+				}
+				t.Fatalf("WriteUrgent was still waiting after %v, want it back in less than %v", time.Since(started), row.below)
+			}
+			count, err := result.count, result.err
 			took := time.Since(started)
 			if !errors.Is(err, row.wantErr) {
 				t.Fatalf("WriteUrgent returned (%d, %v), want error %v", count, err, row.wantErr)
