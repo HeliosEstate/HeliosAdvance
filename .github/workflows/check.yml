@@ -103,6 +103,14 @@ jobs:
           go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
           go install github.com/google/go-licenses/v2@"$GO_LICENSES"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # Plink, an outside Telnet client that Part 4's Telnet rows drive as an oracle, is on no
+      # runner's image. Linux takes it from Ubuntu's signed archive for the image; Windows takes
+      # Chocolatey's package at a fixed version, which carries PuTTY's own zip inside it.
+      - name: Install Plink
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then choco install putty.portable --version=0.85.0 -y --no-progress
+          else sudo apt-get update -q && sudo apt-get install -y -q putty-tools; fi
+          plink -V
       # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
       # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's
       # "429 Too Many Requests" (developer, 2026-10-09). A partial match restores the images of
