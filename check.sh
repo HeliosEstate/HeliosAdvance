@@ -151,14 +151,21 @@ if [ "$MUTATION" = 0 ]; then
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
 # base holds it passed this gate on its own branch before it merged; a squash merge drops the
-# trailer that showed it.
+# trailer that showed it. A name ending in an operating system or a processor, as Go lists them,
+# is a build constraint as much as a //go:build line (developer, 2026-10-27).
 onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
+goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
+goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
   [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- "$f" && continue
   last=$(git log -1 --format=%H -- "$f")
   is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
+  stem=${f##*/}; stem=${stem%_test.go}
+  if [[ $stem =~ _($goos)(_($goarch))?$ || $stem =~ _($goarch)$ ]]; then
+    echo "$f"; fail "a non-QA test file is named for an operating system or a processor, a build constraint"
+  fi
 done < <(git ls-files -z '*_test.go')
 
 # 4c. A comment never carries a line number or a step number: both drift silently. Attempt
