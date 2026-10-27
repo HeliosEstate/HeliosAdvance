@@ -142,7 +142,8 @@ func refuseRequests(requests <-chan *cryptossh.Request) {
 // before the shell changes nothing, and a read kept waiting through it would store the end, so
 // that RecvChar after the shell would meet it before the wait that writes out the echo. The
 // library closes the session's requests when the connection ends and keeps what was queued, so a
-// shell asked for just before that end is still answered.
+// shell queued just before that end is still read; it is answered only if it asked for no reply,
+// since a reply cannot be sent on an ended connection and answer then returns ErrNoShell.
 func (channel *Channel) awaitShell(ctx context.Context, requests <-chan *cryptossh.Request) error {
 	for {
 		select {
