@@ -194,11 +194,15 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			select {
 			case result = <-finished:
 			case <-time.After(row.below + 2*time.Second):
-				_ = server.Close()
+				// A send that never returns holds the connection's write lock, so closing the
+				// server's end would block behind it; resetting the caller's end completes the
+				// send with an error.
+				_ = client.SetLinger(0)
+				_ = client.Close()
 				select {
 				case <-finished:
 				case <-time.After(5 * time.Second):
-					t.Fatalf("WriteUrgent was still waiting after %v and closing the connection did not wake it", time.Since(started))
+					t.Fatalf("WriteUrgent was still waiting after %v and resetting the caller's end did not wake it", time.Since(started))
 				}
 				t.Fatalf("WriteUrgent was still waiting after %v, want it back in less than %v", time.Since(started), row.below)
 			}
