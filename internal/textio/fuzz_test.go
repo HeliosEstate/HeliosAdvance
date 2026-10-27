@@ -25,6 +25,8 @@ func FuzzEdit(fuzzing *testing.F) {
 		{bytes.Repeat([]byte("n"), 40), nameLimit, 31},
 		{[]byte("\r\n\x08\x7fa\x08\x08\r"), 1, 1},
 		{bytes.Repeat([]byte("ab\x08"), 200), mostLine, 100},
+		{[]byte("abc\x15\x15de\x15f\r"), nameLimit, 4},
+		{append(bytes.Repeat([]byte("n"), 300), 0x15), mostLine, 200},
 		{[]byte("x"), -5, 0},
 		{[]byte("x"), 1 << 20, 0},
 	}
@@ -65,12 +67,12 @@ func FuzzEdit(fuzzing *testing.F) {
 				t.Fatalf("after % x the line is %q ended %v, want %q ended %v", input[:index+1], text, nowEnded, reading.text, reading.ended)
 			}
 		}
-		// What it echoes is only bytes it added, BS SP BS for one removed and CR LF at the end,
-		// which the test's own reading of the table gives in order.
+		// What it echoes is only bytes it added, BS SP BS for each one removed and CR LF at the
+		// end, which the test's own reading of the table gives in order.
 		if !bytes.Equal(echoed, wantEcho) {
 			t.Fatalf("for % x the echo was % x, want % x", input, echoed, wantEcho)
 		}
-		if len(echoed) > 2*len(input)+2 {
+		if len(echoed) > 4*len(input) {
 			t.Fatalf("%d bytes read gave an echo of %d", len(input), len(echoed))
 		}
 		// The same bytes split at any point give the same line and echo: Edit carries everything

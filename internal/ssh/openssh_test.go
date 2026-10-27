@@ -63,7 +63,10 @@ func runOpenSSH(t *testing.T, program *engine, call openSSHCall) openSSHResult {
 	if err := os.WriteFile(known, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	arguments := []string{"-F", config, "-o", "UserKnownHostsFile=" + known, "-o", "StrictHostKeyChecking=yes",
+	// The paths go with forward slashes, which every client the rows run reads whole: on Windows a
+	// path of backslashes holding a parenthesis, as a row's folder does when its line names a
+	// byte as (0x15), was not.
+	arguments := []string{"-F", filepath.ToSlash(config), "-o", "UserKnownHostsFile=" + filepath.ToSlash(known), "-o", "StrictHostKeyChecking=yes",
 		"-o", "BatchMode=yes", "-e", "none", "-p", port}
 	if call.verbose {
 		arguments = append(arguments, "-vvv")

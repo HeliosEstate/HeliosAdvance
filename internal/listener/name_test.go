@@ -38,9 +38,9 @@ const (
 	nul          byte = 0x00
 )
 
-// The answers that leave ECHO agreed, and those that leave it refused.
+// The answers that leave ECHO refused, the other seven as answers leaves them.
 var (
-	refused = join(request(dont, echo), request(doVerb, sga))
+	refused = join(request(dont, echo), answers[3:])
 	asked   = join([]byte(greeting), []byte(prompt))
 )
 
@@ -120,17 +120,18 @@ func runNameRow(t *testing.T, row nameRow) {
 
 func TestName(t *testing.T) {
 	t.Parallel()
-	t.Run("When a Telnet caller has answered both option requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.", func(t *testing.T) {
+	t.Run("When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.", func(t *testing.T) {
 		t.Parallel()
 		rows := []struct {
 			name   string
 			answer []byte
 			echoes bool
 		}{
-			{name: "DO DO", answer: answers, echoes: true},
-			{name: "DONT DONT", answer: join(request(dont, echo), request(dont, sga))},
-			{name: "DO DONT", answer: join(request(doVerb, echo), request(dont, sga)), echoes: true},
-			{name: "DONT DO", answer: refused},
+			{name: "all eight, ECHO agreed", answer: answers, echoes: true},
+			{name: "every one refused", answer: join(request(dont, echo), request(dont, sga), request(dont, binary), request(wont, binary),
+				request(wont, telnetTypeOption), request(wont, windowSizeOption), request(wont, environOption), request(wont, speedOption))},
+			{name: "all eight, ECHO and SGA last", answer: join(answers[6:], answers[:6]), echoes: true},
+			{name: "all eight, ECHO refused", answer: refused},
 		}
 		for _, row := range rows {
 			t.Run("answered "+row.name+": the greeting and the prompt at once, then nothing until a name", func(t *testing.T) {
@@ -159,23 +160,23 @@ func TestName(t *testing.T) {
 			stream.expectStream(t, join(opening, asked, helloTo("ann")))
 			stream.expectAskedAt(t, len(opening), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
 		})
-		t.Run("one answer, then silence: the greeting and the prompt at 3 seconds", func(t *testing.T) {
+		t.Run("seven answers, then silence: the greeting and the prompt at 3 seconds", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
-			call.send(t, request(doVerb, echo))
+			call.send(t, answers[:21])
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, echoed("ann")))
 			stream.expectAskedAt(t, len(opening), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
 		})
-		t.Run("the second answer at 2 seconds: the greeting and the prompt then, not at 3", func(t *testing.T) {
+		t.Run("the eighth answer at 2 seconds: the greeting and the prompt then, not at 3", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
-			call.send(t, request(doVerb, echo))
+			call.send(t, answers[:21])
 			wait(t, call.connected.Add(2*time.Second))
-			sent := call.send(t, request(doVerb, sga))
+			sent := call.send(t, answers[21:])
 			stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, echoed("ann")))
@@ -352,13 +353,13 @@ func TestName(t *testing.T) {
 			})
 		}
 	})
-	t.Run("Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
+	t.Run("Apart from BS, DEL, Ctrl-U, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
 		t.Parallel()
 		var others []byte
 		for code := range 255 {
 			value := byte(code)
 			isPrintable := value >= 0x20 && value <= 0x7E
-			if !isPrintable && value != backspace && value != del && value != '\r' && value != '\n' {
+			if !isPrintable && value != backspace && value != del && value != eraseLineKey && value != '\r' && value != '\n' {
 				others = append(others, value)
 			}
 		}
@@ -367,12 +368,14 @@ func TestName(t *testing.T) {
 			{name: "31 characters: the first 30", answer: answers, typed: []byte(thirty + "y\r"), after: echoed(thirty)},
 			{name: "40 characters, BS, then z: the first 29 and z", answer: answers, typed: []byte(thirty + "0123456789\x08z\r"),
 				after: join([]byte(thirty), []byte{backspace, ' ', backspace}, []byte("z\r\n"), helloTo(thirty[:nameMost-1]+"z"))},
-			{name: "every byte from 0x00 to 0xFE that is not printable, BS, DEL, CR or LF, between a and b: dropped, never echoed", answer: answers, typed: join([]byte("a"), others, []byte("b\r")), after: echoed("ab")},
+			{name: "every byte from 0x00 to 0xFE that is not printable, BS, DEL, Ctrl-U, CR or LF, between a and b: dropped, never echoed", answer: answers, typed: join([]byte("a"), others, []byte("b\r")), after: echoed("ab")},
 			{name: "the same with ECHO refused", answer: refused, typed: join([]byte("a"), others, []byte("b\r")), after: helloTo("ab")},
 			{name: "ESC sequences: ESC dropped, the rest kept as typed", answer: answers, typed: []byte("a\x1b[2J\x1b[31mb\r"), after: echoed("a[2J[31mb")},
 			{name: "0x9B, BEL, NUL and TAB: dropped", answer: answers, typed: []byte{'a', 0x9B, 0x07, nul, '\t', 'b', '\r'}, after: echoed("ab")},
 			{name: "a doubled IAC, the data byte 255: dropped, never echoed", answer: answers, typed: []byte{'a', iac, iac, 'b', '\r'}, after: echoed("ab")},
 			{name: "data bytes sent during negotiation do not reach the name", answer: join([]byte("junk"), answers), typed: []byte("ok\r"), after: echoed("ok")},
+			{name: "the edge: Ctrl-U is not dropped, ab Ctrl-U c gives Hello c", answer: answers, typed: []byte("ab\x15c\r"),
+				after: join([]byte("ab"), erase, erase, []byte("c\r\n"), helloTo("c"))},
 		}
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
@@ -381,19 +384,25 @@ func TestName(t *testing.T) {
 			})
 		}
 	})
-	t.Run("After negotiation ends and until a Telnet caller's name ends, the engine shall answer each option request as it did during negotiation, and discard every other Telnet command without reply.", func(t *testing.T) {
+	t.Run("After negotiation ends and until a Telnet caller's name ends, the engine shall answer each option request as it did during negotiation, and each other Telnet command as Part 4's lines under \"Commands\" say.", func(t *testing.T) {
 		t.Parallel()
 		rows := []nameRow{
 			{name: "ab, DO 24, c CR: WONT 24 in its place among the echo", answer: answers, typed: join([]byte("ab"), request(doVerb, telnetTypeOption), []byte("c\r")),
 				after: join([]byte("ab"), request(wont, telnetTypeOption), []byte("c\r\n"), helloTo("abc"))},
-			{name: "WILL 31 mid-name: DONT 31", answer: answers, typed: join([]byte("a"), request(will, windowSizeOption), []byte("b\r")),
-				after: join([]byte("a"), request(dont, windowSizeOption), []byte("b\r\n"), helloTo("ab"))},
+			{name: "WILL 25 mid-name: DONT 25", answer: answers, typed: join([]byte("a"), request(will, 25), []byte("b\r")),
+				after: join([]byte("a"), request(dont, 25), []byte("b\r\n"), helloTo("ab"))},
+			{name: "WILL TTYPE mid-name, refused as an answer: DO TTYPE and the SEND", answer: answers, typed: join([]byte("a"), request(will, telnetTypeOption), []byte("b\r")),
+				after: join([]byte("a"), request(doVerb, telnetTypeOption), terminalTypeSend, []byte("b\r\n"), helloTo("ab"))},
 			{name: "WONT 24 and DONT 24 mid-name: no reply", answer: answers, typed: join([]byte("a"), request(wont, telnetTypeOption), request(dont, telnetTypeOption), []byte("b\r")), after: echoed("ab")},
-			{name: "DO 0 and DO 255 mid-name: WONT each", answer: refused, typed: join([]byte("a"), request(doVerb, 0), request(doVerb, 255), []byte("b\r")),
-				after: join(request(wont, 0), request(wont, 255), helloTo("ab"))},
+			{name: "DO 2 and DO 255 mid-name: WONT each", answer: refused, typed: join([]byte("a"), request(doVerb, 2), request(doVerb, 255), []byte("b\r")),
+				after: join(request(wont, 2), request(wont, 255), helloTo("ab"))},
 			{name: "DO ECHO and DO SGA again, already agreed: no reply", answer: answers, typed: join([]byte("a"), request(doVerb, echo), request(doVerb, sga), []byte("b\r")), after: echoed("ab")},
-			{name: "IAC NOP, IAC AYT and a subnegotiation holding IAC IAC SE mid-name: discarded, the name unbroken", answer: answers,
-				typed: join([]byte("a"), []byte{iac, nop, iac, ayt}, []byte{iac, subnegotiationBegin, telnetTypeOption, 'q', iac, iac, subnegotiationEnd, 'r', iac, subnegotiationEnd}, []byte("b\r")), after: echoed("ab")},
+			{name: "IAC NOP, IAC GA and a subnegotiation holding IAC IAC SE mid-name: discarded, the name unbroken", answer: answers,
+				typed: join([]byte("a"), []byte{iac, nop, iac, 249}, []byte{iac, subnegotiationBegin, telnetTypeOption, 'q', iac, iac, subnegotiationEnd, 'r', iac, subnegotiationEnd}, []byte("b\r")), after: echoed("ab")},
+			{name: "AYT mid-name: answered in its place", answer: answers, typed: join([]byte("a"), []byte{iac, ayt}, []byte("b\r")),
+				after: join([]byte("a\r\n[Yes]\r\nb\r\n"), helloTo("ab"))},
+			{name: "EC and EL mid-name: as BS and as Ctrl-U", answer: answers, typed: join([]byte("abc"), []byte{iac, 247}, []byte("d"), []byte{iac, 248}, []byte("e\r")),
+				after: join([]byte("abc"), erase, []byte("d"), repeated(erase, 3), []byte("e\r\n"), helloTo("e"))},
 		}
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
@@ -401,6 +410,15 @@ func TestName(t *testing.T) {
 				runNameRow(t, row)
 			})
 		}
+		t.Run("a silent caller that answers all eight after the 3 seconds, mid-name, then DO 24: WONT 24 all the same", func(t *testing.T) {
+			t.Parallel()
+			call := dial(t, startEngine(t, 1)[0])
+			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
+			// ECHO was in WANTYES, so a is not echoed; the late DO ECHO starts the echo.
+			call.send(t, join([]byte("a"), answers, request(doVerb, telnetTypeOption), []byte("b\r")))
+			stream.expectStream(t, join(opening, asked, request(wont, telnetTypeOption), []byte("b\r\n"), helloTo("ab")))
+		})
 		t.Run("a request split across negotiation's end: its last byte after the 3 seconds, answered once", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
@@ -512,9 +530,9 @@ func TestName(t *testing.T) {
 			})
 		}
 	})
-	t.Run("If the caller sends BS, DEL, CR or LF while the name is empty, then the engine shall write nothing and keep waiting.", func(t *testing.T) {
+	t.Run("If the caller sends BS, DEL, Ctrl-U, CR or LF while the name is empty, then the engine shall write nothing and keep waiting.", func(t *testing.T) {
 		t.Parallel()
-		for name, key := range map[string]byte{"BS": backspace, "DEL": del, "CR": '\r', "LF": '\n'} {
+		for name, key := range map[string]byte{"BS": backspace, "DEL": del, "Ctrl-U": eraseLineKey, "CR": '\r', "LF": '\n'} {
 			t.Run(name+" alone, ECHO agreed: nothing written, then a CR: the echo and Hello a", func(t *testing.T) {
 				t.Parallel()
 				call, stream, sent := answeredCall(t, answers, nil, 5*time.Second)
@@ -525,13 +543,20 @@ func TestName(t *testing.T) {
 				stream.expectStream(t, join(opening, asked, echoed("a")))
 			})
 		}
-		runNameRow(t, nameRow{answer: answers, typed: []byte("a\x08\x08\ra\r"), after: join([]byte("a\x08 \x08"), echoed("a"))})
+		runNameRow(t, nameRow{answer: answers, typed: []byte("a\x08\x08\x15\ra\r"), after: join([]byte("a\x08 \x08"), echoed("a"))})
 	})
 	t.Run("If 70 seconds pass since it accepted a connection, then the engine shall close that connection.", func(t *testing.T) {
 		t.Parallel()
-		ceilingRows(t)
+		t.Run("callers that flood option requests and never read", func(t *testing.T) {
+			t.Parallel()
+			ceilingRows(t, ceilingCallers, func(call caller) { call.flood(t) })
+		})
+		t.Run("callers that flood AYT, AO and IP and never read, their urgent data kept in line", func(t *testing.T) {
+			t.Parallel()
+			ceilingRows(t, commandFloodCallers, func(call caller) { call.floodCommands(t) })
+		})
 	})
-	t.Run("Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as urgent data, reaches negotiation whole and, after negotiation, the caller's next character after it is read as data.", func(t *testing.T) {
+	t.Run("Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as urgent data, reaches negotiation whole and, after negotiation, the caller's next character after it is read as data, and none of the data before it is discarded.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("ab, IAC, DM as urgent data, c CR, after negotiation: Hello abc", func(t *testing.T) {
 			t.Parallel()
@@ -861,14 +886,14 @@ const ceilingCallers = 20
 // ceilingRows floods from 1 second and never reads, each caller against its own engine: each
 // call is closed either at the ceiling or, where the greeting got through, at the name's 60
 // seconds after it; on Windows at least one reaches the ceiling.
-func ceilingRows(t *testing.T) {
+func ceilingRows(t *testing.T, callers int, flood func(caller)) {
 	t.Helper()
 	var mutex sync.Mutex
 	atCeiling := 0
 	var calling sync.WaitGroup
-	for index := range ceilingCallers {
+	for index := range callers {
 		calling.Go(func() {
-			ended := ceilingCall(t, index)
+			ended := ceilingCall(t, index, flood)
 			mutex.Lock()
 			defer mutex.Unlock()
 			if ended == "ceiling" {
@@ -878,18 +903,18 @@ func ceilingRows(t *testing.T) {
 	}
 	calling.Wait()
 	if !t.Failed() && runtime.GOOS == "windows" && atCeiling == 0 {
-		t.Fatalf("of %d callers that flood and never read, none was closed at the ceiling: each got its greeting through", ceilingCallers)
+		t.Fatalf("of %d callers that flood and never read, none was closed at the ceiling: each got its greeting through", callers)
 	}
-	t.Logf("%d of %d callers reached the ceiling", atCeiling, ceilingCallers)
+	t.Logf("%d of %d callers reached the ceiling", atCeiling, callers)
 }
 
 // ceilingCall is one caller of the ceiling's row. It reports how its call ended.
-func ceilingCall(t *testing.T, index int) string {
+func ceilingCall(t *testing.T, index int, flood func(caller)) string {
 	t.Helper()
 	address := startEngine(t, 1)[0]
 	call := dialSmall(t, address)
 	wait(t, call.connected.Add(time.Second))
-	call.flood(t)
+	flood(call)
 	if time.Now().After(call.dialed.Add(negotiationLimit - 100*time.Millisecond)) {
 		t.Errorf("test fault: caller %d's flood took until %v after the dial", index, time.Since(call.dialed))
 		return ""

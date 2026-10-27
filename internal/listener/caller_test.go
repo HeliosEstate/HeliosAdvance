@@ -37,11 +37,14 @@ const (
 	subnegotiationBegin byte = 250
 	subnegotiationEnd   byte = 240
 
-	echo byte = 1
-	sga  byte = 3
+	binary byte = 0
+	echo   byte = 1
+	sga    byte = 3
 
 	telnetTypeOption byte = 24
 	windowSizeOption byte = 31
+	speedOption      byte = 32
+	environOption    byte = 39
 )
 
 // The page's limits, written here so a changed constant in the engine cannot move a test with it.
@@ -77,8 +80,17 @@ const progressLimit = 5 * time.Second
 const early = 20 * time.Millisecond
 
 var (
-	opening = []byte{iac, will, echo, iac, will, sga}
-	answers = join(request(doVerb, echo), request(doVerb, sga))
+	// opening is the eight requests Part 4's line gives, in order.
+	opening = join(
+		request(will, echo), request(will, sga), request(will, binary), request(doVerb, binary),
+		request(doVerb, telnetTypeOption), request(doVerb, windowSizeOption),
+		request(doVerb, environOption), request(doVerb, speedOption))
+	// answers answers all eight, ECHO, SGA and BINARY agreed and the four terminal options
+	// refused, so that no SEND follows and nothing but the call itself reaches the caller.
+	answers = join(
+		request(doVerb, echo), request(doVerb, sga), request(doVerb, binary), request(will, binary),
+		request(wont, telnetTypeOption), request(wont, windowSizeOption),
+		request(wont, environOption), request(wont, speedOption))
 )
 
 func request(verb, option byte) []byte {
@@ -197,7 +209,7 @@ func (call caller) send(t *testing.T, data []byte) sending {
 	return sending{began: began, done: time.Now()}
 }
 
-// readOpening reads the engine's six opening bytes, which must come by the deadline.
+// readOpening reads the engine's 24 opening bytes, which must come by the deadline.
 func (call caller) readOpening(t *testing.T, deadline time.Time) time.Time {
 	t.Helper()
 	_ = call.connection.SetReadDeadline(deadline)
@@ -208,6 +220,23 @@ func (call caller) readOpening(t *testing.T, deadline time.Time) time.Time {
 	}
 	_ = call.connection.SetReadDeadline(time.Time{})
 	return time.Now()
+}
+
+// fillSilently fills the cap with silent callers, dialed in turn across the addresses, then reads
+// every one's opening by one progressLimit from the last dial. Each opening's wait is bounded by
+// the set-up as a whole, so an engine that holds every opening back fails the row in seconds,
+// not once per caller.
+func fillSilently(t *testing.T, addresses []string) []caller {
+	t.Helper()
+	callers := make([]caller, connectionCap)
+	for index := range callers {
+		callers[index] = dial(t, addresses[index%len(addresses)])
+	}
+	deadline := time.Now().Add(progressLimit)
+	for _, call := range callers {
+		call.readOpening(t, deadline)
+	}
+	return callers
 }
 
 // isReset tells a connection reset or abort, as Linux and Windows report it.

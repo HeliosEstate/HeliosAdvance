@@ -21,15 +21,22 @@ const (
 	iac    byte = 255
 	dont   byte = 254
 	doVerb byte = 253
+	wont   byte = 252
 	will   byte = 251
 
 	subnegotiationBegin byte = 250
 	subnegotiationEnd   byte = 240
 
-	echo byte = 1
-	sga  byte = 3
+	binary byte = 0
+	echo   byte = 1
+	sga    byte = 3
 
 	telnetTypeOption byte = 24
+	windowSizeOption byte = 31
+	speedOption      byte = 32
+	environOption    byte = 39
+	// unknownOption is on neither side of the tables, so the engine refuses it.
+	unknownOption byte = 25
 )
 
 // The page's limits and greeting, written here so a changed constant in the engine cannot move
@@ -50,8 +57,13 @@ const margin = 750 * time.Millisecond
 const early = 20 * time.Millisecond
 
 var (
-	opening = []byte{iac, will, echo, iac, will, sga}
-	answers = []byte{iac, doVerb, echo, iac, doVerb, sga}
+	// opening is the eight requests Part 4's line gives, in order.
+	opening = []byte{iac, will, echo, iac, will, sga, iac, will, binary, iac, doVerb, binary,
+		iac, doVerb, telnetTypeOption, iac, doVerb, windowSizeOption, iac, doVerb, environOption, iac, doVerb, speedOption}
+	// answers answers all eight, ECHO, SGA and BINARY agreed and the four terminal options
+	// refused, so that no SEND follows.
+	answers = []byte{iac, doVerb, echo, iac, doVerb, sga, iac, doVerb, binary, iac, will, binary,
+		iac, wont, telnetTypeOption, iac, wont, windowSizeOption, iac, wont, environOption, iac, wont, speedOption}
 )
 
 // caller is one scripted caller's connection.

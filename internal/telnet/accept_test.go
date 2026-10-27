@@ -48,12 +48,12 @@ func waitAccepted(t *testing.T, done <-chan accepted, limit time.Duration) accep
 	}
 }
 
-// acceptedLine is a Line Accept made for a caller that answered DO DO, the opening read.
+// acceptedLine is a Line Accept made for a caller that answered the eight, the opening read.
 func acceptedLine(t *testing.T) (connected, *telnet.Line) {
 	t.Helper()
 	pair := connect(t)
-	done := acceptOn(t.Context(), pair.server)
-	readExactly(t, pair.client, len(opening), time.Now().Add(margin))
+	done := acceptOn(t.Context(), pair.server.TCPConn)
+	expectOpening(t, pair.client, time.Now().Add(margin))
 	write(t, pair.client, answers)
 	got := waitAccepted(t, done, margin)
 	if got.err != nil || got.line == nil {
@@ -116,7 +116,7 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			_ = pair.server.Close()
-			got := waitAccepted(t, acceptOn(t.Context(), pair.server), margin)
+			got := waitAccepted(t, acceptOn(t.Context(), pair.server.TCPConn), margin)
 			if got.line != nil || !errors.Is(got.err, telnet.ErrConnectionFailed) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrConnectionFailed", got.line, got.err)
 			}
@@ -131,13 +131,11 @@ func TestAccept(t *testing.T) {
 
 	t.Run("Once SO_OOBINLINE is set, Accept shall negotiate and return a Line as Open does, whichever Outcome negotiation ends with, or a nil Line and Open's error.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a caller that answers DO DO: the opening, then a Line at once", func(t *testing.T) {
+		t.Run("a caller that answers the eight: the opening, then a Line at once", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			done := acceptOn(t.Context(), pair.server)
-			if got := readExactly(t, pair.client, len(opening), time.Now().Add(margin)); string(got) != string(opening) {
-				t.Fatalf("the opening was % x", got)
-			}
+			done := acceptOn(t.Context(), pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
 			sent := write(t, pair.client, answers)
 			got := waitAccepted(t, done, margin)
 			if got.err != nil || got.line == nil {
@@ -148,8 +146,8 @@ func TestAccept(t *testing.T) {
 		t.Run("a silent caller: a Line 3 seconds after the opening", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			done := acceptOn(t.Context(), pair.server)
-			readExactly(t, pair.client, len(opening), time.Now().Add(margin))
+			done := acceptOn(t.Context(), pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
 			got := waitAccepted(t, done, negotiationLimit+2*margin)
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
@@ -159,8 +157,8 @@ func TestAccept(t *testing.T) {
 		t.Run("a caller that closes during negotiation: no Line, ErrCallerClosed", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			done := acceptOn(t.Context(), pair.server)
-			readExactly(t, pair.client, len(opening), time.Now().Add(margin))
+			done := acceptOn(t.Context(), pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
 			_ = pair.client.CloseWrite()
 			got := waitAccepted(t, done, margin)
 			if got.line != nil || !errors.Is(got.err, telnet.ErrCallerClosed) || !errors.Is(got.err, io.EOF) {
@@ -171,13 +169,166 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
-			done := acceptOn(ctx, pair.server)
-			readExactly(t, pair.client, len(opening), time.Now().Add(margin))
+			done := acceptOn(ctx, pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
 			cancel()
 			got := waitAccepted(t, done, margin)
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)
 			}
+		})
+	})
+}
+
+func TestAcceptUrgent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as urgent data, reaches negotiation whole and, after negotiation, the caller's next character after it is read as data, and none of the data before it is discarded.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("a Synch between the seventh and the eighth answer: Answered at the eighth, not at 3 seconds", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			done := acceptOn(t.Context(), pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
+			write(t, pair.client, answers[:21])
+			writeUrgent(t, pair.client, command(dataMark))
+			sent := write(t, pair.client, answers[21:])
+			got := waitAccepted(t, done, negotiationLimit+2*margin)
+			if got.err != nil || got.line == nil {
+				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
+			}
+			expectWithin(t, "Accept's return", got.returned, sent, sent.Add(margin))
+		})
+		t.Run("ab, a Synch, cd after negotiation: a, b, c, d", func(t *testing.T) {
+			t.Parallel()
+			pair, line := acceptedLine(t)
+			write(t, pair.client, []byte("ab"))
+			writeUrgent(t, pair.client, command(dataMark))
+			write(t, pair.client, []byte("cd"))
+			expectData(t, line, []byte("abcd"))
+		})
+		t.Run("ab and IAC, then DM alone as urgent data, then cd: a, b, c, d", func(t *testing.T) {
+			t.Parallel()
+			pair, line := acceptedLine(t)
+			write(t, pair.client, []byte{'a', 'b', iac})
+			writeUrgent(t, pair.client, []byte{dataMark})
+			write(t, pair.client, []byte("cd"))
+			expectData(t, line, []byte("abcd"))
+		})
+	})
+
+	t.Run("When the engine sends a Synch on a Line Accept made, the caller shall receive IAC DM with DM as TCP urgent data.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("AO during negotiation: IAC, then DM as urgent data", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			done := acceptOn(t.Context(), pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
+			write(t, pair.client, command(abortOutput))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			write(t, pair.client, answers)
+			if got := waitAccepted(t, done, margin); got.err != nil || got.line == nil {
+				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
+			}
+		})
+		t.Run("x, IP, y after negotiation: x, then the Synch, then y", func(t *testing.T) {
+			t.Parallel()
+			pair, line := acceptedLine(t)
+			write(t, pair.client, join([]byte("x"), command(interruptProcess), []byte("y")))
+			expectData(t, line, []byte("xy"))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			expectQuiet(t, pair.client)
+		})
+	})
+
+	t.Run("While a Synch's write on a Line Accept made waits for room, a passed write deadline or the context ending shall wake it, as it wakes every other write, on Linux and on Windows.", func(t *testing.T) {
+		t.Parallel()
+		// Each caller keeps its urgent data in line and never reads, so the Synch's write is the
+		// one that waits: the Line's own buffer is empty, and the test filled the connection past
+		// it.
+		stalled := func(t *testing.T) (connected, *telnet.Line) {
+			t.Helper()
+			pair, line := acceptedLine(t)
+			keepUrgentInLine(t, pair.client)
+			fill(t, pair.server.TCPConn)
+			write(t, pair.client, join(command(abortOutput), []byte("k")))
+			return pair, line
+		}
+		// recvBounded calls RecvChar on its own goroutine and waits for it no later than until:
+		// a Synch's write that no deadline wakes would otherwise hold the row, and every row after
+		// it, until the package's own timeout. Past until, the caller resets, which ends any
+		// send, and the row fails.
+		recvBounded := func(t *testing.T, pair connected, recv func() error, until time.Time) (time.Time, error) {
+			t.Helper()
+			done := make(chan error, 1)
+			go func() { done <- recv() }()
+			timer := time.NewTimer(time.Until(until))
+			defer timer.Stop()
+			select {
+			case err := <-done:
+				return time.Now(), err
+			case <-timer.C:
+				reset(t, pair.client)
+				<-done
+				t.Fatalf("RecvChar was still waiting at the row's bound: the Synch's write was not woken")
+				return time.Time{}, nil
+			}
+		}
+		t.Run("RecvChar's deadline at 500 ms: os.ErrDeadlineExceeded then, and the Line writes nothing more", func(t *testing.T) {
+			t.Parallel()
+			pair, line := stalled(t)
+			deadline := time.Now().Add(500 * time.Millisecond)
+			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(5*time.Second))
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("RecvChar returned %v, want os.ErrDeadlineExceeded", err)
+			}
+			expectWithin(t, "RecvChar's return", returned, deadline, deadline.Add(margin))
+			for name, call := range map[string]func() error{
+				"SendChar": func() error { return line.SendChar(t.Context(), 'x') },
+				"Flush":    func() error { return line.Flush(t.Context()) },
+				"RecvChar": func() error { _, err := line.RecvChar(t.Context(), time.Now().Add(margin)); return err },
+			} {
+				if err := call(); !errors.Is(err, telnet.ErrConnectionFailed) {
+					t.Fatalf("%s after the Synch's write failed returned %v, want ErrConnectionFailed", name, err)
+				}
+			}
+		})
+		t.Run("the context cancelled at 500 ms: context.Canceled at once", func(t *testing.T) {
+			t.Parallel()
+			pair, line := stalled(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			cancelAt := time.Now().Add(500 * time.Millisecond)
+			time.AfterFunc(time.Until(cancelAt), cancel)
+			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(ctx, time.Now().Add(10*time.Second)); return err }, time.Now().Add(5*time.Second))
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("RecvChar returned %v, want context.Canceled", err)
+			}
+			expectWithin(t, "RecvChar's return", returned, cancelAt, cancelAt.Add(margin))
+		})
+		t.Run("the context's deadline at 500 ms, reported only later: context.DeadlineExceeded at it", func(t *testing.T) {
+			t.Parallel()
+			pair, line := stalled(t)
+			deadline := time.Now().Add(500 * time.Millisecond)
+			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(endsLate(t, deadline), deadline.Add(5*time.Second)); return err }, time.Now().Add(5*time.Second))
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("RecvChar returned %v, want context.DeadlineExceeded", err)
+			}
+			expectWithin(t, "RecvChar's return", returned, deadline, deadline.Add(margin))
+		})
+		t.Run("during negotiation, the context's deadline at 1 second: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			keepUrgentInLine(t, pair.client)
+			deadline := time.Now().Add(time.Second)
+			done := acceptOn(withDeadline(t, deadline), pair.server.TCPConn)
+			expectOpening(t, pair.client, time.Now().Add(margin))
+			fill(t, pair.server.TCPConn)
+			write(t, pair.client, join(command(abortOutput), lateAnswers))
+			got := waitAccepted(t, done, time.Until(deadline)+2*margin)
+			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
+				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)
+			}
+			expectWithin(t, "Accept's return", got.returned, deadline, deadline.Add(margin))
 		})
 	})
 }
