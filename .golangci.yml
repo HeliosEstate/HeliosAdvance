@@ -49,6 +49,14 @@ linters:
             # and kept by the Go team, and watched by govulncheck and Dependabot here, where writing
             # our own would put thousands of lines of cryptographic protocol at the trust boundary.
             - golang.org/x/crypto/ssh$
+            # The Telnet unit's Windows urgent write, and only that package of the module: the
+            # standard library cannot wait for room on a Windows socket, and its syscall package
+            # lacks the event and overlapped calls Winsock documents for a send with a time limit.
+            # Kept by the Go team, already in go.sum through the SSH library, and watched by
+            # govulncheck, Dependabot and the licence gate; the alternative, a non-blocking switch
+            # on Go's overlapped socket and a 10 ms retry, rests on behaviour Microsoft does not
+            # document (developer, 2026-10-27).
+            - golang.org/x/sys/windows$
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -66,6 +74,9 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+            # The Windows urgent write's overlapped send, event and cancel (docs/architecture.md);
+            # the module's other packages are not allowed.
+            - golang.org/x/sys/windows$
             # Its own path, so its black-box tests in package telnet_test can import it.
             - github.com/heliosestate/heliosadvance/internal/telnet
         session:
