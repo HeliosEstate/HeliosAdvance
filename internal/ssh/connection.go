@@ -74,7 +74,8 @@ func wakeOnEnd(ctx context.Context, socket net.Conn) (release func()) {
 	}
 }
 
-// wake sets both of the socket's deadlines long past.
+// wake passes the deadlines because a read or write blocked in the library returns only when its
+// socket's deadline passes.
 func wake(socket net.Conn) {
 	//nolint:errcheck // a socket that cannot be set is failing, and its end reaches every call
 	socket.SetDeadline(wokenDeadline)

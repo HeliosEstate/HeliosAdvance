@@ -92,7 +92,7 @@ func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKe
 	go state.drainExtended()
 	// The requests are drained for as long as the channel lives, even after an error here: the
 	// library's reader blocks when the queue is full.
-	defer func() { go shared.refuseRequests(sessionRequests) }()
+	defer func() { go refuseRequests(sessionRequests) }()
 
 	if err := channel.awaitShell(ctx, sessionRequests); err != nil {
 		return nil, err
@@ -123,7 +123,6 @@ func (connection *connection) serveChannels(
 		//nolint:errcheck // nothing else is told of a refusal that cannot be sent
 		newChannel.Reject(reason, "")
 	}
-	// No result tells how the connection ended, only that it has.
 	//nolint:errcheck // no result reads how the connection ended
 	server.Wait()
 	close(connection.ended)
@@ -132,7 +131,7 @@ func (connection *connection) serveChannels(
 // refuseRequests answers every request with failure until the library ends the channel. A reply
 // that cannot be sent means the connection is failing, which every call learns from its end; the
 // draining goes on, since the library's reader blocks on a full queue.
-func (connection *connection) refuseRequests(requests <-chan *cryptossh.Request) {
+func refuseRequests(requests <-chan *cryptossh.Request) {
 	for request := range requests {
 		//nolint:errcheck // a reply that cannot be sent means the connection is ending
 		request.Reply(false, nil)
@@ -141,9 +140,10 @@ func (connection *connection) refuseRequests(requests <-chan *cryptossh.Request)
 
 // awaitShell answers the channel's requests until the first shell. It reads nothing: end of file
 // before the shell changes nothing, and a read kept waiting through it would store the end, so
-// that RecvChar after the shell would meet it before the wait that writes out the echo.
+// that RecvChar after the shell would meet it before the wait that writes out the echo. The
+// library closes the session's requests when the connection ends and keeps what was queued, so a
+// shell asked for just before that end is still answered.
 func (channel *Channel) awaitShell(ctx context.Context, requests <-chan *cryptossh.Request) error {
-	state := &channel.state
 	for {
 		select {
 		case request, open := <-requests:
@@ -157,33 +157,8 @@ func (channel *Channel) awaitShell(ctx context.Context, requests <-chan *cryptos
 			if shell {
 				return nil
 			}
-		case <-state.connection.ended:
-			return channel.drainBeforeEnd(requests)
 		case <-ctx.Done():
 			return deadlineEnded(ctx.Err())
-		}
-	}
-}
-
-// drainBeforeEnd answers what the library had queued when the connection ended: it closes the
-// session's requests at that end and keeps what was queued, so a shell asked for just before it
-// is still answered.
-func (channel *Channel) drainBeforeEnd(requests <-chan *cryptossh.Request) error {
-	for {
-		select {
-		case request, open := <-requests:
-			if !open {
-				return ErrNoShell
-			}
-			shell, err := channel.answer(request)
-			if err != nil {
-				return err
-			}
-			if shell {
-				return nil
-			}
-		default:
-			return ErrNoShell
 		}
 	}
 }
