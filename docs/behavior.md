@@ -166,8 +166,8 @@ that only a Telnet caller meets to a Telnet caller.
 - The engine shall accept `pty-req` and `shell` on the session channel until the first `shell`,
   and refuse every other channel request and every global request.
 - The engine shall discard everything an SSH caller sends as extended data.
-- If an SSH caller sends end of file or closes the channel before the name ends, then the engine
-  shall close the connection, writing nothing more but the channel close SSH requires in reply.
+- If an SSH caller closes the channel before the name ends, then the engine shall close the
+  connection, writing nothing more but the channel close SSH requires in reply.
 
 #### Nothing kept
 
@@ -217,3 +217,16 @@ standard requires. It keeps nothing a caller's terminal reports.
 
 - The engine shall not store, log or show anything a caller sends inside a subnegotiation.
 - The engine shall write the same to a caller, whatever it sends inside a subnegotiation.
+
+### Part 7: End of file before the shell
+
+An SSH caller that sends end of file before it asks for a shell is still answered when it asks:
+what it sent before the end of file is read in order, and the call ends at the end of file. Part 7
+changes one of Part 3's lines, on the connection.
+
+#### End of file
+
+- If an SSH caller's data ends, by end of file, before the name ends, then, once the caller has
+  asked for a shell and the greeting and name prompt are written, the engine shall close the
+  connection when it reaches the end of file, writing nothing more but the channel close SSH
+  requires in reply.

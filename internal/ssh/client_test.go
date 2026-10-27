@@ -207,6 +207,17 @@ func (client *rawClient) sendPacket(payload []byte) {
 	client.write(client.frame(payload))
 }
 
+// sendTogether frames each payload in order and sends them in one write, so that the engine's
+// library reads them as they came, with nothing between.
+func (client *rawClient) sendTogether(payloads ...[]byte) {
+	client.t.Helper()
+	var framed []byte
+	for _, payload := range payloads {
+		framed = append(framed, client.frame(payload)...)
+	}
+	client.write(framed)
+}
+
 func (client *rawClient) frame(payload []byte) []byte {
 	block := 8
 	lengthCounted := 4

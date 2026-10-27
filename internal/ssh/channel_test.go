@@ -342,7 +342,7 @@ func TestChannel(t *testing.T) {
 		})
 	})
 
-	t.Run("Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes waiting.", func(t *testing.T) {
+	t.Run("Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes waiting, unless a write on the Channel has failed or no byte is waiting and an end or a failure is already stored; then it returns ErrConnectionFailed or io.EOF as the other lines give.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("ab waiting, a read, then a deadline already past: os.ErrDeadlineExceeded, and b is still there", func(t *testing.T) {
 			t.Parallel()
@@ -364,9 +364,61 @@ func TestChannel(t *testing.T) {
 			}
 			expectWithin(t, "RecvChar's return", returned, deadline, deadline.Add(margin))
 		})
+		t.Run("end of file, io.EOF, then a call whose deadline has passed: io.EOF again, the stored end winning", func(t *testing.T) {
+			t.Parallel()
+			call := acceptCall(t, false, "", clientWindow)
+			call.client.sendPacket(message(messageChannelEOF).uint32Value(call.client.engineChannel).data)
+			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, io.EOF) {
+				t.Fatalf("RecvChar gave %q, %v, want io.EOF", got, err)
+			}
+			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(-time.Second)); !errors.Is(err, io.EOF) {
+				t.Fatalf("the next RecvChar, its deadline past, gave %q, %v, want io.EOF", got, err)
+			}
+		})
+		t.Run("a reset seen by RecvChar, then a call whose deadline has passed: ErrConnectionFailed, the stored failure winning", func(t *testing.T) {
+			t.Parallel()
+			call := acceptCall(t, false, "", clientWindow)
+			_ = call.client.connection.SetLinger(0)
+			_ = call.client.connection.Close()
+			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, ssh.ErrConnectionFailed) {
+				t.Fatalf("RecvChar gave %q, %v, want ErrConnectionFailed", got, err)
+			}
+			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(-time.Second)); !errors.Is(err, ssh.ErrConnectionFailed) {
+				t.Fatalf("the next RecvChar, its deadline past, gave %q, %v, want ErrConnectionFailed", got, err)
+			}
+		})
+		t.Run("a write the context cut short, then a call whose deadline has passed: ErrConnectionFailed, the failed write winning", func(t *testing.T) {
+			t.Parallel()
+			call := acceptCall(t, false, "", 16)
+			sendText(t, call.channel, bytes.Repeat([]byte("abcdefgh"), 12))
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			t.Cleanup(cancel)
+			if err := call.channel.Flush(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Flush gave %v, want the context's deadline", err)
+			}
+			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(-time.Second)); !errors.Is(err, ssh.ErrConnectionFailed) {
+				t.Fatalf("RecvChar, its deadline past, gave %q, %v, want ErrConnectionFailed", got, err)
+			}
+		})
+		t.Run("ab and end of file before the shell, then a call whose deadline has passed: os.ErrDeadlineExceeded, the bytes waiting, then a, b and io.EOF", func(t *testing.T) {
+			t.Parallel()
+			client, results := endBeforeShell(t, false, "ab")
+			client.toShell(false)
+			channel := expectChannel(t, waitAccept(t, results, 5*time.Second))
+			// Time for any read the shell's wait began to finish: with a and b waiting, a stored
+			// end must not win over the deadline.
+			waitUntil(t, time.Now().Add(quietFor))
+			if got, err := channel.RecvChar(t.Context(), time.Now().Add(-time.Second)); !errors.Is(err, errDeadline) {
+				t.Fatalf("RecvChar, its deadline past, gave %q, %v, want os.ErrDeadlineExceeded", got, err)
+			}
+			expectReceived(t, channel, "ab")
+			if got, err := channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, io.EOF) {
+				t.Fatalf("after a and b RecvChar gave %q, %v, want io.EOF", got, err)
+			}
+		})
 	})
 
-	t.Run("If the caller sends end of file, closes the channel or closes the connection while no byte is waiting, then RecvChar shall return io.EOF.", func(t *testing.T) {
+	t.Run("If the caller sends end of file, closes the channel, closes the connection or sends a disconnect message while no byte is waiting, then RecvChar shall return io.EOF.", func(t *testing.T) {
 		t.Parallel()
 		for _, row := range []struct {
 			name string
@@ -378,7 +430,8 @@ func TestChannel(t *testing.T) {
 			{"the channel's close", func(client *rawClient) {
 				client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
 			}},
-			{"the connection's close", func(client *rawClient) { _ = client.connection.CloseWrite() }},
+			{connectionCloseRow, func(client *rawClient) { _ = client.connection.CloseWrite() }},
+			{disconnectRow, func(client *rawClient) { client.sendPacket(disconnectMessage()) }},
 		} {
 			t.Run("ab, then "+row.name+": a, b, then io.EOF", func(t *testing.T) {
 				t.Parallel()
@@ -391,31 +444,49 @@ func TestChannel(t *testing.T) {
 				}
 			})
 		}
-		t.Run("with a terminal, x read and its echo queued, then the connection's close: io.EOF", func(t *testing.T) {
-			t.Parallel()
-			call := acceptCall(t, true, "", clientWindow)
-			call.client.sendData("x")
-			expectReceived(t, call.channel, "x")
-			sendText(t, call.channel, []byte("x"))
-			_ = call.client.connection.Close()
-			// The close reaches the engine before the call, so the queued echo meets a connection
-			// the caller ended in order.
-			waitUntil(t, time.Now().Add(quietFor))
-			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, io.EOF) {
-				t.Fatalf("RecvChar gave %q, %v, want io.EOF", got, err)
-			}
-		})
-		t.Run("end of file, io.EOF, then a call whose deadline has passed: io.EOF again, the stored end winning", func(t *testing.T) {
-			t.Parallel()
-			call := acceptCall(t, false, "", clientWindow)
-			call.client.sendPacket(message(messageChannelEOF).uint32Value(call.client.engineChannel).data)
-			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, io.EOF) {
-				t.Fatalf("RecvChar gave %q, %v, want io.EOF", got, err)
-			}
-			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(-time.Second)); !errors.Is(err, io.EOF) {
-				t.Fatalf("the next RecvChar, its deadline past, gave %q, %v, want io.EOF", got, err)
-			}
-		})
+	})
+
+	t.Run("If the write it makes before it waits meets the caller's close of the connection in order, its end of file or a disconnect message, then RecvChar shall return io.EOF, that write not counting as failed, and a later Flush, or a SendChar that must write, shall return ErrConnectionFailed.", func(t *testing.T) {
+		t.Parallel()
+		for _, row := range []struct {
+			name string
+			end  func(client *rawClient)
+		}{
+			{connectionCloseRow, func(client *rawClient) { _ = client.connection.Close() }},
+			{disconnectRow, func(client *rawClient) { client.sendPacket(disconnectMessage()) }},
+		} {
+			t.Run("with a terminal, x read and its echo queued, then "+row.name+": io.EOF, io.EOF again, then Flush ErrConnectionFailed", func(t *testing.T) {
+				t.Parallel()
+				call := echoMeetsClose(t, row.end)
+				if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, io.EOF) {
+					t.Fatalf("the next RecvChar gave %q, %v, want io.EOF: the echo's write is not counted as failed", got, err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				if err := call.channel.Flush(ctx); !errors.Is(err, ssh.ErrConnectionFailed) {
+					t.Fatalf("Flush gave %v, want ErrConnectionFailed", err)
+				}
+			})
+			t.Run("with a terminal, x read and its echo queued, then "+row.name+": io.EOF, then SendChar queues until the buffer is full and fails at the byte that must write", func(t *testing.T) {
+				t.Parallel()
+				call := echoMeetsClose(t, row.end)
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				// The line leaves open whether the unsent x still fills a place, so the byte that
+				// must write is the 1024th or the 1025th.
+				for count := 1; count <= sendBufferSize+1; count++ {
+					err := call.channel.SendChar(ctx, 'y')
+					if err == nil {
+						continue
+					}
+					if count < sendBufferSize || !errors.Is(err, ssh.ErrConnectionFailed) {
+						t.Fatalf("SendChar %d gave %v, want no error until the buffer is full, then ErrConnectionFailed", count, err)
+					}
+					return
+				}
+				t.Fatalf("SendChar queued %d bytes with no error, more than the buffer holds", sendBufferSize+1)
+			})
+		}
 	})
 
 	t.Run("If the context has ended when RecvChar is called, or ends while it waits, then RecvChar shall return the context's error, wrapped, and no byte.", func(t *testing.T) {
@@ -713,6 +784,24 @@ func expectClosingMessages(t *testing.T, client *rawClient, queued string) {
 			t.Fatalf("closing message %d was %v, %v, want %v", index+1, payload, err, each)
 		}
 	}
+}
+
+// echoMeetsClose reaches where the write-meets-close line starts: with a terminal, x read and its
+// echo queued, the caller's end, then a RecvChar whose write of the echo meets it, giving io.EOF.
+func echoMeetsClose(t *testing.T, end func(client *rawClient)) openCall {
+	t.Helper()
+	call := acceptCall(t, true, "", clientWindow)
+	call.client.sendData("x")
+	expectReceived(t, call.channel, "x")
+	sendText(t, call.channel, []byte("x"))
+	end(call.client)
+	// The end reaches the engine before the call, so the queued echo meets a connection the
+	// caller ended in order.
+	waitUntil(t, time.Now().Add(quietFor))
+	if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(5*time.Second)); !errors.Is(err, io.EOF) {
+		t.Fatalf("RecvChar gave %q, %v, want io.EOF", got, err)
+	}
+	return call
 }
 
 // expectFailedAfter checks every call fails once a write did, and that nothing they could write
