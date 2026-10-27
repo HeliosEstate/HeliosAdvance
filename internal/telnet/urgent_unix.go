@@ -20,7 +20,7 @@ func setUrgentInLine(descriptor uintptr) error {
 // it, so the platform keeps nothing between sends.
 type urgentState struct{}
 
-// writeUrgentByte sends the byte as urgent data without blocking, and returns false from the
+// write sends the byte as urgent data without blocking, and returns false from the
 // callback when the socket has no room, so Go's poller waits for it, with the write deadline.
 func (state *urgentState) write(connection *net.TCPConn, value byte) error {
 	raw, err := connection.SyscallConn()

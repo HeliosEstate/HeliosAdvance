@@ -89,7 +89,7 @@ func (connection *acceptedConn) SetWriteDeadline(deadline time.Time) error {
 	return errors.Join(connection.TCPConn.SetWriteDeadline(deadline), wakeErr)
 }
 
-// writeUrgentByte runs the whole send inside one RawConn.Write callback, under Go's write lock,
+// write runs the whole send inside one RawConn.Write callback, under Go's write lock,
 // which also holds a reference to the socket: the listener's Close waits for the callback, so the
 // handle stays valid for every call made on it. The callback always returns true, since Go's
 // Windows RawWrite fails at once on false.
