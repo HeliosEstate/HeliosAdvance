@@ -269,7 +269,7 @@ func TestAcceptUrgent(t *testing.T) {
 				return time.Now(), err
 			case <-timer.C:
 				reset(t, pair.client)
-				<-done
+				_ = <-done
 				t.Fatalf("RecvChar was still waiting at the row's bound: the Synch's write was not woken")
 				return time.Time{}, nil
 			}
