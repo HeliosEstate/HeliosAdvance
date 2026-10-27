@@ -7,8 +7,8 @@
 //
 // It owns judging a call's context by the clock as well as by the context's own report, and
 // setting a connection's read and write deadlines long past so that a read or write waiting on it
-// returns. It does not own what a unit returns to its caller: each unit turns Ended's answer and a
-// wake's failure into its own result, as its own contract says, so no caller sees a change. It
+// returns. It does not own what a unit returns to its caller: each unit turns Ended's answer into its
+// own result, as its own contract says, so no caller sees a change. It
 // writes nothing to the local log, stores nothing and keeps nothing between calls.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
@@ -71,10 +71,10 @@ func Wake(conn Conn) error {
 //     goroutine of its own, unless the release has stopped it before it began.
 //   - If ctx has already ended when WakeOnEnd is called, then the wake shall have begun when
 //     WakeOnEnd returns.
-//   - If Wake returns an error and onFail is not nil, then the wake shall call onFail with that
-//     error, once, before the wake ends; when onFail is nil, the error is dropped.
+//   - If Wake returns an error, then the wake shall drop it: the call's time has already run out,
+//     and each unit reports that, whatever the connection does next.
 //   - When the release returns, no wake shall be running and none shall begin afterwards: the
 //     release stops a wake that has not begun, and waits for one that has begun to end.
-func WakeOnEnd(ctx context.Context, conn Conn, onFail func(error)) (release func()) {
-	return wakeOnEnd(ctx, conn, onFail)
+func WakeOnEnd(ctx context.Context, conn Conn) (release func()) {
+	return wakeOnEnd(ctx, conn)
 }
