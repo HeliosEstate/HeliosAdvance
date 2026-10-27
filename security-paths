@@ -7,3 +7,4 @@ internal/listener/*
 internal/session/*
 internal/textio/*
 internal/ssh/*
+internal/database/*
