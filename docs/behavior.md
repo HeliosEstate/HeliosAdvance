@@ -221,8 +221,8 @@ standard requires. It keeps nothing a caller's terminal reports.
 ### Part 7: End of file before the shell
 
 An SSH caller that sends end of file before it asks for a shell is still answered when it asks:
-what it sent before the end of file is read in order, and the call ends at the end of file. Part 7
-changes one of Part 3's lines, on the connection.
+what it sent before the end of file is read in order, and when the name has not ended by then, the
+call ends at the end of file. Part 7 changes one of Part 3's lines, on the connection.
 
 #### End of file
 
