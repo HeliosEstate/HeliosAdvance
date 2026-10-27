@@ -149,14 +149,15 @@ var (
 )
 
 var (
-	// ErrNoShell means the call ended before the shell, however it ended: the caller's close, a
-	// disconnect message, a sign-in method other than none, a handshake that fails or any other
-	// failure. How it ended is not told apart (the developer, 2026-10-27): the shared execution
-	// path ends the call the same way for each. It never carries the library's text.
+	// ErrNoShell means the connection or the session channel ended before the shell, however it
+	// ended, end of file apart: the caller's close, a disconnect message, a sign-in method other
+	// than none, a handshake that fails or any other failure. How it ended is not told apart (the
+	// developer, 2026-10-27): the shared execution path ends the call the same way for each. It
+	// never carries the library's text.
 	ErrNoShell = errors.New("ssh: the call ended before the shell")
-	// ErrConnectionFailed means a wrong call: a HostKey not made by ReadHostKey, or a Channel not
-	// made by Accept.
-	ErrConnectionFailed = errors.New("ssh: the connection failed")
+	// ErrConnectionFailed means a wrong call: a nil connection, a HostKey not made by ReadHostKey,
+	// or a Channel not made by Accept.
+	ErrConnectionFailed = errors.New("ssh: a nil connection, or a key or Channel not made here")
 	// ErrDeadlineEnded means Accept's context ended first: the call's ceiling or a stop. It is
 	// returned wrapping context.DeadlineExceeded or context.Canceled, so errors.Is matches both.
 	ErrDeadlineEnded = errors.New("ssh: the deadline ended first")
@@ -199,11 +200,12 @@ func ReadHostKey(path string) (*HostKey, error) {
 // the shared execution path closes it, after an error too. On an error it returns a nil Channel.
 // It reports only what the engine decides (the developer, 2026-10-27): ErrDeadlineEnded when the
 // context ended first, a context whose deadline has passed having ended, by the clock; ErrNoShell
-// for every other end before the shell, however it ended.
+// for every other end of the connection or the session channel before the shell, however it ended.
 //
 // End of file before the shell changes nothing (Part 7, the developer's of 2026-10-26): the
 // channel stays open after it (RFC 4254), so Accept goes on waiting, and once the shell has
-// started the Channel returns the data sent before the end of file, then io.EOF.
+// started the Channel returns the data sent before the end of file, then io.EOF, for a caller
+// that sends nothing after its end of file (see Untrusted input).
 //
 //	The caller opens or sends            Accept answers
 //	sign-in none, any username           accepted
@@ -229,17 +231,16 @@ func ReadHostKey(path string) (*HostKey, error) {
 //     gives.
 //   - When the caller has signed in, opened a session channel and asked for a shell, Accept shall
 //     return the Channel and no error.
-//   - If the caller tries any sign-in method but none, then Accept shall return ErrNoShell.
-//   - If the call ends before the shell, however it ends, and the context has not ended, then
-//     Accept shall return ErrNoShell.
+//   - If the connection or the session channel ends before the shell, however it ends, end of
+//     file apart, and the context has not ended, then Accept shall return ErrNoShell.
 //   - If the caller sends end of file on the session channel before the shell, then Accept shall
 //     not return because of it; every other line still applies.
 //   - If the context has ended when Accept is called, or ends while it waits, then Accept shall
 //     return ErrDeadlineEnded wrapping the context's error, without writing more.
-//   - If the context has ended when the call ends, however it ends, then Accept shall return
-//     ErrDeadlineEnded.
-//   - If key is nil or not made by ReadHostKey, then Accept shall return ErrConnectionFailed
-//     without writing to the connection.
+//   - If the context has ended when the connection or the session channel ends, however it ends,
+//     then Accept shall return ErrDeadlineEnded.
+//   - If connection is nil, or key is nil or not made by ReadHostKey, then Accept shall return
+//     ErrConnectionFailed without writing to the connection.
 func Accept(ctx context.Context, connection *net.TCPConn, key *HostKey) (*Channel, error) {
 	return accept(ctx, connection, key)
 }
@@ -253,17 +254,21 @@ func Accept(ctx context.Context, connection *net.TCPConn, key *HostKey) (*Channe
 // no answer. A Channel not made by Accept, or nil, fails every call with ErrConnectionFailed, and
 // its Echoes returns false. One goroutine per Channel.
 //
-// Its calls report only what the engine decides (the developer, 2026-10-27), in the textio
-// package's terms: the context's error, wrapped, when the context ended first, a context whose
-// deadline has passed having ended, by the clock; io.EOF for every other end of the caller's data
-// or of the connection, however it ended: end of file, the channel's close, the connection's
-// close, a disconnect message, a reset, or a write that failed or was cut short; and
-// os.ErrDeadlineExceeded when RecvChar's deadline passed and nothing has ended. Once a call has
-// returned io.EOF, every later call writes nothing and returns io.EOF. A context ending wakes a
-// waiting call at once. The library gives a channel write no deadline, so a write cut short by a
-// deadline or the context ends the Channel's writing, and what it handed the library may still go
-// out before the connection closes. End of file on the channel alone closes nothing: writes go
-// on until RecvChar has returned io.EOF.
+// SendChar, Flush and RecvChar report only what the engine decides (the developer, 2026-10-27),
+// as the textio package's table has it: os.ErrDeadlineExceeded when the deadline given passed
+// first; the context's error, wrapped, when the context ended first; and io.EOF for every end of
+// the caller's data or of the connection, however it ended: end of file, the channel's close, the
+// connection's close, a disconnect message, a reset, or a write that failed. When two happen at
+// once, the context ending wins, then an end with no byte waiting or an earlier failed write,
+// then a passed deadline; a context whose deadline has passed has ended, by the clock. A context
+// ending wakes a waiting call at once. The library gives a channel write no deadline, so a write
+// cut short by a deadline or the context gives that call the deadline's or the context's result
+// and counts as failed for every later call: the Channel writes nothing more, and what that write
+// handed the library may still go out before the connection closes. Once a write has failed,
+// every later SendChar, Flush and RecvChar writes nothing and returns io.EOF, unless the context
+// has ended; once the caller's data has ended and no byte is waiting, every later RecvChar returns
+// io.EOF, unless the context has ended. End of file on the channel alone closes nothing, and
+// writes go on.
 type Channel struct {
 	state channelState
 }
@@ -289,8 +294,8 @@ func (channel *Channel) SendChar(ctx context.Context, character byte) error {
 //   - If the context has ended when Flush is called, or ends while it waits, then Flush shall
 //     write nothing more and return the context's error, wrapped.
 //   - If a write fails otherwise, then Flush shall return io.EOF.
-//   - Once a call on the Channel has returned io.EOF, every later SendChar, Flush and RecvChar
-//     shall write nothing and return io.EOF.
+//   - After a write has failed, every later SendChar, Flush and RecvChar on the Channel shall
+//     write nothing and return io.EOF, unless the context has ended.
 func (channel *Channel) Flush(ctx context.Context) error {
 	return channel.flush(ctx)
 }
@@ -303,11 +308,12 @@ func (channel *Channel) Flush(ctx context.Context) error {
 //   - Before it waits for the caller, RecvChar shall write the send buffer out as Flush does,
 //     under deadline.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes
-//     waiting, unless no byte is waiting and the call has ended, or the write it makes before it
-//     waits has failed; then it shall return io.EOF.
-//   - If the call ends, however it ends, while no byte is waiting, then RecvChar shall return
-//     io.EOF.
-//   - If the write it makes before it waits fails, then RecvChar shall return io.EOF.
+//     waiting, unless an earlier write on the Channel has failed, or no byte is waiting and the
+//     caller's data has ended; then it shall return io.EOF.
+//   - If the caller's data ends, however it ends, while no byte is waiting, then RecvChar shall
+//     return io.EOF.
+//   - If the write it makes before it waits fails, other than by its deadline or the context,
+//     then RecvChar shall return io.EOF.
 //   - If the context has ended when RecvChar is called, or ends while it waits, then RecvChar
 //     shall return the context's error, wrapped, and no byte.
 //   - RecvChar shall read into a buffer of ReadBufferSize bytes and hold at most that many bytes
