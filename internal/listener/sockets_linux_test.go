@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The caller's socket calls the standard library has none for: an urgent send, and a receive
-// buffer set before the connection opens.
+// The caller's socket calls the standard library has none for: urgent data sent, received and kept
+// in line, and a receive buffer set before the connection opens.
 package listener_test
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"syscall"
+	"testing"
+	"time"
 )
 
 // smallWindow sets a socket's receive buffer to 4096 bytes before it connects, so the window it
@@ -38,4 +42,51 @@ func sendUrgent(connection *net.TCPConn, value byte) error {
 		return err
 	}
 	return sendErr
+}
+
+// keepUrgentInLine sets SO_OOBINLINE on the caller's own end, for the rows whose caller never
+// reads its urgent data, so it stays in the stream like any other byte.
+func keepUrgentInLine(t *testing.T, connection *net.TCPConn) {
+	t.Helper()
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var setErr error
+	if err := raw.Control(func(descriptor uintptr) {
+		setErr = syscall.SetsockoptInt(int(descriptor), syscall.SOL_SOCKET, syscall.SO_OOBINLINE, 1)
+	}); err != nil || setErr != nil {
+		t.Fatalf("keeping the caller's urgent data in line: %v, %v", err, setErr)
+	}
+}
+
+// receiveUrgent takes the urgent byte waiting on the connection, out of band, polling until it
+// has come or the deadline passes. Linux keeps it only until a read passes the mark, so it is
+// taken as soon as the bytes before it are read.
+func receiveUrgent(t *testing.T, connection *net.TCPConn, deadline time.Time) ([]byte, error) {
+	t.Helper()
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	buffer := make([]byte, 16)
+	for {
+		var got int
+		var receiveErr error
+		if err := raw.Control(func(descriptor uintptr) {
+			got, _, receiveErr = syscall.Recvfrom(int(descriptor), buffer, syscall.MSG_OOB|syscall.MSG_DONTWAIT)
+		}); err != nil {
+			return nil, err
+		}
+		if receiveErr == nil {
+			return buffer[:got], nil
+		}
+		if !errors.Is(receiveErr, syscall.EAGAIN) && !errors.Is(receiveErr, syscall.EINVAL) {
+			return nil, receiveErr
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("no urgent data by the deadline: %w", receiveErr)
+		}
+		wait(t, time.Now().Add(5*time.Millisecond))
+	}
 }

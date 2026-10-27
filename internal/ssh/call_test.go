@@ -648,17 +648,17 @@ func TestCall(t *testing.T) {
 		})
 	})
 
-	t.Run("Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
+	t.Run("Apart from BS, DEL, Ctrl-U, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
 		t.Parallel()
 		var controls strings.Builder
 		for character := range 256 {
-			if (character < 0x20 || character > 0x7e) && character != 0x08 && character != 0x7f && character != '\r' && character != '\n' {
+			if (character < 0x20 || character > 0x7e) && character != 0x08 && character != 0x7f && character != 0x15 && character != '\r' && character != '\n' {
 				controls.WriteByte(byte(character))
 			}
 		}
 		rows := []struct{ name, typed, name2 string }{
 			{"31 characters: the first 30", strings.Repeat("a", 31) + "\r", strings.Repeat("a", 30)},
-			{"every byte from 0x00 to 0xFF that is not printable, BS, DEL, CR or LF, between a and b: dropped, never echoed",
+			{"every byte from 0x00 to 0xFF that is not printable, BS, DEL, Ctrl-U, CR or LF, between a and b: dropped, never echoed",
 				"a" + controls.String() + "b\r", "ab"},
 			{"ESC sequences: ESC dropped, the rest kept as typed", "\x1b[2Jx\r", "[2Jx"},
 			{"0x9B, BEL, NUL and TAB: dropped", "a\x9b\x07\x00\tb\r", "ab"},
@@ -673,6 +673,13 @@ func TestCall(t *testing.T) {
 				client.expectNameEnd(asked + echoOf(row.name2) + helloTo(row.name2))
 			})
 		}
+		t.Run("over SSH with a terminal, the edge: Ctrl-U is not dropped, ab Ctrl-U c CR gives Hello c", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, true)
+			client.sendData("ab\x15c\r")
+			client.expectNameEnd(asked + "ab" + strings.Repeat("\b \b", 2) + echoOf("c") + helloTo("c"))
+		})
 		t.Run("over SSH, ab sent before the shell and c CR after: the name abc", func(t *testing.T) {
 			t.Parallel()
 			program := startEngine(t)

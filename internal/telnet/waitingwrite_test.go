@@ -105,7 +105,7 @@ func connectSmall(t *testing.T) connected {
 	if err := server.SetWriteBuffer(4096); err != nil {
 		t.Fatalf("setting the server end's send buffer: %v", err)
 	}
-	return connected{client: client, server: server, dialed: dialed}
+	return connected{client: client, server: urgentConn{TCPConn: server}, dialed: dialed}
 }
 
 // stallNegotiation has the caller of a Negotiate call flood and never read, so that Negotiate is
@@ -145,6 +145,17 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			cancelledAt := time.Now()
 			expectReturn(t, call.result(t, cancelledAt.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, cancelledAt, cancelledAt.Add(margin))
 		})
+		t.Run("the Synch's urgent write held to 4 seconds: Negotiate still waiting at 3.5, and TimedOut once it ends", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: 4 * time.Second}
+			call := negotiate(t.Context(), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, command(abortOutput))
+			expectNotReturned(t, call, call.called.Add(3500*time.Millisecond))
+			got := call.result(t, call.called.Add(4*time.Second+margin))
+			expectReturn(t, got, telnet.TimedOut, nil, held.released, held.released.Add(margin))
+		})
 		t.Run("a caller that floods, then reads from 5 seconds: Negotiate returns only once it reads", func(t *testing.T) {
 			t.Parallel()
 			pair := connectSmall(t)
@@ -158,6 +169,20 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 	})
 	t.Run("If NegotiationSeconds have passed when a write ends without an error, Receive has not returned true, and the context has not ended, then Negotiate shall return TimedOut with no error, reading nothing more.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("the Synch's urgent write ends after the 3 seconds, a request sent while it waited: TimedOut, the request unanswered", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast}
+			call := negotiate(t.Context(), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, command(abortOutput))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			write(t, pair.client, request(doVerb, telnetTypeOption))
+			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
+			expectReturn(t, got, telnet.TimedOut, nil, held.released, held.released.Add(margin))
+			_ = pair.server.CloseWrite()
+			expectStream(t, pair.client, nil, time.Now().Add(margin))
+		})
 		t.Run("a caller that floods, then reads from 4 seconds: TimedOut, each request answered once or still unread, in order", func(t *testing.T) {
 			t.Parallel()
 			pair := connectSmall(t)
@@ -165,20 +190,25 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			stallNegotiation(t, pair, call)
 			expectNotReturned(t, call, call.called.Add(4*time.Second))
 			received := make(chan []byte, 1)
+			ends := make(chan error, 1)
+			finished := make(chan struct{})
 			go func() {
+				defer close(finished)
 				stream, err := readToEnd(pair.client, time.Now().Add(30*time.Second))
-				if !errors.Is(err, io.EOF) {
-					t.Errorf("the caller's stream did not end in order: %v", err)
-				}
+				ends <- err
 				received <- stream
 			}()
+			t.Cleanup(func() { <-finished })
 			got := call.result(t, time.Now().Add(margin))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Negotiate returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
 			// The caller has stopped; whatever it sent is now in the server end's buffers.
-			unread := readQuiet(t, pair.server)
+			unread := readQuiet(t, pair.server.TCPConn)
 			_ = pair.server.CloseWrite()
+			if err := <-ends; !errors.Is(err, io.EOF) {
+				t.Fatalf("the caller's stream did not end in order: %v", err)
+			}
 			stream := <-received
 			if !bytes.HasPrefix(stream, opening) {
 				t.Fatalf("the stream did not start with the opening")
