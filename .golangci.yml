@@ -70,15 +70,20 @@ linters:
         # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
         # A new arrow is a new line here, in the same PR, with its reason.
         telnet:
-          files: ["**/internal/telnet/**"]
+          files: ["**/internal/telnet/**", "!**/internal/telnet/urgent_windows.go"]
           list-mode: strict
           allow:
             - $gostd
-            # The Windows urgent write's overlapped send, event and cancel (docs/architecture.md);
-            # the module's other packages are not allowed.
-            - golang.org/x/sys/windows$
             # Its own path, so its black-box tests in package telnet_test can import it.
             - github.com/heliosestate/heliosadvance/internal/telnet
+        # The Telnet unit's Windows urgent write, the one file that may import the module's
+        # windows package (docs/architecture.md, the developer's of 2026-10-27).
+        telnet-windows-urgent:
+          files: ["**/internal/telnet/urgent_windows.go"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - golang.org/x/sys/windows$
         session:
           files: ["**/internal/session/**"]
           list-mode: strict

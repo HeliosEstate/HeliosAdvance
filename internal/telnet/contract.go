@@ -604,14 +604,10 @@ const (
 // before accept (probed on both).
 //
 // On Windows, Go's SyscallConn cannot wait for room: its Write runs the callback once and fails
-// when the callback says "not yet" (internal/poll, Go 1.27.1). So the urgent write there is
-// Winsock's documented way to wait on a send with a time limit: an overlapped WSASend with an
-// event, a wait on that event or the write deadline, and CancelIoEx once the deadline passes.
-// Its calls come from golang.org/x/sys/windows, since the syscall package lacks CreateEvent,
-// WaitForMultipleObjects and WSAGetOverlappedResult. The socket is Go's, already tied to Go's
-// completion port, and Go's runtime reads every completion on that port as one of its own
-// operations; so the event in the send's hEvent has its low-order bit set, which Microsoft
-// documents keeps the completion off the port (GetQueuedCompletionStatus, lpOverlapped).
+// when the callback says "not yet" (internal/poll). So the urgent write there takes Winsock's
+// documented route for a send with a time limit, an overlapped send with an event, whose calls
+// the syscall package lacks; they come from golang.org/x/sys/windows, in that file alone (the
+// developer, 2026-10-27).
 //
 //   - Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as
 //     urgent data, reaches negotiation whole and, after negotiation, the caller's next character
@@ -624,14 +620,6 @@ const (
 //     as TCP urgent data.
 //   - While a Synch's write on a Line Accept made waits for room, a passed write deadline or the
 //     context ending shall wake it, as it wakes every other write, on Linux and on Windows.
-//   - On Windows, the urgent write shall be an overlapped send whose event, in hEvent, has its
-//     low-order bit set, so that its completion never reaches Go's completion port. [read]
-//   - On Windows, the urgent write shall start the send, wait for it and, once the write deadline
-//     has passed, cancel it and wait for the cancel to complete, all within the connection's
-//     SyscallConn Write, under Go's write lock. [read]
-//   - On Windows, the send's OVERLAPPED structure and its byte shall live in heap memory the
-//     package keeps until the send or its cancel has completed, never on a goroutine's stack,
-//     which Go may move. [read]
 //   - Once SO_OOBINLINE is set, Accept shall negotiate and return a Line as Open does, whichever
 //     Outcome negotiation ends with, or a nil Line and Open's error.
 func Accept(ctx context.Context, connection *net.TCPConn) (*Line, error) {
