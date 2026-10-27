@@ -23,8 +23,8 @@ func setUrgentInLine(descriptor uintptr) error {
 	return syscall.SetsockoptInt(syscall.Handle(descriptor), syscall.SOL_SOCKET, socketOOBInline, 1)
 }
 
-// maxWaitMilliseconds holds one wait below a range the conversion to the API's unsigned 32 bits
-// cannot overflow; a longer wait goes round the loop.
+// maxWaitMilliseconds is the longest single wait, compared before the conversion to the API's
+// unsigned 32 bits so that nothing can overflow it; a longer wait goes round the loop.
 const maxWaitMilliseconds = 1 << 30
 
 // errCompletionUnknown is a send whose completion could not be learned: its struct and event are
@@ -160,8 +160,8 @@ func (send *urgentSend) release() error {
 	return windows.CloseHandle(send.event)
 }
 
-// transmit submits the send and waits for it. Its second result is false when the send's
-// completion cannot be known, in which case the caller keeps the send.
+// transmit submits the send and waits for it. Its first result is false when the send's completion
+// cannot be known, in which case the caller keeps the send.
 func (state *urgentState) transmit(
 	socket windows.Handle, send *urgentSend, wake windows.Handle,
 ) (bool, error) {
@@ -211,7 +211,8 @@ func (state *urgentState) waitOnce(
 	return event == windows.WAIT_OBJECT_0, nil
 }
 
-// waitMilliseconds rounds up to whole milliseconds and holds the wait below maxWaitMilliseconds.
+// waitMilliseconds rounds up, so a wait never ends before its deadline, and returns no more than
+// maxWaitMilliseconds.
 func waitMilliseconds(left time.Duration) uint32 {
 	rounded := (left + time.Millisecond - 1) / time.Millisecond
 	if rounded > 0 && rounded < maxWaitMilliseconds {

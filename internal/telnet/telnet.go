@@ -310,9 +310,8 @@ func wakeOnEnd(ctx context.Context, connection Conn) (release func()) {
 }
 
 // handOver is what Open takes from negotiation so that nothing is copied or lost: the last read's
-// bytes from index from to readCount, and the bytes of a read cut short by its deadline that were
-// never written and go out first: its replies, unwritten of them, then the Synchs it owed, urgent
-// bytes of them.
+// bytes from index from to readCount, and what a read cut short by its deadline left unwritten,
+// which goes out first: unwritten bytes of replies, then urgent bytes of Synchs.
 type handOver struct {
 	readCount int
 	from      int

@@ -6,6 +6,7 @@
 package telnet
 
 import (
+	"errors"
 	"net"
 	"syscall"
 )
@@ -31,11 +32,11 @@ func (state *urgentState) write(connection *net.TCPConn, value byte) error {
 	err = raw.Write(func(descriptor uintptr) bool {
 		for {
 			sendErr = syscall.Sendto(int(descriptor), []byte{value}, syscall.MSG_OOB|syscall.MSG_DONTWAIT, nil)
-			if sendErr != syscall.EINTR {
+			if !errors.Is(sendErr, syscall.EINTR) {
 				break
 			}
 		}
-		return sendErr != syscall.EAGAIN
+		return !errors.Is(sendErr, syscall.EAGAIN)
 	})
 	if err != nil {
 		return err
