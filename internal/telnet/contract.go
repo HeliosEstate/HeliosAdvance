@@ -70,14 +70,15 @@
 // agree again, never read, hang up halfway, break the connection, send subnegotiations that never
 // end, run long, hold escape codes or IAC IAC, or come for options never agreed, send NAWS of 0
 // and of 65535, send AYT, AO and IP, flood them while never reading, the call still ending at its
-// ceiling, send a Synch as urgent data, and send requests a byte at a time. The Line over a socket: the same client typing after negotiation,
-// with commands, EC, EL, IAC IAC and option requests among its characters, ahead of the prompt,
-// and across negotiation's end. Two Telnet clients others wrote, driven through their standard
-// input and output as outside programs, never read for their source: the stock Linux telnet
-// client on Linux, and PuTTY's command-line client, Plink, on Linux and Windows; each connects,
-// negotiates and reaches the greeting. Tests run on Linux x86-64, Linux ARM64 and Windows x86-64,
-// as an ordinary user with no admin, root or container, over loopback on a port the operating
-// system picks. It uses the Go standard library only.
+// ceiling, send a Synch as urgent data, and send requests a byte at a time. The Line over a
+// socket: the same client typing after negotiation, with commands, EC, EL, IAC IAC and option
+// requests among its characters, ahead of the prompt, and across negotiation's end. Two Telnet
+// clients others wrote, driven through their standard input and output as outside programs,
+// never read for their source: the stock Linux telnet client on Linux, and PuTTY's command-line
+// client, Plink, on Linux and Windows; each connects, negotiates and reaches the greeting. Tests
+// run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user with no admin, root or
+// container, over loopback on a port the operating system picks. It uses the Go standard library
+// only.
 //
 // # What it needs from its callers
 //
@@ -105,8 +106,8 @@
 //
 // The opening requests are the 24 bytes IAC WILL ECHO, IAC WILL SGA, IAC WILL BINARY, IAC DO
 // BINARY, IAC DO TTYPE, IAC DO NAWS, IAC DO NEW-ENVIRON and IAC DO TSPEED, in that order. The
-// SENDs: TTYPE's is IAC SB 24 1 IAC SE; TSPEED's is IAC SB 32 1 IAC SE; NEW-ENVIRON's is IAC SB 39 1
-// 0 85 83 69 82 IAC SE, SEND, then VAR, then the name USER. AYT's answer is the 9 bytes CR LF
+// SENDs: TTYPE's is IAC SB 24 1 IAC SE; TSPEED's is IAC SB 32 1 IAC SE; NEW-ENVIRON's is IAC SB 39
+// 1 0 85 83 69 82 IAC SE, SEND, then VAR, then the name USER. AYT's answer is the 9 bytes CR LF
 // "[Yes]" CR LF. The Synch is IAC DM, written with DM as TCP urgent data. The commands Receive and
 // Strip read by name are IAC 255, DONT 254, DO 253, WONT 252, WILL 251, SB 250, EL 248, EC 247,
 // AYT 246, AO 245, IP 244 and SE 240; a subnegotiation runs from IAC SB to IAC SE (RFC 855). The
@@ -201,9 +202,9 @@ const (
 	MostReply = 14
 	// ReadBufferSize is the fixed buffer Negotiate reads into: nothing the caller sends grows it.
 	ReadBufferSize = 256
-	// ReplyBufferSize holds every reply one read can yield: at most five times the bytes read, AYT's
-	// 9 bytes for 2 and a WILL NEW-ENVIRON's 14 for 3 the most, and MostReply more for a request
-	// split across reads, whose first bytes came in the read before.
+	// ReplyBufferSize holds every reply one read can yield: at most five times the bytes read,
+	// AYT's 9 bytes for 2 and a WILL NEW-ENVIRON's 14 for 3 the most, and MostReply more for a
+	// request split across reads, whose first bytes came in the read before.
 	ReplyBufferSize = 5*ReadBufferSize + MostReply
 	// NegotiationSeconds is counted from the opening write. Fixed in this layer; a setting once
 	// configuration exists.
