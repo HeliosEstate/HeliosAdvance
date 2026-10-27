@@ -51,10 +51,13 @@ func Ended(ctx context.Context) error {
 }
 
 // Limit returns the time a call must stop by: the earlier of deadline and the context's deadline.
-// A zero deadline means the call has none of its own.
+// A zero deadline means the call has none of its own; a zero answer means the call has no time to
+// stop by, so a unit clears its connection's deadline and makes no timer. Limit reads deadlines
+// only: a context that has already ended, by a stop or otherwise, is Ended's and WakeOnEnd's to
+// report and wake, whatever Limit returns.
 //
 //   - When deadline is not zero and the context has a deadline, Limit shall return the earlier of
-//     the two.
+//     the two, and deadline itself when the two are the same instant.
 //   - When deadline is zero, Limit shall return the context's deadline, or the zero time when the
 //     context has none.
 //   - When the context has no deadline, Limit shall return deadline.
