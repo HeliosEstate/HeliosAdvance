@@ -149,7 +149,7 @@ var (
 var (
 	// ErrCallerClosed means the caller closed the connection or the session channel before the
 	// shell. It matches io.EOF through errors.Is.
-	ErrCallerClosed = errors.New("ssh: the caller closed the connection")
+	ErrCallerClosed = errors.New("ssh: the caller closed the connection or the session channel")
 	// ErrConnectionFailed means any other failure: a handshake that fails, a sign-in method other
 	// than none, a read or write that fails. It never carries the library's text.
 	ErrConnectionFailed = errors.New("ssh: the connection failed")
@@ -256,23 +256,28 @@ func Accept(ctx context.Context, connection *net.TCPConn, key *HostKey) (*Channe
 // a pty-req after the shell and every other request or channel are refused, so the greeting never
 // comes twice and the echo never changes mid-name. When the caller closes the channel, the
 // library answers with the channel close SSH requires, the one write after it; end of file needs
-// no answer. A
-// Channel not made by Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes
-// returns false. One goroutine per Channel.
+// no answer. A Channel not made by Accept, or nil, fails every call with ErrConnectionFailed, and
+// its Echoes returns false. One goroutine per Channel.
 //
 // Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
-// deadline given passed first; io.EOF when the caller sent end of file, closed the channel or
-// closed the connection; the context's error, wrapped, when the context ended first;
+// deadline given passed first; io.EOF when the caller sent end of file, closed the channel, closed
+// the connection or sent a disconnect message, or when a write met the caller's close of the
+// connection in order; the context's error, wrapped, when the context ended first;
 // ErrConnectionFailed, without the library's text, for any other failure. When two happen at
-// once, the context ending wins, then a failure, then a passed deadline; a context whose deadline
-// has passed has ended, by the clock. A context ending wakes a waiting call at once. The library
-// gives a channel write no deadline, so a write cut short by a deadline or the context counts as
-// failed, as one that fails does: the Channel writes nothing more, and what that write handed the
-// library may still go out before the connection closes. Once a call has returned io.EOF or
-// ErrConnectionFailed, every later RecvChar returns the same, a passed deadline or not (the
-// developer, 2026-10-26). As for Accept, io.EOF and ErrConnectionFailed are told apart only where
-// nothing races: where the caller's close races the engine's own replies or writes (a refusal
-// that fails after it, a close of the channel alone with bytes queued), either may come back.
+// once, the context ending wins, then a failure, then a stored end with no byte waiting, then a
+// passed deadline; a context whose deadline has passed has ended, by the clock. A context ending
+// wakes a waiting call at once. The library gives a channel write no deadline, so a write cut
+// short by a deadline or the context counts as failed, as one that fails does: the Channel writes
+// nothing more, and what that write handed the library may still go out before the connection
+// closes. A stored end or failure outlasts a passed deadline (the developer, 2026-10-26): once a
+// write has failed, every later call returns ErrConnectionFailed, and once the caller's end or a
+// failure is stored and no byte is waiting, every later RecvChar returns io.EOF or
+// ErrConnectionFailed, the socket's own error telling them apart. The caller's close of the
+// connection is the socket's own end of file or a disconnect message; end of file on the channel
+// alone closes nothing, and writes go on. As for Accept, io.EOF and ErrConnectionFailed are told
+// apart only where nothing races: where the caller's close races the engine's own replies or
+// writes (a refusal that fails after it, a close of the channel alone with bytes queued), either
+// may come back.
 type Channel struct {
 	state channelState
 }
@@ -312,8 +317,9 @@ func (channel *Channel) Flush(ctx context.Context) error {
 //   - Before it waits for the caller, RecvChar shall write the send buffer out as Flush does,
 //     under deadline.
 //   - Once deadline has passed, RecvChar shall return os.ErrDeadlineExceeded, even with bytes
-//     waiting, unless an earlier call on the Channel returned io.EOF or ErrConnectionFailed,
-//     which it returns again.
+//     waiting, unless a write on the Channel has failed or no byte is waiting and an end or a
+//     failure is already stored; then it returns ErrConnectionFailed or io.EOF as the other lines
+//     give.
 //   - If the caller sends end of file, closes the channel, closes the connection or sends a
 //     disconnect message while no byte is waiting, then RecvChar shall return io.EOF.
 //   - If the write it makes before it waits meets the caller's close of the connection in order,
