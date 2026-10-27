@@ -56,7 +56,7 @@
 //     ConnectionFile alone, whatever PostgreSQL's environment variables, password file or service
 //     file give.
 //   - If a message from the database is longer than ReplyMostBytes, then the database package
-//     shall treat the connection as failed without reading the rest.
+//     shall treat the connection as failed, ErrUnreachable at a take, without reading the rest.
 //   - The database package shall import nothing outside the Go standard library,
 //     github.com/jackc/pgx/v5 and github.com/jackc/pgx/v5/pgconn. [read]
 package database
@@ -150,11 +150,14 @@ var (
 	ErrSchemaVersion = errors.New("database: the schema version is not one this engine accepts")
 )
 
-// SchemaVersionError means hadv.schema_version is missing, holds no row, or holds a version other
-// than SchemaVersionMadeFor and the next. It matches ErrSchemaVersion through errors.Is.
+// SchemaVersionError means hadv.schema_version is missing, holds no row, holds anything but one
+// integer, or holds a version other than SchemaVersionMadeFor and the next. It matches
+// ErrSchemaVersion through errors.Is, and holds a number, never text the database sent.
 type SchemaVersionError struct {
-	// Found is the version as read, or empty when the table or its row is missing.
-	Found string
+	// Found is the version read, when Missing is false.
+	Found int32
+	// Missing is true when the table, its row or an integer version is missing.
+	Missing bool
 }
 
 // Error names the version found, or says none was.
@@ -258,9 +261,9 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     PUBLIC, a right on the database, the hadv schema or anything in it that schema.sql does not
 //     grant hadv_server, connecting to the database aside, then Take shall return ErrTooPowerful.
 //   - If the database answers that it is read-only, then Take shall return ErrReadOnly.
-//   - If hadv.schema_version is missing, holds no row, or holds a version other than
-//     SchemaVersionMadeFor and the next, then Take shall return a *SchemaVersionError naming the
-//     version found.
+//   - If hadv.schema_version is missing, holds no row, holds anything but one integer, or holds a
+//     version other than SchemaVersionMadeFor and the next, then Take shall return a
+//     *SchemaVersionError naming the version found, or Missing.
 //   - If hadv.servers holds no row for the ConnectionFile's server ID, then Take shall return
 //     ErrNoServerRow.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase

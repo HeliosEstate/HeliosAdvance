@@ -6,6 +6,7 @@ package database
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -29,10 +30,11 @@ type leaseState struct {
 var errNotBuilt = errors.New("database: not built yet")
 
 func schemaVersionText(failure *SchemaVersionError) string {
-	if failure == nil || failure.Found == "" {
+	if failure == nil || failure.Missing {
 		return "database: no schema version was found"
 	}
-	return "database: the schema version " + failure.Found + " is not one this engine accepts"
+	return "database: the schema version " + strconv.FormatInt(int64(failure.Found), 10) +
+		" is not one this engine accepts"
 }
 
 func readConnectionFile(_ string) (ConnectionFile, error) {
