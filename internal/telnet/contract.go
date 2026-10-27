@@ -77,8 +77,8 @@
 // never read for their source: the stock Linux telnet client on Linux, and PuTTY's command-line
 // client, Plink, on Linux and Windows; each connects, negotiates and reaches the greeting. Tests
 // run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user with no admin, root or
-// container, over loopback on a port the operating system picks. It uses the Go standard library
-// only.
+// container, over loopback on a port the operating system picks. QA's scripted client and the
+// tests use the Go standard library only.
 //
 // # What it needs from its callers
 //
