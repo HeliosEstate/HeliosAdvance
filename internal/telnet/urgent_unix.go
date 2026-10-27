@@ -21,8 +21,10 @@ func setUrgentInLine(descriptor uintptr) error {
 // it, so the platform keeps nothing between sends.
 type urgentState struct{}
 
-// write sends the byte as urgent data without blocking, and returns false from the
-// callback when the socket has no room, so Go's poller waits for it, with the write deadline.
+// write sends the byte as urgent data and returns false from the callback when the socket has no
+// room, so Go's poller waits for it, with the write deadline. No flag beyond MSG_OOB is needed:
+// the socket Go accepted is already non-blocking, so a full send buffer gives EAGAIN, and
+// MSG_DONTWAIT is not defined on every Unix this file builds for.
 func (state *urgentState) write(connection *net.TCPConn, value byte) error {
 	raw, err := connection.SyscallConn()
 	if err != nil {
@@ -31,7 +33,7 @@ func (state *urgentState) write(connection *net.TCPConn, value byte) error {
 	var sendErr error
 	err = raw.Write(func(descriptor uintptr) bool {
 		for {
-			sendErr = syscall.Sendto(int(descriptor), []byte{value}, syscall.MSG_OOB|syscall.MSG_DONTWAIT, nil)
+			sendErr = syscall.Sendto(int(descriptor), []byte{value}, syscall.MSG_OOB, nil)
 			if !errors.Is(sendErr, syscall.EINTR) {
 				break
 			}
