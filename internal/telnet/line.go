@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// replyRoom is 3 because Strip appends at most one reply, and every reply is 3 bytes: a reply
-// must never find the send buffer full, since Strip cannot write it out.
-const replyRoom = 3
-
 // lineState keeps a read's error until the bytes that came with it are read, since the caller's
 // last words arrive together with its closing and must not be lost to it.
 type lineState struct {
@@ -30,8 +26,12 @@ type lineState struct {
 	receiveEnd    int
 	sendBuffer    [SendBufferSize]byte
 	sendLength    int
-	writeFailed   bool
-	readError     error
+	// urgentFrom and urgentTo bound the bytes of the send buffer that go out with WriteUrgent, the
+	// Synchs owed; equal when there are none.
+	urgentFrom  int
+	urgentTo    int
+	writeFailed bool
+	readError   error
 }
 
 func open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
@@ -51,7 +51,9 @@ func open(ctx context.Context, connection Conn) (*Line, Outcome, error) {
 	}
 	state.connection = connection
 	state.negotiation = negotiation
-	state.sendLength = left.unwritten
+	state.sendLength = left.unwritten + left.urgent
+	state.urgentFrom = left.unwritten
+	state.urgentTo = left.unwritten + left.urgent
 	state.receiveNext = left.from
 	state.receiveEnd = left.readCount
 	return line, outcome, nil
@@ -134,16 +136,46 @@ func (line *Line) writeOut(ctx context.Context, deadline time.Time) error {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	release := wakeOnEnd(ctx, state.connection)
-	count, err := state.connection.Write(state.sendBuffer[:state.sendLength])
+	err := line.writeParts()
 	release()
-	if err == nil && count < state.sendLength {
-		err = io.ErrShortWrite
-	}
 	if err != nil {
 		state.writeFailed = true
 		return judge(ctx, err)
 	}
 	state.sendLength = 0
+	state.urgentFrom, state.urgentTo = 0, 0
+	return nil
+}
+
+// writeParts writes the bytes before the urgent range, the range with WriteUrgent, then the bytes
+// after it, so that a Synch follows every reply queued before it.
+func (line *Line) writeParts() error {
+	state := &line.state
+	buffer := state.sendBuffer[:state.sendLength]
+	from, to := state.urgentFrom, state.urgentTo
+	if from == to {
+		from, to = len(buffer), len(buffer)
+	}
+	parts := [...]struct {
+		bytes  []byte
+		urgent bool
+	}{{buffer[:from], false}, {buffer[from:to], true}, {buffer[to:], false}}
+	for _, part := range parts {
+		if len(part.bytes) == 0 {
+			continue
+		}
+		write := state.connection.Write
+		if part.urgent {
+			write = state.connection.WriteUrgent
+		}
+		count, err := write(part.bytes)
+		if err == nil && count < len(part.bytes) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -193,7 +225,7 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 			return 0, os.ErrDeadlineExceeded
 		}
 		if state.receiveNext < state.receiveEnd {
-			if SendBufferSize-state.sendLength < replyRoom {
+			if SendBufferSize-state.sendLength < MostReply {
 				if err := line.writeOut(ctx, deadline); err != nil {
 					return 0, err
 				}
@@ -202,10 +234,13 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 			character := state.receiveBuffer[state.receiveNext]
 			state.receiveNext++
 			queued := state.sendBuffer[:state.sendLength:SendBufferSize]
-			queued, _, isData := state.negotiation.Strip(character, queued)
+			queued, handOn, isData := state.negotiation.Strip(character, queued)
 			state.sendLength = len(queued)
+			if err := line.sendSynch(ctx, deadline); err != nil {
+				return 0, err
+			}
 			if isData {
-				return character, nil
+				return handOn, nil
 			}
 			continue
 		}
@@ -239,8 +274,27 @@ func (line *Line) readMore(ctx context.Context, deadline time.Time) error {
 	return nil
 }
 
+// sendSynch writes a Synch the byte just stripped owed, after every reply queued before it and
+// before the next byte is stripped, since one range of the send buffer goes out with WriteUrgent.
+func (line *Line) sendSynch(ctx context.Context, deadline time.Time) error {
+	state := &line.state
+	owed := state.negotiation.TakeSynch()
+	if owed == 0 {
+		return nil
+	}
+	if state.urgentTo > state.urgentFrom {
+		if err := line.writeOut(ctx, deadline); err != nil {
+			return err
+		}
+	}
+	state.urgentFrom = state.sendLength
+	state.sendLength = len(synchBytes(state.sendBuffer[:state.sendLength:SendBufferSize], owed))
+	state.urgentTo = state.sendLength
+	return line.writeOut(ctx, deadline)
+}
+
 func (line *Line) echoes() bool {
-	return line.usable() && line.state.negotiation.state.echo == stateYes
+	return line.usable() && line.state.negotiation.state.current(slotEcho) == stateYes
 }
 
 func (line *Line) close(ctx context.Context) error {
@@ -258,7 +312,7 @@ func (line *Line) close(ctx context.Context) error {
 	if err := connection.SetReadDeadline(connectionDeadline(ctx, waitEnd)); err != nil {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
-	release := wakeOnEnd(ctx, acceptedConn{connection})
+	release := wakeOnEnd(ctx, line.state.connection)
 	defer release()
 	var discard [DiscardBufferSize]byte
 	for {

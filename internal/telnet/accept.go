@@ -5,21 +5,34 @@ package telnet
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 )
 
-// acceptedConn is a placeholder until Part 4's build, which writes the Synch as TCP urgent data:
-// the accepted connection as a Conn, its urgent write not built.
+// acceptedConn is the one instance Accept makes of an accepted connection as a Conn: the
+// connection, with the platform's state for its urgent write beside it.
 type acceptedConn struct {
 	*net.TCPConn
+	urgent urgentState
 }
 
-var errUrgentNotBuilt = errors.New("telnet: the urgent write is not built")
-
-func (connection acceptedConn) WriteUrgent([]byte) (int, error) {
-	return 0, errUrgentNotBuilt
+// WriteUrgent sends every byte but the last in the ordinary write, then the last alone as urgent
+// data: an urgent send cut short would mark the wrong byte urgent, and the ordinary write already
+// waits for room as Go's own writes do.
+func (connection *acceptedConn) WriteUrgent(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	last := len(buffer) - 1
+	if last > 0 {
+		if count, err := connection.TCPConn.Write(buffer[:last]); err != nil {
+			return count, err
+		}
+	}
+	if err := connection.writeUrgentByte(buffer[last]); err != nil {
+		return last, err
+	}
+	return len(buffer), nil
 }
 
 func accept(ctx context.Context, connection *net.TCPConn) (*Line, error) {
@@ -29,7 +42,7 @@ func accept(ctx context.Context, connection *net.TCPConn) (*Line, error) {
 	if err := keepUrgentInLine(connection); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
-	line, _, err := open(ctx, acceptedConn{connection})
+	line, _, err := open(ctx, &acceptedConn{TCPConn: connection})
 	if err != nil {
 		return nil, err
 	}

@@ -12,3 +12,30 @@ import "syscall"
 func setUrgentInLine(descriptor uintptr) error {
 	return syscall.SetsockoptInt(int(descriptor), syscall.SOL_SOCKET, syscall.SO_OOBINLINE, 1)
 }
+
+// urgentState is empty here: Go's poller waits for room and the connection's write deadline wakes
+// it, so the platform keeps nothing between sends.
+type urgentState struct{}
+
+// writeUrgentByte sends the byte as urgent data without blocking, and returns false from the
+// callback when the socket has no room, so Go's poller waits for it, with the write deadline.
+func (connection *acceptedConn) writeUrgentByte(value byte) error {
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var sendErr error
+	err = raw.Write(func(descriptor uintptr) bool {
+		for {
+			sendErr = syscall.Sendto(int(descriptor), []byte{value}, syscall.MSG_OOB|syscall.MSG_DONTWAIT, nil)
+			if sendErr != syscall.EINTR {
+				break
+			}
+		}
+		return sendErr != syscall.EAGAIN
+	})
+	if err != nil {
+		return err
+	}
+	return sendErr
+}
