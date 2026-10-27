@@ -125,7 +125,7 @@ func TestSSHProgram(t *testing.T) {
 		t.Run("with -ssh-port and a free port, it names and serves that port at both addresses, beside Telnet's", func(t *testing.T) {
 			t.Parallel()
 			key := makeKey(t, "ed25519", "")
-			port, _, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
 				return []string{portOption, "0", hostKeyOption, key, sshPortOption, port}
 			})
 			telnet, ssh := kindsOf(t, listeners)
@@ -296,7 +296,7 @@ func TestSSHProgram(t *testing.T) {
 		t.Run("SSH's port taken at 127.0.0.1: it names and serves SSH at ::1 alone", func(t *testing.T) {
 			t.Parallel()
 			key := makeKey(t, "ed25519", "")
-			port, _, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port string) []string {
+			port, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port string) []string {
 				return []string{portOption, "0", hostKeyOption, key, sshPortOption, port}
 			})
 			_, ssh := kindsOf(t, listeners)

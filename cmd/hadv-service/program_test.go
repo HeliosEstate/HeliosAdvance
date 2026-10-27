@@ -174,13 +174,17 @@ const freedPortTries = 5
 
 // startOnFreedPort holds a port free at both loopback addresses, closes the hosts the row names
 // in freed, and starts the program with options(port). Between that close and the program's own
-// listen, a test running in parallel may bind a freed address; the program then fails to start
-// without reaching the row's case. A start_failed line that names a freed address as in use is
-// that race, so the row tries a fresh port. Any other first line is judged as listeners judges
-// it, so a program that refuses over the address the row holds still fails the row. It returns
-// the port, the program and the started line's listeners.
-func startOnFreedPort(t *testing.T, freed []string, options func(port string) []string) (string, *run, []string) {
+// listen, a test running in parallel may bind a freed address, and the program does not reach
+// the row's case: with every freed address taken it fails to start, and with one of two taken it
+// listens at the other alone. A start_failed line that names a freed address as in use, or a
+// started line that leaves a freed address out, is that race, so the row tries a fresh port. Any
+// other first line is judged as listeners judges it, so a program that refuses over the address
+// the row holds still fails the row. A build that never listens at a freed address leaves it out
+// on every port, so the row fails once the tries run out. It returns the port and the started
+// line's listeners.
+func startOnFreedPort(t *testing.T, freed []string, options func(port string) []string) (string, []string) {
 	t.Helper()
+	var line string
 	for range freedPortTries {
 		port, ipv4, ipv6 := heldPort(t)
 		for _, host := range freed {
@@ -192,27 +196,41 @@ func startOnFreedPort(t *testing.T, freed []string, options func(port string) []
 			}
 		}
 		program := startProgram(t, options(port)...)
-		timer := time.NewTimer(startLimit)
-		select {
-		case line := <-program.lines:
-			timer.Stop()
-			if value, found := strings.CutPrefix(line, "started="); found {
-				return port, program, strings.Split(value, ",")
-			}
-			if takenWhileFreed(line, port, freed) {
-				t.Logf("a freed address was taken before the program listened, %q: trying a fresh port", line)
-				continue
-			}
+		line = program.firstLine(t)
+		if takenWhileFreed(line, port, freed) {
+			t.Logf("a freed address was taken before the program listened, %q: trying a fresh port", line)
+			continue
+		}
+		value, found := strings.CutPrefix(line, "started=")
+		if !found {
 			t.Fatalf("the program's first log line was %q, want a started line", line)
-		case <-program.exited:
-			timer.Stop()
-			t.Fatalf("the program exited with %d before it named a listener; its log:\n%s", program.code(), program.text())
-		case <-timer.C:
-			t.Fatalf("the program named no listener within %v", startLimit)
+		}
+		listeners := strings.Split(value, ",")
+		if address := unnamedFreed(listeners, port, freed); address != "" {
+			t.Logf("the started line %q leaves out the freed address %s, which a test running in parallel may have taken: trying a fresh port", line, address)
+			_ = program.command.Process.Kill()
+			<-program.exited
+			continue
+		}
+		return port, listeners
+	}
+	t.Fatalf("on each of %d ports the program did not listen at every freed address; the last first line: %q", freedPortTries, line)
+	return "", nil
+}
+
+// unnamedFreed returns a freed address at the port that no listener in the started line names,
+// or "" when it names them all.
+func unnamedFreed(listeners []string, port string, freed []string) string {
+	for _, host := range freed {
+		address := net.JoinHostPort(host, port)
+		named := slices.ContainsFunc(listeners, func(listener string) bool {
+			return strings.HasSuffix(listener, "://"+address)
+		})
+		if !named {
+			return address
 		}
 	}
-	t.Fatalf("test fault: on each of %d ports a freed address was taken before the program listened", freedPortTries)
-	return "", nil, nil
+	return ""
 }
 
 // takenWhileFreed is whether a start_failed line says a listen at one of the freed addresses
@@ -261,21 +279,35 @@ func kindsOf(t *testing.T, listeners []string) (telnet, ssh []string) {
 // what it names, as written.
 func (program *run) listeners(t *testing.T) []string {
 	t.Helper()
+	line := program.firstLine(t)
+	value, found := strings.CutPrefix(line, "started=")
+	if !found {
+		t.Fatalf("the program's first log line was %q, want a started line", line)
+	}
+	return strings.Split(value, ",")
+}
+
+// firstLine waits for the program's first log line. read hands a line on before it marks the
+// exit, so a program that logs a line and exits has that line waiting once the exit shows; it is
+// read then, rather than lost to whichever ready case the select picks.
+func (program *run) firstLine(t *testing.T) string {
+	t.Helper()
 	timer := time.NewTimer(startLimit)
 	defer timer.Stop()
 	select {
 	case line := <-program.lines:
-		value, found := strings.CutPrefix(line, "started=")
-		if !found {
-			t.Fatalf("the program's first log line was %q, want a started line", line)
-		}
-		return strings.Split(value, ",")
+		return line
 	case <-program.exited:
+		select {
+		case line := <-program.lines:
+			return line
+		default:
+		}
 		t.Fatalf("the program exited with %d before it named a listener; its log:\n%s", program.code(), program.text())
 	case <-timer.C:
 		t.Fatalf("the program named no listener within %v", startLimit)
 	}
-	return nil
+	return ""
 }
 
 // exit waits for the program to exit, by the deadline, and returns its exit code and when.

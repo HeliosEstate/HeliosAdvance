@@ -84,7 +84,7 @@ func TestProgram(t *testing.T) {
 				if taken == ipv6Loopback {
 					free = ipv4Loopback
 				}
-				port, _, listeners := startOnFreedPort(t, []string{free}, func(port string) []string {
+				port, listeners := startOnFreedPort(t, []string{free}, func(port string) []string {
 					return []string{portOption, port}
 				})
 				addresses := telnetAlone(t, listeners)
@@ -98,7 +98,7 @@ func TestProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with -port and a free port, it names and serves that port at both addresses", func(t *testing.T) {
 			t.Parallel()
-			port, _, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
 				return []string{portOption, port}
 			})
 			addresses := telnetAlone(t, listeners)
