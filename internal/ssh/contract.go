@@ -207,11 +207,12 @@ func ReadHostKey(path string) (*HostKey, error) {
 //
 // End of file before the shell changes nothing (Part 7, the developer's of 2026-10-26): the
 // channel stays open after it (RFC 4254), so Accept goes on waiting, and once the shell has
-// started the Channel returns the data sent before the end of file, then io.EOF. A caller that
-// breaks RFC 4254 by sending data after its end of file has that data read as any other, as long
-// as it arrives before the Channel has returned io.EOF: the library marks end of file as a flag,
-// not as a place in the data, so the engine cannot tell those bytes from the ones before it. Like
-// all data, they are bounded by the channel's window, and once io.EOF is returned it stays.
+// started the Channel returns the data sent before the end of file, then io.EOF, for a caller that
+// sends nothing after its end of file. An end of file says the caller will send no more data (RFC
+// 4254, section 5.3), but the RFC gives the receiver no rule for data that comes after one, and the
+// library marks end of file as a flag, not as a place in the data. So for a caller that sends data
+// after its end of file, which of those bytes the engine reads is not pinned; each byte it does
+// read is handled as any typed byte, within the channel's window.
 //
 //	The caller opens or sends            Accept answers
 //	sign-in none, any username           accepted
