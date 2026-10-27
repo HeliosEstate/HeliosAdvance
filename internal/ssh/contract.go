@@ -100,6 +100,9 @@
 //   - The ssh package shall write nothing to the local log. [read]
 //   - Once the connection is closed, the ssh package shall leave no goroutine of its own, or of
 //     the library's for that connection, running. [read]
+//   - The ssh package shall judge whether a call's time has run out only with timeup.Ended, take
+//     every time a call must stop by from timeup.Limit, and wake a waiting call only with
+//     timeup.WakeOnEnd or timeup.Wake, keeping no copy of their rules. [read]
 //   - The ssh package shall call each release timeup.WakeOnEnd returns once, before the call
 //     that registered it returns. [read]
 //   - The ssh package shall import nothing outside the Go standard library,

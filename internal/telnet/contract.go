@@ -126,6 +126,9 @@
 //     and the replies the tables on Receive give.
 //   - The telnet package shall keep a state for no Telnet option other than ECHO and SGA. [read]
 //   - The telnet package shall write nothing to the local log. [read]
+//   - The telnet package shall judge whether a call's time has run out only with timeup.Ended, take
+//     every time a call must stop by from timeup.Limit, and wake a waiting call only with
+//     timeup.WakeOnEnd or timeup.Wake, keeping no copy of their rules. [read]
 //   - The telnet package shall call each release timeup.WakeOnEnd returns once, before the call
 //     that registered it returns. [read]
 //   - The telnet package shall import nothing outside the Go standard library and the timeup
