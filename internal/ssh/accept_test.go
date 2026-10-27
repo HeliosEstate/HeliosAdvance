@@ -160,7 +160,7 @@ func TestAccept(t *testing.T) {
 			if !isEnd(err) {
 				t.Fatalf("after the IGNORE the engine sent %v, %v, want the end of the connection", payload, err)
 			}
-			expectAcceptError(t, waitAccept(t, results, 5*time.Second), ssh.ErrConnectionFailed)
+			expectNoShell(t, waitAccept(t, results, 5*time.Second))
 		})
 		t.Run("the same IGNORE, strict not offered: the key exchange's reply comes", func(t *testing.T) {
 			t.Parallel()
@@ -283,7 +283,7 @@ func TestAccept(t *testing.T) {
 			channel := expectChannel(t, waitAccept(t, results, 5*time.Second))
 			expectReceived(t, channel, "abc")
 		})
-		t.Run("extended data before the shell: discarded", func(t *testing.T) {
+		t.Run("extended data before the shell: never read as the caller's data", func(t *testing.T) {
 			t.Parallel()
 			address, results, _ := acceptPair(t, t.Context(), readKey(t))
 			client := readyClient(t, address, "anyone")
@@ -330,7 +330,7 @@ func TestAccept(t *testing.T) {
 		})
 	})
 
-	t.Run("If the caller tries any sign-in method but none, then Accept shall return ErrConnectionFailed.", func(t *testing.T) {
+	t.Run("If the connection or the session channel ends before the shell, however it ends, end of file apart, and the context has not ended, then Accept shall return ErrNoShell.", func(t *testing.T) {
 		t.Parallel()
 		for _, method := range []struct {
 			name  string
@@ -342,7 +342,7 @@ func TestAccept(t *testing.T) {
 			{"hostbased", (&wire{}).text("ssh-ed25519").bytesValue(nil).text("host").text("user").bytesValue(nil).data},
 			{unknownName, nil},
 		} {
-			t.Run(method.name+" first: ErrConnectionFailed", func(t *testing.T) {
+			t.Run("the sign-in method "+method.name+" first: ErrNoShell", func(t *testing.T) {
 				t.Parallel()
 				address, results, _ := acceptPair(t, t.Context(), readKey(t))
 				client := dialRaw(t, address)
@@ -350,17 +350,53 @@ func TestAccept(t *testing.T) {
 				out := message(messageUserauthRequest).text("anyone").text("ssh-connection").text(method.name)
 				out.data = append(out.data, method.extra...)
 				client.sendPacket(out.data)
-				expectAcceptError(t, waitAccept(t, results, 5*time.Second), ssh.ErrConnectionFailed)
+				expectNoShell(t, waitAccept(t, results, 5*time.Second))
 			})
 		}
-	})
-
-	t.Run("If the caller closes the connection after the handshake, sends a disconnect message, or closes the session channel, before the shell, then Accept shall return ErrCallerClosed.", func(t *testing.T) {
-		t.Parallel()
 		rows := []struct {
 			name  string
 			setUp func(t *testing.T, address string)
 		}{
+			{"300 bytes with no line break, not SSH", func(t *testing.T, address string) {
+				t.Helper()
+				dialRaw(t, address).write(make([]byte, 300))
+			}},
+			{"a caller offering only diffie-hellman-group14-sha256", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.sendVersion()
+				client.sendKexInit(defaultOffer("diffie-hellman-group14-sha256", true))
+			}},
+			{"a caller offering only the cipher aes128-ctr", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.sendVersion()
+				offer := defaultOffer("curve25519-sha256", true)
+				offer.ciphers = []string{"aes128-ctr"}
+				client.sendKexInit(offer)
+			}},
+			// Under the earlier lines a close here could give either of two results; now one.
+			{"the caller closes the connection in the handshake's middle", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.sendVersion()
+				client.readServerKexInit(time.Now().Add(5 * time.Second))
+				_ = client.connection.CloseWrite()
+			}},
+			{"a caller that resets mid-handshake", func(t *testing.T, address string) {
+				t.Helper()
+				client := dialRaw(t, address)
+				client.sendVersion()
+				client.readServerKexInit(time.Now().Add(5 * time.Second))
+				_ = client.connection.SetLinger(0)
+				_ = client.connection.Close()
+			}},
+			{"a caller that resets once its session is open, before the shell", func(t *testing.T, address string) {
+				t.Helper()
+				client := readyClient(t, address, "anyone")
+				_ = client.connection.SetLinger(0)
+				_ = client.connection.Close()
+			}},
 			{"the caller closes the connection after signing in", func(t *testing.T, address string) {
 				t.Helper()
 				client := dialRaw(t, address)
@@ -378,9 +414,7 @@ func TestAccept(t *testing.T) {
 				client := readyClient(t, address, "anyone")
 				client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
 			}},
-			// A disconnect is the caller closing on purpose, which the engine can tell from a
-			// failure at every stage; the socket stays open, so that only the disconnect ends the
-			// handshake.
+			// The socket stays open, so that only the disconnect ends the handshake.
 			{"the caller sends a disconnect after the version lines", func(t *testing.T, address string) {
 				t.Helper()
 				client := dialRaw(t, address)
@@ -406,11 +440,11 @@ func TestAccept(t *testing.T) {
 			}},
 		}
 		for _, row := range rows {
-			t.Run(row.name+": ErrCallerClosed", func(t *testing.T) {
+			t.Run(row.name+": ErrNoShell", func(t *testing.T) {
 				t.Parallel()
 				address, results, _ := acceptPair(t, t.Context(), readKey(t))
 				row.setUp(t, address)
-				expectAcceptError(t, waitAccept(t, results, 5*time.Second), ssh.ErrCallerClosed)
+				expectNoShell(t, waitAccept(t, results, 5*time.Second))
 			})
 		}
 	})
@@ -484,11 +518,11 @@ func TestAccept(t *testing.T) {
 			{connectionCloseRow, func(client *rawClient) { _ = client.connection.CloseWrite() }},
 			{disconnectRow, func(client *rawClient) { client.sendPacket(disconnectMessage()) }},
 		} {
-			t.Run("end of file, a wait, then "+row.name+": ErrCallerClosed", func(t *testing.T) {
+			t.Run("end of file, a wait, then "+row.name+": ErrNoShell", func(t *testing.T) {
 				t.Parallel()
 				client, results := endBeforeShell(t, false, "")
 				row.end(client)
-				expectAcceptError(t, waitAccept(t, results, 5*time.Second), ssh.ErrCallerClosed)
+				expectNoShell(t, waitAccept(t, results, 5*time.Second))
 			})
 		}
 		t.Run("end of file, a wait, then the context cancelled: ErrDeadlineEnded wrapping context.Canceled at once, and nothing more written", func(t *testing.T) {
@@ -626,7 +660,7 @@ func TestAccept(t *testing.T) {
 		}
 	})
 
-	t.Run("If the context has ended when anything else fails, then Accept shall return ErrDeadlineEnded, whatever the failure.", func(t *testing.T) {
+	t.Run("If the context has ended when the connection or the session channel ends, however it ends, then Accept shall return ErrDeadlineEnded.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the deadline passed by the clock, reported only later, and the caller resets waiting for the shell: ErrDeadlineEnded", func(t *testing.T) {
 			t.Parallel()
@@ -649,8 +683,13 @@ func TestAccept(t *testing.T) {
 		})
 	})
 
-	t.Run("If key is nil or not made by ReadHostKey, then Accept shall return ErrConnectionFailed without writing to the connection.", func(t *testing.T) {
+	t.Run("If connection is nil, or key is nil or not made by ReadHostKey, then Accept shall return ErrConnectionFailed without writing to the connection.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("a nil connection with a read key: ErrConnectionFailed and no Channel", func(t *testing.T) {
+			t.Parallel()
+			channel, err := ssh.Accept(t.Context(), nil, readKey(t))
+			expectWrongCall(t, acceptResult{channel: channel, err: err})
+		})
 		for _, row := range []struct {
 			name string
 			key  *ssh.HostKey
@@ -663,7 +702,7 @@ func TestAccept(t *testing.T) {
 				address, results, servers := acceptPair(t, t.Context(), row.key)
 				client := dialRaw(t, address)
 				client.sendVersion()
-				expectAcceptError(t, waitAccept(t, results, 5*time.Second), ssh.ErrConnectionFailed)
+				expectWrongCall(t, waitAccept(t, results, 5*time.Second))
 				client.expectNoBytes(<-servers)
 				address, results, _ = acceptPair(t, t.Context(), readKey(t))
 				readyClient(t, address, "anyone").toShell(false)
@@ -672,52 +711,25 @@ func TestAccept(t *testing.T) {
 		}
 	})
 
-	t.Run("If the handshake or anything else fails, then Accept shall return ErrConnectionFailed.", func(t *testing.T) {
-		t.Parallel()
-		rows := []struct {
-			name  string
-			setUp func(t *testing.T, client *rawClient)
-		}{
-			{"300 bytes with no line break, not SSH", func(_ *testing.T, client *rawClient) {
-				client.write(make([]byte, 300))
-			}},
-			{"a caller offering only diffie-hellman-group14-sha256", func(_ *testing.T, client *rawClient) {
-				client.sendVersion()
-				offer := defaultOffer("diffie-hellman-group14-sha256", true)
-				client.sendKexInit(offer)
-			}},
-			{"a caller offering only the cipher aes128-ctr", func(_ *testing.T, client *rawClient) {
-				client.sendVersion()
-				offer := defaultOffer("curve25519-sha256", true)
-				offer.ciphers = []string{"aes128-ctr"}
-				client.sendKexInit(offer)
-			}},
-			{"a caller that resets mid-handshake", func(_ *testing.T, client *rawClient) {
-				client.sendVersion()
-				client.readServerKexInit(time.Now().Add(5 * time.Second))
-				_ = client.connection.SetLinger(0)
-				_ = client.connection.Close()
-			}},
-			{"a caller that resets once its session is open, before the shell", func(t *testing.T, client *rawClient) {
-				t.Helper()
-				client.handshake(curveExchange(t, "curve25519-sha256"), true)
-				client.signIn("anyone")
-				if reply := client.openChannel("session", 0, nil); reply[0] != messageChannelConfirmation {
-					t.Fatalf("the session channel: message %d", reply[0])
-				}
-				_ = client.connection.SetLinger(0)
-				_ = client.connection.Close()
-			}},
-		}
-		for _, row := range rows {
-			t.Run(row.name+": ErrConnectionFailed", func(t *testing.T) {
-				t.Parallel()
-				address, results, _ := acceptPair(t, t.Context(), readKey(t))
-				row.setUp(t, dialRaw(t, address))
-				expectAcceptError(t, waitAccept(t, results, 5*time.Second), ssh.ErrConnectionFailed)
-			})
-		}
-	})
+}
+
+// expectNoShell is ErrNoShell alone: an end before the shell is neither a wrong call nor the
+// context's end, so a build that only renamed its old results fails here.
+func expectNoShell(t *testing.T, result acceptResult) {
+	t.Helper()
+	expectAcceptError(t, result, ssh.ErrNoShell)
+	if errors.Is(result.err, ssh.ErrConnectionFailed) || errors.Is(result.err, ssh.ErrDeadlineEnded) {
+		t.Fatalf("Accept gave %v, want ErrNoShell alone", result.err)
+	}
+}
+
+// expectWrongCall is ErrConnectionFailed alone, the result of a wrong call.
+func expectWrongCall(t *testing.T, result acceptResult) {
+	t.Helper()
+	expectAcceptError(t, result, ssh.ErrConnectionFailed)
+	if errors.Is(result.err, ssh.ErrNoShell) {
+		t.Fatalf("Accept gave %v, want ErrConnectionFailed alone", result.err)
+	}
 }
 
 // expectReceived reads text from the Channel, a byte at a time.
