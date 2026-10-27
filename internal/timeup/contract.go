@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package timeup holds, once, the rule for whether a call's time has run out and the wake that
-// makes a waiting read or write return when it has, for every unit that reads or writes a
-// caller's connection: Telnet, SSH and Text I/O.
+// Package timeup holds, once, the rule for whether a call's time has run out, the time a call must
+// stop by, and the wake that makes a waiting read or write return when its time has run out, for
+// every unit that reads or writes a caller's connection: Telnet, SSH and Text I/O.
 //
-// It owns judging a call's context by the clock as well as by the context's own report, and
-// setting a connection's read and write deadlines long past so that a read or write waiting on it
-// returns. It does not own what a unit returns to its caller: each unit turns Ended's answer into its
-// own result, as its own contract says, so no caller sees a change. It
-// writes nothing to the local log, stores nothing and keeps nothing between calls.
+// It owns judging a call's context by the clock as well as by the context's own report, the earlier
+// of a call's own deadline and its context's, and setting a connection's read and write deadlines
+// long past so that a read or write waiting on it returns. It does not own what a unit returns to
+// its caller: each unit turns Ended's answer into its own result, as its own contract says, so no
+// caller sees a change. It does not own a unit's timers: a unit that waits on a timer makes it from
+// Limit's answer. It writes nothing to the local log, stores nothing and keeps nothing between
+// calls.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
 //
@@ -46,6 +48,18 @@ type Conn interface {
 //     clock's time, Ended shall return nil.
 func Ended(ctx context.Context) error {
 	return ended(ctx)
+}
+
+// Limit returns the time a call must stop by: the earlier of deadline and the context's deadline.
+// A zero deadline means the call has none of its own.
+//
+//   - When deadline is not zero and the context has a deadline, Limit shall return the earlier of
+//     the two.
+//   - When deadline is zero, Limit shall return the context's deadline, or the zero time when the
+//     context has none.
+//   - When the context has no deadline, Limit shall return deadline.
+func Limit(ctx context.Context, deadline time.Time) time.Time {
+	return limit(ctx, deadline)
 }
 
 // Wake sets both of conn's deadlines long past, so a read or write waiting on it returns now. It
