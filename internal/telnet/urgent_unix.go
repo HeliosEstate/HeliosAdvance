@@ -5,7 +5,10 @@
 
 package telnet
 
-import "syscall"
+import (
+	"net"
+	"syscall"
+)
 
 // setUrgentInLine is the one call that differs by platform: the syscall package names SO_OOBINLINE
 // on every Unix it knows, each with its own value.
@@ -19,7 +22,7 @@ type urgentState struct{}
 
 // writeUrgentByte sends the byte as urgent data without blocking, and returns false from the
 // callback when the socket has no room, so Go's poller waits for it, with the write deadline.
-func (connection *acceptedConn) writeUrgentByte(value byte) error {
+func (state *urgentState) write(connection *net.TCPConn, value byte) error {
 	raw, err := connection.SyscallConn()
 	if err != nil {
 		return err

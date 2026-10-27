@@ -6,6 +6,7 @@ package telnet
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"sync"
@@ -77,7 +78,7 @@ func (state *urgentState) setWake(wake windows.Handle) {
 // forward runs whatever the wake returns: on a connection already closing it fails, and the wait
 // must still wake.
 func (connection *acceptedConn) SetWriteDeadline(deadline time.Time) error {
-	state := &connection.urgent
+	state := &connection.urgentState
 	state.mutex.Lock()
 	state.deadline = deadline
 	var wakeErr error
@@ -92,14 +93,14 @@ func (connection *acceptedConn) SetWriteDeadline(deadline time.Time) error {
 // which also holds a reference to the socket: the listener's Close waits for the callback, so the
 // handle stays valid for every call made on it. The callback always returns true, since Go's
 // Windows RawWrite fails at once on false.
-func (connection *acceptedConn) writeUrgentByte(value byte) error {
+func (state *urgentState) write(connection *net.TCPConn, value byte) error {
 	raw, err := connection.SyscallConn()
 	if err != nil {
 		return err
 	}
 	var sendErr error
 	err = raw.Write(func(handle uintptr) bool {
-		sendErr = connection.sendUrgent(windows.Handle(handle), value)
+		sendErr = state.sendUrgent(windows.Handle(handle), value)
 		return true
 	})
 	if err != nil {
@@ -108,8 +109,7 @@ func (connection *acceptedConn) writeUrgentByte(value byte) error {
 	return sendErr
 }
 
-func (connection *acceptedConn) sendUrgent(socket windows.Handle, value byte) error {
-	state := &connection.urgent
+func (state *urgentState) sendUrgent(socket windows.Handle, value byte) error {
 	if deadline := state.writeDeadline(); !deadline.IsZero() && !time.Now().Before(deadline) {
 		return os.ErrDeadlineExceeded
 	}
@@ -123,7 +123,7 @@ func (connection *acceptedConn) sendUrgent(socket windows.Handle, value byte) er
 	}
 	state.setWake(wake)
 
-	known, sendErr := connection.transmit(socket, send, wake)
+	known, sendErr := state.transmit(socket, send, wake)
 
 	// Nothing the kernel holds names the wake event, and only SetWriteDeadline reaches it, so it
 	// is cleared from the connection and closed on every way out, the kept send's included.
@@ -162,7 +162,7 @@ func (send *urgentSend) release() error {
 
 // transmit submits the send and waits for it. Its second result is false when the send's
 // completion cannot be known, in which case the caller keeps the send.
-func (connection *acceptedConn) transmit(
+func (state *urgentState) transmit(
 	socket windows.Handle, send *urgentSend, wake windows.Handle,
 ) (bool, error) {
 	err := windows.WSASend(socket, &send.buffer, 1, nil, windows.MSG_OOB, &send.overlapped, nil)
@@ -174,7 +174,7 @@ func (connection *acceptedConn) transmit(
 	}
 	var stop error
 	for {
-		completed, cause := connection.waitOnce(send, wake)
+		completed, cause := state.waitOnce(send, wake)
 		if completed {
 			return true, send.result(socket, false)
 		}
@@ -183,20 +183,20 @@ func (connection *acceptedConn) transmit(
 			break
 		}
 	}
-	return connection.cancel(socket, send, stop)
+	return state.cancel(socket, send, stop)
 }
 
 // waitOnce waits for the send's event or the wake event, for the time left to the deadline. It
 // resets the wake event and then reads the deadline, the order that loses no deadline set while
 // it waits. A non-nil cause means the send must be cancelled.
-func (connection *acceptedConn) waitOnce(
+func (state *urgentState) waitOnce(
 	send *urgentSend, wake windows.Handle,
 ) (completed bool, cause error) {
 	if err := windows.ResetEvent(wake); err != nil {
 		return false, err
 	}
 	milliseconds := uint32(windows.INFINITE)
-	if deadline := connection.urgent.writeDeadline(); !deadline.IsZero() {
+	if deadline := state.writeDeadline(); !deadline.IsZero() {
 		left := time.Until(deadline)
 		if left <= 0 {
 			return false, os.ErrDeadlineExceeded
@@ -223,7 +223,7 @@ func waitMilliseconds(left time.Duration) uint32 {
 // cancel cancels the send alone, never every operation on the socket, and waits for the cancel to
 // complete, as Go's poller does. A deadline that passed is the write's own error unless the send
 // got its byte out first. Its first result is false when the send's completion cannot be known.
-func (connection *acceptedConn) cancel(
+func (state *urgentState) cancel(
 	socket windows.Handle, send *urgentSend, stop error,
 ) (bool, error) {
 	if err := windows.CancelIoEx(socket, &send.overlapped); err != nil &&

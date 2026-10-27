@@ -88,8 +88,8 @@ func drainUntilIdle(client *net.TCPConn) (last byte, count int, err error) {
 			return last, count, err
 		}
 		read, err := client.Read(buffer)
-		if read > 0 {
-			last, count = buffer[read-1], count+read
+		if got := buffer[:read]; len(got) > 0 {
+			last, count = got[len(got)-1], count+len(got)
 		}
 		if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, io.EOF) {
 			return last, count, nil
@@ -115,28 +115,28 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 		// drainAfter, when set, has the caller start reading then.
 		drainAfter time.Duration
 		wantErr    error
-		// within bounds the time the call may take: at least from, less than to.
-		from, to time.Duration
+		// within bounds the time the call may take: at least atLeast, less than below.
+		atLeast, below time.Duration
 	}{
 		{
 			name:   "the connection filled, the caller not reading, the deadline 500 ms away: ErrDeadlineExceeded at that deadline",
 			filled: true, deadline: 500 * time.Millisecond,
-			wantErr: os.ErrDeadlineExceeded, from: 400 * time.Millisecond, to: 3 * time.Second,
+			wantErr: os.ErrDeadlineExceeded, atLeast: 400 * time.Millisecond, below: 3 * time.Second,
 		},
 		{
 			name:   "filled, the deadline 10 seconds away, a long-passed deadline set from a second goroutine at 500 ms: ErrDeadlineExceeded then",
 			filled: true, deadline: 10 * time.Second, wakeAfter: 500 * time.Millisecond,
-			wantErr: os.ErrDeadlineExceeded, from: 400 * time.Millisecond, to: 3 * time.Second,
+			wantErr: os.ErrDeadlineExceeded, atLeast: 400 * time.Millisecond, below: 3 * time.Second,
 		},
 		{
 			name:   "filled, the deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens",
 			filled: true, deadline: 10 * time.Second, drainAfter: 500 * time.Millisecond,
-			from: 400 * time.Millisecond, to: 5 * time.Second,
+			atLeast: 400 * time.Millisecond, below: 5 * time.Second,
 		},
 		{
 			name:     "an empty connection with the deadline already passed: ErrDeadlineExceeded at once, and nothing sent",
 			deadline: -time.Second,
-			wantErr:  os.ErrDeadlineExceeded, to: 400 * time.Millisecond,
+			wantErr:  os.ErrDeadlineExceeded, below: 400 * time.Millisecond,
 		},
 	}
 	for _, row := range rows {
@@ -168,8 +168,8 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			if !errors.Is(err, row.wantErr) {
 				t.Fatalf("WriteUrgent returned (%d, %v), want error %v", count, err, row.wantErr)
 			}
-			if took < row.from || took >= row.to {
-				t.Fatalf("WriteUrgent took %v, want at least %v and less than %v", took, row.from, row.to)
+			if took < row.atLeast || took >= row.below {
+				t.Fatalf("WriteUrgent took %v, want at least %v and less than %v", took, row.atLeast, row.below)
 			}
 			switch {
 			case row.wantErr == nil && count != 1:

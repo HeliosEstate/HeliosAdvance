@@ -152,14 +152,14 @@ func (line *Line) writeOut(ctx context.Context, deadline time.Time) error {
 func (line *Line) writeParts() error {
 	state := &line.state
 	buffer := state.sendBuffer[:state.sendLength]
-	from, to := state.urgentFrom, state.urgentTo
-	if from == to {
-		from, to = len(buffer), len(buffer)
+	begin, end := state.urgentFrom, state.urgentTo
+	if begin == end {
+		begin, end = len(buffer), len(buffer)
 	}
 	parts := [...]struct {
 		bytes  []byte
 		urgent bool
-	}{{buffer[:from], false}, {buffer[from:to], true}, {buffer[to:], false}}
+	}{{buffer[:begin], false}, {buffer[begin:end], true}, {buffer[end:], false}}
 	for _, part := range parts {
 		if len(part.bytes) == 0 {
 			continue

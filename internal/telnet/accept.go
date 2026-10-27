@@ -13,7 +13,7 @@ import (
 // connection, with the platform's state for its urgent write beside it.
 type acceptedConn struct {
 	*net.TCPConn
-	urgent urgentState
+	urgentState
 }
 
 // WriteUrgent sends every byte but the last in the ordinary write, then the last alone as urgent
@@ -25,11 +25,11 @@ func (connection *acceptedConn) WriteUrgent(buffer []byte) (int, error) {
 	}
 	last := len(buffer) - 1
 	if last > 0 {
-		if count, err := connection.TCPConn.Write(buffer[:last]); err != nil {
+		if count, err := connection.Write(buffer[:last]); err != nil {
 			return count, err
 		}
 	}
-	if err := connection.writeUrgentByte(buffer[last]); err != nil {
+	if err := connection.write(connection.TCPConn, buffer[last]); err != nil {
 		return last, err
 	}
 	return len(buffer), nil
