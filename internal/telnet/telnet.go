@@ -50,8 +50,8 @@ type negotiationState struct {
 	handedOverReturn bool
 }
 
-func newNegotiation() (*Negotiation, [6]byte) {
-	opening := [6]byte{
+func newNegotiation() (*Negotiation, [OpeningLength]byte) {
+	opening := [OpeningLength]byte{
 		TelnetIAC, TelnetWILL, OptionEcho,
 		TelnetIAC, TelnetWILL, OptionSuppressGoAhead,
 	}
@@ -86,13 +86,19 @@ func (negotiation *Negotiation) receiveCounting(input, replies []byte) ([]byte, 
 	return replies, state.answered(), read
 }
 
-func (negotiation *Negotiation) strip(character byte, replies []byte) ([]byte, bool) {
+func (negotiation *Negotiation) strip(character byte, replies []byte) ([]byte, byte, bool) {
 	state := &negotiation.state
 	if !state.handedOver {
 		state.handedOver = true
 		state.handedOverReturn = state.answered()
 	}
-	return state.readByte(character, replies)
+	replies, isData := state.readByte(character, replies)
+	return replies, character, isData
+}
+
+// takeSynch is a placeholder until Part 4's build: nothing owes a Synch yet.
+func (negotiation *Negotiation) takeSynch() int {
+	return 0
 }
 
 // readByte is the one table Receive and Strip both run, so a later option is added in one place.
@@ -216,7 +222,7 @@ func negotiate(ctx context.Context, connection Conn) (Outcome, error) {
 // negotiateWith is the one negotiation of Negotiate and Open. The buffers are the caller's so that
 // Open can read into the Line's own and leave what is not negotiation's where the Line finds it.
 func negotiateWith(
-	ctx context.Context, connection Conn, negotiation *Negotiation, opening [6]byte,
+	ctx context.Context, connection Conn, negotiation *Negotiation, opening [OpeningLength]byte,
 	readBuffer *[ReadBufferSize]byte, replyBuffer *[ReplyBufferSize]byte,
 ) (Outcome, handOver, error) {
 	var release func()

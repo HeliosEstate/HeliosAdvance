@@ -202,7 +202,7 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 			character := state.receiveBuffer[state.receiveNext]
 			state.receiveNext++
 			queued := state.sendBuffer[:state.sendLength:SendBufferSize]
-			queued, isData := state.negotiation.Strip(character, queued)
+			queued, _, isData := state.negotiation.Strip(character, queued)
 			state.sendLength = len(queued)
 			if isData {
 				return character, nil
@@ -258,7 +258,7 @@ func (line *Line) close(ctx context.Context) error {
 	if err := connection.SetReadDeadline(connectionDeadline(ctx, waitEnd)); err != nil {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
-	release := wakeOnEnd(ctx, connection)
+	release := wakeOnEnd(ctx, acceptedConn{connection})
 	defer release()
 	var discard [DiscardBufferSize]byte
 	for {
