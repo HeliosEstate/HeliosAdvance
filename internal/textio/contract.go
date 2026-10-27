@@ -57,7 +57,8 @@
 //     [read]
 //   - The textio package shall keep no copy of a line once RecvString returns. [read]
 //   - The textio package shall write nothing to standard output or standard error. [read]
-//   - The textio package shall import nothing outside the Go standard library. [read]
+//   - The textio package shall import nothing outside the Go standard library and the timeup
+//     package. [read]
 package textio
 
 import (

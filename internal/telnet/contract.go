@@ -97,11 +97,12 @@
 // # Calls
 //
 // New and Receive make no call that can fail. Negotiate's calls, the same on Linux and
-// Windows, each read with go doc on Go 1.27.1:
+// Windows, each read with go doc on Go 1.27.1, but timeup.WakeOnEnd, the engine's own, read
+// from the timeup package's contract:
 //
 //	Call                   Why                                        Documented failures
-//	context.AfterFunc      wakes a waiting read or write when the     none
-//	                       context ends, by a deadline in the past
+//	timeup.WakeOnEnd       wakes a waiting read or write when the     none; a failure to set
+//	                       context ends, by a deadline in the past    a deadline is dropped
 //	SetReadDeadline        the earlier of 3 seconds after the         an error, such as
 //	                       opening write and the context's deadline;  net.ErrClosed on a
 //	                       at return, the context's deadline          closed connection
@@ -125,7 +126,10 @@
 //     and the replies the tables on Receive give.
 //   - The telnet package shall keep a state for no Telnet option other than ECHO and SGA. [read]
 //   - The telnet package shall write nothing to the local log. [read]
-//   - The telnet package shall import nothing outside the Go standard library. [read]
+//   - The telnet package shall call each release timeup.WakeOnEnd returns once, before the call
+//     that registered it returns. [read]
+//   - The telnet package shall import nothing outside the Go standard library and the timeup
+//     package. [read]
 package telnet
 
 import (
