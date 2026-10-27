@@ -39,6 +39,10 @@ jobs:
           # check.sh --mutation runs the license gate too (the codebase review, 2026-10-24).
           go install github.com/google/go-licenses/v2@"$GO_LICENSES"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # Plink, the outside Telnet client Part 4's Telnet rows drive as an oracle, is not on the
+      # runner's image; it comes from Ubuntu's signed archive, as in check.yml.
+      - name: Install Plink
+        run: sudo apt-get update -q && sudo apt-get install -y -q putty-tools && plink -V
       # The same cache as check.yml's, for the same reason: Docker Hub's 429.
       - name: Restore the oracle images
         id: oracle-images
