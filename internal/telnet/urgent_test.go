@@ -152,15 +152,31 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			var drained chan struct{}
 			var lastRead byte
 			var drainErr error
+			// A fatal row returns early, and a timer function left running would still write the
+			// row's variables and touch its connections after the row ended.
+			var drainTimer, wakeTimer *time.Timer
+			var woken chan struct{}
+			t.Cleanup(func() {
+				if drainTimer != nil && !drainTimer.Stop() {
+					<-drained
+				}
+				if wakeTimer != nil && !wakeTimer.Stop() {
+					<-woken
+				}
+			})
 			if row.drainAfter > 0 {
 				drained = make(chan struct{})
-				time.AfterFunc(row.drainAfter, func() {
+				drainTimer = time.AfterFunc(row.drainAfter, func() {
 					defer close(drained)
 					lastRead, _, drainErr = drainUntilIdle(client)
 				})
 			}
 			if row.wakeAfter > 0 {
-				time.AfterFunc(row.wakeAfter, func() { _ = server.SetWriteDeadline(passed) })
+				woken = make(chan struct{})
+				wakeTimer = time.AfterFunc(row.wakeAfter, func() {
+					defer close(woken)
+					_ = server.SetWriteDeadline(passed)
+				})
 			}
 			started := time.Now()
 			count, err := server.WriteUrgent([]byte{TelnetDM})
