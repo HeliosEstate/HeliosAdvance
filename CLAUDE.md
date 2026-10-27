@@ -7,7 +7,6 @@ rest on are the developer's record, `records/invariants.md` in HeliosDesign, and
 ## Correctness before merge
 
 The developer's words, from his own rules:
-
 These rules outrank finishing the task, keeping work moving and reaching a merge. A green check,
 an approved plan or a passing test never excuses breaking one. When a rule here conflicts with
 getting the task done, the rule wins and you stop.
