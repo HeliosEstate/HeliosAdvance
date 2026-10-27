@@ -673,6 +673,13 @@ func TestCall(t *testing.T) {
 				client.expectNameEnd(asked + echoOf(row.name2) + helloTo(row.name2))
 			})
 		}
+		t.Run("over SSH with a terminal, the edge: Ctrl-U is not dropped, ab Ctrl-U c CR gives Hello c", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, true)
+			client.sendData("ab\x15c\r")
+			client.expectNameEnd(asked + "ab" + strings.Repeat("\b \b", 2) + echoOf("c") + helloTo("c"))
+		})
 		t.Run("over SSH, ab sent before the shell and c CR after: the name abc", func(t *testing.T) {
 			t.Parallel()
 			program := startEngine(t)

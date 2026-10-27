@@ -916,7 +916,10 @@ func ceilingCall(t *testing.T, index int, flood func(caller)) string {
 	wait(t, call.connected.Add(time.Second))
 	flood(call)
 	if time.Now().After(call.dialed.Add(negotiationLimit - 100*time.Millisecond)) {
-		t.Errorf("test fault: caller %d's flood took until %v after the dial", index, time.Since(call.dialed))
+		// A flood blocks only once the engine's answers fill the buffers, so an engine that does
+		// not answer what the flood sends makes it run late as surely as a slow runner does: the
+		// failure blames neither.
+		t.Errorf("cannot tell the ceiling from the name's 60 seconds: caller %d's flood still went through %v after the dial, past negotiation's 3 seconds", index, time.Since(call.dialed))
 		return ""
 	}
 	deadline := call.connected.Add(ceilingLimit + margin)
