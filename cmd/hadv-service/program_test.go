@@ -154,11 +154,84 @@ func (program *run) read(stderr io.Reader) {
 // names, each of which must be a Telnet listener's URL: the program listens for no SSH caller.
 func (program *run) listening(t *testing.T) []string {
 	t.Helper()
-	telnet, ssh := program.kinds(t)
+	return telnetAlone(t, program.listeners(t))
+}
+
+// telnetAlone returns a started line's Telnet addresses, failing the row if it names an SSH one:
+// the program was started with SSH off.
+func telnetAlone(t *testing.T, listeners []string) []string {
+	t.Helper()
+	telnet, ssh := kindsOf(t, listeners)
 	if len(ssh) > 0 {
 		t.Fatalf("the started line names SSH listeners %q, with SSH off", ssh)
 	}
 	return telnet
+}
+
+// freedPortTries bounds startOnFreedPort: the race it tries again on was met once in all of PR
+// 129's runs (HeliosDesign #190), so a row that meets it this often is broken, not unlucky.
+const freedPortTries = 5
+
+// startOnFreedPort holds a port free at both loopback addresses, closes the hosts the row names
+// in freed, and starts the program with options(port). Between that close and the program's own
+// listen, a test running in parallel may bind a freed address; the program then fails to start
+// without reaching the row's case. A start_failed line that names a freed address as in use is
+// that race, so the row tries a fresh port. Any other first line is judged as listeners judges
+// it, so a program that refuses over the address the row holds still fails the row. It returns
+// the port, the program and the started line's listeners.
+func startOnFreedPort(t *testing.T, freed []string, options func(port string) []string) (string, *run, []string) {
+	t.Helper()
+	for range freedPortTries {
+		port, ipv4, ipv6 := heldPort(t)
+		for _, host := range freed {
+			switch host {
+			case ipv4Loopback:
+				_ = ipv4.Close()
+			case ipv6Loopback:
+				_ = ipv6.Close()
+			}
+		}
+		program := startProgram(t, options(port)...)
+		timer := time.NewTimer(startLimit)
+		select {
+		case line := <-program.lines:
+			timer.Stop()
+			if value, found := strings.CutPrefix(line, "started="); found {
+				return port, program, strings.Split(value, ",")
+			}
+			if takenWhileFreed(line, port, freed) {
+				t.Logf("a freed address was taken before the program listened, %q: trying a fresh port", line)
+				continue
+			}
+			t.Fatalf("the program's first log line was %q, want a started line", line)
+		case <-program.exited:
+			timer.Stop()
+			t.Fatalf("the program exited with %d before it named a listener; its log:\n%s", program.code(), program.text())
+		case <-timer.C:
+			t.Fatalf("the program named no listener within %v", startLimit)
+		}
+	}
+	t.Fatalf("test fault: on each of %d ports a freed address was taken before the program listened", freedPortTries)
+	return "", nil, nil
+}
+
+// takenWhileFreed is whether a start_failed line says a listen at one of the freed addresses
+// failed because the address was in use, as Linux and Windows word it.
+func takenWhileFreed(line, port string, freed []string) bool {
+	if !strings.HasPrefix(line, "start_failed=") {
+		return false
+	}
+	for _, host := range freed {
+		_, after, found := strings.Cut(line, net.JoinHostPort(host, port)+": bind: ")
+		if !found {
+			continue
+		}
+		reason, _, _ := strings.Cut(after, `\n`)
+		if strings.Contains(reason, "address already in use") || strings.Contains(reason, "Only one usage of each socket address") {
+			return true
+		}
+	}
+	return false
 }
 
 // kinds waits for the started line and returns the addresses it names, Telnet's and SSH's, each
