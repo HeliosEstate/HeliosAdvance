@@ -114,13 +114,23 @@ var (
 	ErrFileFieldMissing = errors.New("database: the connection file is missing a field")
 )
 
-// Why Take failed. ErrUnreachable and ErrLeaseHeld fix themselves, so the program waits and takes
-// again; every other one does not, so the program stops. None holds the password or any text the
-// database sent.
+// Why Take failed. ErrUnreachable, ErrNotReady, ErrNoConnectionFree, ErrReadOnly and ErrLeaseHeld
+// fix themselves, so the program waits and takes again; every other one does not, so the program
+// stops. None holds the password or any text the database sent.
 var (
 	// ErrUnreachable means the database did not answer within TrySeconds, refused the
-	// connection, said it is starting up, or the connection failed after it was made.
+	// connection, or the connection failed after it was made.
 	ErrUnreachable = errors.New("database: the database does not answer")
+	// ErrNotReady means the database answered that it is starting up, shutting down or
+	// recovering.
+	ErrNotReady = errors.New("database: the database is starting up, shutting down or recovering")
+	// ErrNoConnectionFree means the database answered that it has no connection free.
+	ErrNoConnectionFree = errors.New("database: the database has no connection free")
+	// ErrReadOnly means the database answered that it is read-only, as one is until a failover
+	// completes.
+	ErrReadOnly = errors.New("database: the database is read-only")
+	// ErrRefused means the database refused for any reason no other error names.
+	ErrRefused = errors.New("database: the database refuses")
 	// ErrLeaseHeld means the server's lease has not ended and its holder is not this run's own.
 	ErrLeaseHeld = errors.New("database: the server's lease is held by another run")
 	// ErrCertificate means the database's certificate does not chain to the connection file's
@@ -131,8 +141,9 @@ var (
 	ErrSignInMethod = errors.New("database: the database asks for another way of signing in")
 	// ErrSignInRefused means the database refused the login or its password.
 	ErrSignInRefused = errors.New("database: the database refuses the sign-in")
-	// ErrTooPowerful means the login could change the schema.
-	ErrTooPowerful = errors.New("database: the login could change the schema")
+	// ErrTooPowerful means the login holds a right beyond those schema.sql grants a server's
+	// login, or the power to take one.
+	ErrTooPowerful = errors.New("database: the login holds more rights than a server's login is granted")
 	// ErrNoServerRow means hadv.servers holds no row for the connection file's server ID.
 	ErrNoServerRow = errors.New("database: no row for this server's ID")
 	// ErrSchemaVersion is what a SchemaVersionError matches through errors.Is.
@@ -231,17 +242,22 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //   - Take shall sign in as the ConnectionFile's login, to its database, only by SCRAM-SHA-256
 //     with channel binding.
 //   - Take shall make the checks in the order of the lines below, and return the first failure.
-//   - If the database does not answer within TrySeconds, refuses the connection, says it is
-//     starting up, or the connection fails after it is made, then Take shall return
-//     ErrUnreachable.
+//   - If the database does not answer within TrySeconds, refuses the connection, or the
+//     connection fails after it is made, then Take shall return ErrUnreachable.
+//   - If the database answers that it is starting up, shutting down or recovering, then Take
+//     shall return ErrNotReady.
+//   - If the database answers that it has no connection free, then Take shall return
+//     ErrNoConnectionFree.
 //   - If the database's certificate fails its check, or cannot be used for channel binding, then
 //     Take shall return ErrCertificate without sending the password.
 //   - If the database asks for any other way of signing in, then Take shall return
 //     ErrSignInMethod without sending the password.
 //   - If the database refuses the sign-in, then Take shall return ErrSignInRefused.
-//   - If the login is a superuser, owns the hadv schema or a table in it, is a member of a role
-//     that does, or holds the right to create in the schema, then Take shall return
-//     ErrTooPowerful.
+//   - If the login is a superuser or a member of any role but hadv_server, holds the right to
+//     create roles or databases, owns anything in the hadv schema, or holds, itself or through
+//     PUBLIC, a right on the database, the hadv schema or anything in it that schema.sql does not
+//     grant hadv_server, connecting to the database aside, then Take shall return ErrTooPowerful.
+//   - If the database answers that it is read-only, then Take shall return ErrReadOnly.
 //   - If hadv.schema_version is missing, holds no row, or holds a version other than
 //     SchemaVersionMadeFor and the next, then Take shall return a *SchemaVersionError naming the
 //     version found.
@@ -252,6 +268,8 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     the database's current time to that row, and return the Lease.
 //   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
 //     then Take shall return ErrLeaseHeld and change nothing.
+//   - If the database refuses for any reason the lines above do not name, then Take shall return
+//     ErrRefused.
 //   - If the context has ended when Take is called, or ends while it waits, then Take shall
 //     return the context's error, wrapped.
 func (server *ServerDatabase) Take(ctx context.Context) (*Lease, error) {
