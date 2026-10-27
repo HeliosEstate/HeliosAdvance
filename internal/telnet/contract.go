@@ -148,7 +148,8 @@
 //     side. [read]
 //   - The telnet package shall keep nothing a subnegotiation carries. [read]
 //   - The telnet package shall write nothing to the local log. [read]
-//   - The telnet package shall import nothing outside the Go standard library. [read]
+//   - The telnet package shall import nothing outside the Go standard library and, in its Windows
+//     urgent write alone, golang.org/x/sys/windows. [read]
 package telnet
 
 import (
@@ -601,6 +602,12 @@ const (
 // where the syscall package names none, Winsock's SO_OOBINLINE, 0x0100; and the urgent write with
 // the flag MSG_OOB. Set after accept, SO_OOBINLINE also keeps in line urgent data that arrived
 // before accept (probed on both).
+//
+// On Windows, Go's SyscallConn cannot wait for room: its Write runs the callback once and fails
+// when the callback says "not yet" (internal/poll). So the urgent write there takes Winsock's
+// documented route for a send with a time limit, an overlapped send with an event, whose calls
+// the syscall package lacks; they come from golang.org/x/sys/windows, in that file alone (the
+// developer, 2026-10-27).
 //
 //   - Accept shall keep the caller's urgent data in line, so that a Synch, IAC with DM sent as
 //     urgent data, reaches negotiation whole and, after negotiation, the caller's next character
