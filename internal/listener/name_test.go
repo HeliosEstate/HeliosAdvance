@@ -60,8 +60,8 @@ func echoed(name string) []byte {
 }
 
 // answeredCall dials, starts recording, and sends the answers and the bytes after them in one
-// write. It returns the caller, the recording and when the answers went.
-func answeredCall(t *testing.T, answer, after []byte, record time.Duration) (caller, *recording, time.Time) {
+// write. It returns the caller, the recording and when the write began and returned.
+func answeredCall(t *testing.T, answer, after []byte, record time.Duration) (caller, *recording, sending) {
 	t.Helper()
 	call := dial(t, startEngine(t, 1)[0])
 	stream := call.record(call.connected.Add(record))
@@ -113,7 +113,7 @@ type nameRow struct {
 func runNameRow(t *testing.T, row nameRow) {
 	t.Helper()
 	call, stream, _ := answeredCall(t, row.answer, nil, 5*time.Second)
-	stream.waitFor(t, len(opening)+len(asked), time.Now().Add(margin))
+	stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 	call.send(t, row.typed)
 	stream.expectStream(t, join(opening, asked, row.after))
 }
@@ -136,7 +136,7 @@ func TestName(t *testing.T) {
 			t.Run("answered "+row.name+": the greeting and the prompt at once, then nothing until a name", func(t *testing.T) {
 				t.Parallel()
 				call, stream, sent := answeredCall(t, row.answer, nil, 5*time.Second)
-				stream.waitFor(t, len(opening)+len(asked), sent.Add(margin))
+				stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 				wait(t, time.Now().Add(quietFor))
 				call.send(t, []byte("ann\r"))
 				after := helloTo("ann")
@@ -144,14 +144,17 @@ func TestName(t *testing.T) {
 					after = echoed("ann")
 				}
 				stream.expectStream(t, join(opening, asked, after))
-				stream.expectAskedAt(t, len(opening), sent, sent.Add(margin))
+				// The nearest fault misses the answers, so the greeting waits for negotiation's 3
+				// seconds from the dial.
+				stream.expectAskedAt(t, len(opening), sent.began,
+					windowEnd(t, sent.done, call.dialed.Add(negotiationLimit)))
 			})
 		}
 		t.Run("a silent caller: the greeting and the prompt at 3 seconds", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
-			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, helloTo("ann")))
 			stream.expectAskedAt(t, len(opening), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
@@ -161,7 +164,7 @@ func TestName(t *testing.T) {
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
 			call.send(t, request(doVerb, echo))
-			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, echoed("ann")))
 			stream.expectAskedAt(t, len(opening), call.dialed.Add(negotiationLimit), stream.arrivedAt(t, 0).Add(negotiationLimit+margin))
@@ -173,24 +176,29 @@ func TestName(t *testing.T) {
 			call.send(t, request(doVerb, echo))
 			wait(t, call.connected.Add(2*time.Second))
 			sent := call.send(t, request(doVerb, sga))
-			stream.waitFor(t, len(opening)+len(asked), sent.Add(margin))
+			stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, echoed("ann")))
-			stream.expectAskedAt(t, len(opening), sent, sent.Add(margin))
+			// The nearest fault misses the answers, and its greeting at negotiation's 3 seconds
+			// is only a second after this one: the window keeps margin.
+			stream.expectAskedAt(t, len(opening), sent.began, sent.done.Add(margin))
 		})
 		t.Run("the answers a byte at a time, 50 ms apart: the greeting and the prompt after the last", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(5 * time.Second))
-			var lastSent time.Time
+			var lastSent sending
 			for index := range answers {
 				wait(t, time.Now().Add(50*time.Millisecond))
 				lastSent = call.send(t, answers[index:index+1])
 			}
-			stream.waitFor(t, len(opening)+len(asked), lastSent.Add(margin))
+			stream.waitFor(t, len(opening)+len(asked), lastSent.done.Add(progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, echoed("ann")))
-			stream.expectAskedAt(t, len(opening), lastSent, lastSent.Add(margin))
+			// The nearest fault misses the answers, so the greeting waits for negotiation's 3
+			// seconds from the dial.
+			stream.expectAskedAt(t, len(opening), lastSent.began,
+				windowEnd(t, lastSent.done, call.dialed.Add(negotiationLimit)))
 		})
 	})
 	t.Run("When the caller ends the name with CR or LF, the engine shall write `Hello `, the name and CR LF.", func(t *testing.T) {
@@ -302,13 +310,13 @@ func TestName(t *testing.T) {
 			t.Run(row.name+": closed at 60 seconds, nothing after the prompt", func(t *testing.T) {
 				t.Parallel()
 				call, stream, sent := answeredCall(t, row.answer, nil, nameLimit+10*time.Second)
-				stream.waitFor(t, len(opening)+len(asked), sent.Add(margin))
+				stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 				if row.typing != nil {
-					go row.typing(call, sent)
+					go row.typing(call, sent.done)
 				}
 				stream.expectStream(t, join(opening, asked))
 				promptEnd := stream.arrivedAt(t, len(opening)+len(asked)-1)
-				expectWithin(t, "the close", stream.ended, sent.Add(nameLimit), promptEnd.Add(nameLimit+margin))
+				expectWithin(t, "the close", stream.ended, sent.began.Add(nameLimit), promptEnd.Add(nameLimit+margin))
 			})
 		}
 		t.Run("a caller with ECHO agreed typing ab, then silent: the echo of ab, then closed at 60 seconds", func(t *testing.T) {
@@ -316,7 +324,7 @@ func TestName(t *testing.T) {
 			_, stream, sent := answeredCall(t, answers, []byte("ab"), nameLimit+10*time.Second)
 			stream.expectStream(t, join(opening, asked, []byte("ab")))
 			promptEnd := stream.arrivedAt(t, len(opening)+len(asked)-1)
-			expectWithin(t, "the close", stream.ended, sent.Add(nameLimit), promptEnd.Add(nameLimit+margin))
+			expectWithin(t, "the close", stream.ended, sent.began.Add(nameLimit), promptEnd.Add(nameLimit+margin))
 		})
 	})
 	t.Run("When the caller sends a character from space to tilde (0x20 to 0x7E) and the name holds fewer than 30, the engine shall add it to the name.", func(t *testing.T) {
@@ -398,7 +406,7 @@ func TestName(t *testing.T) {
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
 			call.send(t, join(request(doVerb, echo), []byte{iac, doVerb}))
-			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte{telnetTypeOption, 'k', '\r'})
 			stream.expectStream(t, join(opening, asked, request(wont, telnetTypeOption), echoed("k")))
 		})
@@ -461,7 +469,7 @@ func TestName(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
-			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, join([]byte("a"), request(doVerb, echo), []byte("b\r")))
 			stream.expectStream(t, join(opening, asked, []byte("b\r\n"), helloTo("ab")))
 		})
@@ -483,7 +491,7 @@ func TestName(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
-			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+2*margin))
+			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("abc\x08d\r"))
 			stream.expectStream(t, join(opening, asked, helloTo("abd")))
 		})
@@ -510,7 +518,7 @@ func TestName(t *testing.T) {
 			t.Run(name+" alone, ECHO agreed: nothing written, then a CR: the echo and Hello a", func(t *testing.T) {
 				t.Parallel()
 				call, stream, sent := answeredCall(t, answers, nil, 5*time.Second)
-				stream.waitFor(t, len(opening)+len(asked), sent.Add(margin))
+				stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 				call.send(t, []byte{key})
 				wait(t, time.Now().Add(quietFor))
 				call.send(t, []byte("a\r"))
@@ -528,7 +536,7 @@ func TestName(t *testing.T) {
 		t.Run("ab, IAC, DM as urgent data, c CR, after negotiation: Hello abc", func(t *testing.T) {
 			t.Parallel()
 			call, stream, sent := answeredCall(t, refused, nil, 5*time.Second)
-			stream.waitFor(t, len(opening)+len(asked), sent.Add(margin))
+			stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 			call.send(t, []byte{'a', 'b', iac})
 			if err := sendUrgent(call.connection, dataMark); err != nil {
 				t.Fatalf("sending urgent data: %v", err)
@@ -540,16 +548,19 @@ func TestName(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(5 * time.Second))
-			stream.waitFor(t, len(opening), call.connected.Add(margin))
+			stream.waitFor(t, len(opening), call.connected.Add(progressLimit))
 			call.send(t, []byte{iac})
 			if err := sendUrgent(call.connection, dataMark); err != nil {
 				t.Fatalf("sending urgent data: %v", err)
 			}
 			sent := call.send(t, answers)
-			stream.waitFor(t, len(opening)+len(asked), sent.Add(margin))
+			stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 			call.send(t, []byte("ab\r"))
 			stream.expectStream(t, join(opening, asked, echoed("ab")))
-			stream.expectAskedAt(t, len(opening), sent, sent.Add(margin))
+			// The nearest fault misses the answers, so the greeting waits for negotiation's 3
+			// seconds from the dial.
+			stream.expectAskedAt(t, len(opening), sent.began,
+				windowEnd(t, sent.done, call.dialed.Add(negotiationLimit)))
 		})
 	})
 	t.Run("When Run returns session.Answered, the listener package shall call the KindConnection's Close once, under the connection's context, and then close the connection.", func(t *testing.T) {
@@ -557,16 +568,10 @@ func TestName(t *testing.T) {
 		t.Run("callers that close once Hello arrives: their places are free at once", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			var closed time.Time
-			for range connectionCap {
-				call := dial(t, address)
-				stream := call.record(call.connected.Add(2 * margin))
-				call.send(t, join(answers, []byte("n\r")))
-				stream.expectStream(t, join(opening, asked, echoed("n")))
-				_ = call.connection.Close()
-				closed = time.Now()
-			}
-			expectServedBy(t, address, closed.Add(margin))
+			released, closed := helloAndClose(t, address)
+			// The nearest fault frees a place only when a closing wait's 3 seconds end, and none
+			// began before the names were sent.
+			expectServedBy(t, address, windowEnd(t, closed, released.Add(closingWaitLimit)))
 		})
 		t.Run("a caller that stays: closed 3 seconds after the shutdown, not before, its bytes read meanwhile", func(t *testing.T) {
 			t.Parallel()
@@ -578,7 +583,7 @@ func TestName(t *testing.T) {
 			// engine's shutdown: the caller's own sight of the shutdown can lag it on a loaded
 			// runner (ubuntu-24.04-arm, 2026-10-25, 74 ms early by that sight).
 			closedAt := call.awaitReset(t, shutAt.Add(closingWaitLimit+2*margin))
-			expectWithin(t, "the close", closedAt, sent.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
+			expectWithin(t, "the close", closedAt, sent.began.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
 		})
 		t.Run("Hello after 68 seconds: closed at the ceiling, not 3 seconds after the shutdown", func(t *testing.T) {
 			t.Parallel()
@@ -602,11 +607,14 @@ func TestName(t *testing.T) {
 				call := dial(t, address)
 				stream := call.record(call.connected.Add(5 * time.Second))
 				call.send(t, join(refused, []byte("ab")))
-				stream.waitFor(t, len(opening)+len(asked), time.Now().Add(margin))
+				stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 				_ = call.connection.CloseWrite()
 				stream.expectStream(t, join(opening, asked))
 			}
-			expectServedBy(t, address, time.Now().Add(margin))
+			// The nearest fault misses the close and holds the place for the name's 60 seconds. A
+			// closing wait run after the half-close cannot hold it: the wait's read meets the
+			// caller's end at once.
+			expectServedBy(t, address, time.Now().Add(wideMargin))
 		})
 		t.Run("a caller that resets mid-name: its place free", func(t *testing.T) {
 			t.Parallel()
@@ -614,16 +622,17 @@ func TestName(t *testing.T) {
 			for range connectionCap {
 				call := dial(t, address)
 				call.send(t, join(refused, []byte("ab")))
-				call.readOpening(t, time.Now().Add(margin))
+				call.readOpening(t, time.Now().Add(progressLimit))
 				_ = call.connection.SetLinger(0)
 				_ = call.connection.Close()
 			}
-			expectServedBy(t, address, time.Now().Add(margin))
+			// The nearest fault misses the close and holds the place for the name's 60 seconds.
+			expectServedBy(t, address, time.Now().Add(wideMargin))
 		})
 		t.Run("a caller that half-closes mid-name: closed at once, with no closing wait", func(t *testing.T) {
 			t.Parallel()
 			call, stream, _ := answeredCall(t, refused, []byte("ab"), 5*time.Second)
-			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(margin))
+			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 			closedAt := time.Now()
 			_ = call.connection.CloseWrite()
 			stream.expectStream(t, join(opening, asked))
@@ -632,7 +641,7 @@ func TestName(t *testing.T) {
 		t.Run("NoName at 60 seconds: closed then, with no closing wait", func(t *testing.T) {
 			t.Parallel()
 			call, stream, _ := answeredCall(t, answers, nil, nameLimit+negotiationLimit+5*time.Second)
-			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(margin))
+			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 			promptAt := stream.byteAt(t, len(opening)+len(asked)-1)
 			// Whatever the caller sends after the 60 seconds meets a closed connection, not a
 			// closing wait that would take it.
@@ -651,7 +660,7 @@ func TestName(t *testing.T) {
 			stream := call.record(call.connected.Add(5 * time.Second))
 			sent := call.send(t, answers)
 			stream.expectStream(t, opening)
-			expectWithin(t, "the engine's end", stream.ended, sent, sent.Add(margin))
+			expectWithin(t, "the engine's end", stream.ended, sent.began, sent.done.Add(margin))
 		})
 	})
 	t.Run("When the connection's context ends, the listener package shall close the connection at once.", func(t *testing.T) {
@@ -659,20 +668,25 @@ func TestName(t *testing.T) {
 		t.Run("Stop with a silent caller and one in Close's wait: both closed at once", func(t *testing.T) {
 			t.Parallel()
 			engine, addresses := startListener(t, 1, openTelnet)
-			silent := dial(t, addresses[0])
-			silentStream := silent.record(silent.connected.Add(10 * time.Second))
 			closing := dial(t, addresses[0])
 			closingStream := closing.record(closing.connected.Add(10 * time.Second))
-			closing.send(t, join(answers, []byte("n\r")))
+			closingSent := closing.send(t, join(answers, []byte("n\r")))
 			// End of stream is the shutdown: the closing caller is now in Close's wait.
 			closingStream.expectStream(t, join(opening, asked, echoed("n")))
-			silentStream.waitFor(t, len(opening), time.Now().Add(margin))
+			// The silent caller comes second, so that nothing it does can hold back the closing
+			// caller's call and start the closing wait later than its write.
+			silent := dial(t, addresses[0])
+			silentStream := silent.record(silent.connected.Add(10 * time.Second))
+			silentStream.waitFor(t, len(opening), time.Now().Add(progressLimit))
 			stoppedAt := time.Now()
+			// The nearest fault leaves a call open until its closing wait's 3 seconds end, and
+			// that wait began no sooner than the closing caller's write.
+			closingEnd := windowEnd(t, stoppedAt, closingSent.began.Add(closingWaitLimit))
 			go engine.Stop()
-			closedAt := closing.awaitReset(t, stoppedAt.Add(2*margin))
-			expectWithin(t, "the closing caller's close", closedAt, stoppedAt, stoppedAt.Add(margin))
+			closedAt := closing.awaitReset(t, stoppedAt.Add(2*wideMargin))
+			expectWithin(t, "the closing caller's close", closedAt, stoppedAt, closingEnd)
 			silentStream.expectStream(t, opening)
-			expectWithin(t, "the silent caller's end", silentStream.ended, stoppedAt, stoppedAt.Add(margin))
+			expectWithin(t, "the silent caller's end", silentStream.ended, stoppedAt, stoppedAt.Add(wideMargin))
 		})
 	})
 }
@@ -683,7 +697,7 @@ const quietFor = 300 * time.Millisecond
 // readOpeningFrom waits for the opening on a recorded stream.
 func (call caller) readOpeningFrom(t *testing.T, stream *recording) {
 	t.Helper()
-	got := stream.waitFor(t, len(opening), call.connected.Add(margin))
+	got := stream.waitFor(t, len(opening), call.connected.Add(progressLimit))
 	if !bytes.HasPrefix(got, opening) {
 		t.Fatalf("the stream did not start with the opening: % x", got)
 	}
@@ -887,10 +901,12 @@ func ceilingCall(t *testing.T, index int) string {
 		expectWithin(t, fmt.Sprintf("caller %d's close", index), closedAt, ceiling, deadline)
 		return "ceiling"
 	}
-	// The greeting got through: the prompt was written after negotiation's 3 seconds, and the
-	// name's 60 seconds after it end the call.
+	// The greeting got through: the prompt was written once negotiation's last write went out,
+	// 3 seconds or later, a moment a caller that never reads cannot see (4.6 seconds on a loaded
+	// runner, ubuntu-24.04-arm, 2026-10-26), and the name's 60 seconds after it end the call, by
+	// the ceiling at the latest. The rows that time the name's 60 seconds are the single callers'.
 	expectWithin(t, fmt.Sprintf("caller %d's close, its greeting through", index), closedAt,
-		call.dialed.Add(negotiationLimit+nameLimit), call.connected.Add(negotiationLimit+nameLimit+2*margin))
+		call.dialed.Add(negotiationLimit+nameLimit), ceiling)
 	return "name"
 }
 

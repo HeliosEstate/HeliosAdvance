@@ -58,6 +58,21 @@ const (
 // at once; the rest is room for the engine's own work under load.
 const margin = 750 * time.Millisecond
 
+// wideMargin is margin for a claim whose nearest fault is 3 seconds or more away: a caller served
+// only after another's 3 seconds of negotiation, a stop that lets the closing wait run, a caller
+// over the cap closed only after negotiation, a place freed only after the closing wait. Under
+// twice the usual load, with the race detector, the runners delivered an opening 1.02 seconds
+// into its window (ubuntu-latest, 2026-10-25), past margin; 1.5 seconds is half that gap. A
+// window whose nearest fault is closer keeps margin: a closing wait or a ceiling 900 ms too long
+// is such a fault. A window that opens after the fault's 3 seconds began closes at windowEnd.
+const wideMargin = 1500 * time.Millisecond
+
+// progressLimit bounds a wait whose line claims no time: the bytes a row needs before its next
+// step. Only a hang should reach it: under twice the usual load such a wait has come at most
+// 1.1 seconds late (2026-10-25). It is no longer than the 5-second recordings that hold most of
+// these calls. The line's own time, where it has one, is checked apart.
+const progressLimit = 5 * time.Second
+
 // early is how far before its deadline a runner's clock may wake a wait.
 const early = 20 * time.Millisecond
 
@@ -163,14 +178,23 @@ func dial(t *testing.T, address string) caller {
 	return caller{connection: connection, dialed: dialed, connected: time.Now()}
 }
 
-// send writes the caller's bytes and returns when they went.
-func (call caller) send(t *testing.T, data []byte) time.Time {
+// sending is when a caller's write began and when it returned. The engine can act on the bytes
+// before the writer's goroutine reads the clock again, on a loaded runner by tens of
+// milliseconds (ubuntu-latest, 2026-10-26, a greeting 64 ms before the write's return), so a
+// window on what the engine does with them opens from began and closes from done.
+type sending struct {
+	began, done time.Time
+}
+
+// send writes the caller's bytes and returns when the write began and when it returned.
+func (call caller) send(t *testing.T, data []byte) sending {
 	t.Helper()
 	_ = call.connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	began := time.Now()
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
-	return time.Now()
+	return sending{began: began, done: time.Now()}
 }
 
 // readOpening reads the engine's six opening bytes, which must come by the deadline.
@@ -196,43 +220,129 @@ func isReset(err error) bool {
 }
 
 // served dials and reports whether the engine served the caller (sent the opening) or closed it
-// at once, writing nothing. Anything else fails the test. The caller sends nothing.
-func served(t *testing.T, address string) (bool, caller) {
+// at once, writing nothing, and when the opening or the close arrived. Anything else fails the
+// test. The caller sends nothing. A close that comes only after negotiation's 3 seconds is the
+// nearest fault, so the wait is wideMargin.
+func served(t *testing.T, address string) (bool, caller, time.Time) {
 	t.Helper()
 	call := dial(t, address)
-	_ = call.connection.SetReadDeadline(call.connected.Add(margin))
+	_ = call.connection.SetReadDeadline(call.connected.Add(wideMargin))
 	received := make([]byte, len(opening))
 	got, err := io.ReadFull(call.connection, received)
+	arrived := time.Now()
 	switch {
 	case err == nil && slices.Equal(received, opening):
-		return true, call
+		return true, call, arrived
 	case got == 0 && (errors.Is(err, io.EOF) || isReset(err)):
-		return false, call
+		return false, call, arrived
 	default:
 		t.Fatalf("a caller was neither served nor closed at once: % x, %v", received[:got], err)
-		return false, call
+		return false, call, arrived
 	}
 }
 
 // expectRefused checks a new caller is closed at once without a byte written to it.
 func expectRefused(t *testing.T, address string) {
 	t.Helper()
-	if isServed, _ := served(t, address); isServed {
+	if isServed, _, _ := served(t, address); isServed {
 		t.Fatalf("a caller over the cap was served")
 	}
 }
 
+// expectRefusedUntil checks a new caller is closed at once while every place is held, as every
+// place is until the moment held, less early, since the engine's timers may wake that much
+// before their time: a caller served whose opening arrives before then is one over the cap. A
+// caller served after it says nothing of the cap, since a place may rightly have come back
+// first: the engine can accept a caller late on a loaded runner (287 ms after its dial, while
+// the cap was full, ubuntu-24.04-arm, 2026-10-26). A probe dialed at or after that moment did
+// not reach the row's case, and fails as a test fault whatever its outcome.
+func expectRefusedUntil(t *testing.T, address string, held time.Time) {
+	t.Helper()
+	isServed, call, arrived := served(t, address)
+	switch {
+	case !call.dialed.Before(held.Add(-early)):
+		t.Fatalf("test fault: the probe was dialed %v after a place could come back, so it tells nothing of the cap", call.dialed.Sub(held.Add(-early)))
+	case !isServed:
+	case arrived.Before(held.Add(-early)):
+		t.Fatalf("a caller over the cap was served, %v before a place could come back", held.Sub(arrived))
+	default:
+		t.Fatalf("cannot tell a caller over the cap from one served after a place could come back: dialed %v before, served %v after", held.Sub(call.dialed), arrived.Sub(held))
+	}
+}
+
+// helloAndClose fills the cap with callers waiting at the prompt, then types their names
+// together and closes each once it has seen the shutdown. It returns when the names' writes
+// began, before which no closing wait can start, and when the last close was made. Set up
+// first, the hundred's closing waits start together, however long a runner took to dial them.
+func helloAndClose(t *testing.T, address string) (released, closed time.Time) {
+	t.Helper()
+	callers, streams := fillAtPrompt(t, address)
+	released = sendNames(t, callers)
+	for index, stream := range streams {
+		// End of stream is the shutdown: the caller is now in Close's wait.
+		stream.expectStream(t, join(opening, asked, echoed("n")))
+		_ = callers[index].connection.Close()
+	}
+	return released, time.Now()
+}
+
+// fillAtPrompt fills the cap with callers that answered and wait at the prompt, each recorded
+// from its connect. Each recording may run 60 seconds from that connect, however long the set-up
+// takes, until sendNames bounds them.
+func fillAtPrompt(t *testing.T, address string) ([]caller, []*recording) {
+	t.Helper()
+	callers := make([]caller, connectionCap)
+	streams := make([]*recording, connectionCap)
+	for index := range callers {
+		callers[index] = dial(t, address)
+		streams[index] = callers[index].record(callers[index].connected.Add(nameLimit))
+		callers[index].send(t, answers)
+		streams[index].waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
+	}
+	return callers, streams
+}
+
+// sendNames types every caller's name, returning when the first write began, and holds the rest
+// of each recording to progressLimit, so an engine that never shuts down fails in seconds.
+func sendNames(t *testing.T, callers []caller) time.Time {
+	t.Helper()
+	released := time.Now()
+	for _, call := range callers {
+		call.send(t, []byte("n\r"))
+		_ = call.connection.SetReadDeadline(released.Add(progressLimit))
+	}
+	return released
+}
+
+// windowEnd closes a window that opens at from, for a claim whose nearest fault comes no sooner
+// than fault: wideMargin after from, or half the way to the fault where that is sooner. A fault
+// whose 3 seconds start before the window opens is nearer than 3 seconds by however late the row
+// opened it (a stop that lands into the closing wait it should cut short), and the window must
+// stay clear of it. Where a step before the window ran so late that half the way is under
+// margin, the row cannot tell the two apart and fails. The step may be the test's or the
+// engine's: a broken engine that holds a call back makes it late too (a serial engine's silent
+// caller, an opening held for the caller's first byte), so the failure blames neither.
+func windowEnd(t *testing.T, from, fault time.Time) time.Time {
+	t.Helper()
+	half := fault.Sub(from) / 2
+	if half < margin {
+		t.Fatalf("cannot tell the window from its nearest fault, %v apart: a step before the window ran late, in the test or in the engine", fault.Sub(from))
+	}
+	return from.Add(min(wideMargin, half))
+}
+
 // expectServedBy dials until a caller is served, which must happen by the deadline: a caller
-// refused before then is tried again.
-func expectServedBy(t *testing.T, address string, deadline time.Time) time.Time {
+// refused before then is tried again. Served is when the opening arrived, not when the dial
+// connected: a caller's connect completes before the engine accepts it.
+func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	t.Helper()
 	for {
-		if isServed, call := served(t, address); isServed {
-			if call.connected.After(deadline) {
-				t.Fatalf("no caller was served until %v past the deadline", call.connected.Sub(deadline))
+		if isServed, _, arrived := served(t, address); isServed {
+			if arrived.After(deadline) {
+				t.Fatalf("no caller was served until %v past the deadline", arrived.Sub(deadline))
 			}
-			t.Logf("a caller was served %v before the deadline", deadline.Sub(call.connected))
-			return call.connected
+			t.Logf("a caller was served %v before the deadline", deadline.Sub(arrived))
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("every caller was refused until the deadline")

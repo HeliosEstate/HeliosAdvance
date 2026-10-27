@@ -48,7 +48,7 @@ func pausedSpell(t *testing.T) {
 	held := make([]caller, child.free)
 	for index := range held {
 		held[index] = dial(t, child.addresses[0])
-		held[index].readOpening(t, held[index].connected.Add(margin))
+		held[index].readOpening(t, held[index].connected.Add(progressLimit))
 	}
 	waiting := dial(t, child.addresses[1])
 	before := processorTicks(t, child.processID)
