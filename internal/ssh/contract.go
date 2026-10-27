@@ -100,8 +100,8 @@
 //   - The ssh package shall write nothing to the local log. [read]
 //   - Once the connection is closed, the ssh package shall leave no goroutine of its own, or of
 //     the library's for that connection, running. [read]
-//   - The ssh package shall import nothing outside the Go standard library and
-//     golang.org/x/crypto/ssh. [read]
+//   - The ssh package shall import nothing outside the Go standard library,
+//     golang.org/x/crypto/ssh and the deadline package. [read]
 package ssh
 
 import (

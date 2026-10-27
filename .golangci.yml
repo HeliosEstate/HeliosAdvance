@@ -66,6 +66,8 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+            # The rule for a call's end and the wake, written once (docs/architecture.md).
+            - github.com/heliosestate/heliosadvance/internal/deadline
             # Its own path, so its black-box tests in package telnet_test can import it.
             - github.com/heliosestate/heliosadvance/internal/telnet
         session:
@@ -80,8 +82,17 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+            # The rule for a call's end, written once (docs/architecture.md).
+            - github.com/heliosestate/heliosadvance/internal/deadline
             # Its own path, so its black-box tests in package textio_test can import it.
             - github.com/heliosestate/heliosadvance/internal/textio
+        deadline:
+          files: ["**/internal/deadline/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # Its own path, so its black-box tests in package deadline_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/deadline
         ssh:
           files: ["**/internal/ssh/**"]
           list-mode: strict
@@ -90,6 +101,8 @@ linters:
             # The handshake and the channel are the library's (docs/architecture.md); its other
             # packages, such as ssh/agent, are not allowed.
             - golang.org/x/crypto/ssh$
+            # The rule for a call's end and the wake, written once (docs/architecture.md).
+            - github.com/heliosestate/heliosadvance/internal/deadline
             # Its own path, so its black-box tests in package ssh_test can import it.
             - github.com/heliosestate/heliosadvance/internal/ssh
         listener:
