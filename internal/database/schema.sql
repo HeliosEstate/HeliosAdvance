@@ -26,7 +26,14 @@ CREATE TABLE hadv.servers (
 );
 
 -- A server's login reads the two tables and changes only the lease. It inserts, deletes, creates,
--- alters and drops nothing.
+-- alters and drops nothing: PostgreSQL's default right for everyone to make temporary tables and
+-- functions in this database is taken away first. The owner login owns this database, so it may
+-- take it away.
+DO $$
+BEGIN
+    EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
+END
+$$;
 GRANT USAGE ON SCHEMA hadv TO hadv_server;
 GRANT SELECT ON hadv.schema_version TO hadv_server;
 GRANT SELECT ON hadv.servers TO hadv_server;

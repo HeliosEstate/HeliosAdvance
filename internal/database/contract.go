@@ -25,11 +25,12 @@
 // The connection to the database crosses a trust boundary: until the database's certificate
 // chains to the connection file's certificate authority and names its host, the other end may be
 // anyone, and nothing is sent to it but the TLS handshake. After it, the library reads every reply
-// from the database: the sign-in, the rows and the errors. This package reads one integer, one row
-// of three columns and the login's rights from those replies, and keeps none of the database's
-// text in an error. The connection file is the sysop's, not a caller's; it is read once, at most
-// ConnectionFileMostBytes. No caller's byte reaches this package. There is no fuzz target here:
-// the standard library parses the file and the library the wire.
+// from the database: the sign-in, the rows and the errors, each message at most ReplyMostBytes.
+// This package reads one integer, one row of three columns and the login's rights from those
+// replies, and keeps none of the database's text in an error. The connection file is the sysop's,
+// not a caller's; it is read once, at most ConnectionFileMostBytes. No caller's byte reaches this
+// package. There is no fuzz target here: the standard library parses the file and the library the
+// wire.
 //
 // # Oracles
 //
@@ -54,8 +55,8 @@
 //   - The database package shall take where it connects, its login and its password from the
 //     ConnectionFile alone, whatever PostgreSQL's environment variables, password file or service
 //     file give.
-//   - Once a Lease is lost or ended, the database package shall leave no goroutine of its own, or
-//     of the library's for that Lease, running. [read]
+//   - If a message from the database is longer than ReplyMostBytes, then the database package
+//     shall treat the connection as failed without reading the rest.
 //   - The database package shall import nothing outside the Go standard library,
 //     github.com/jackc/pgx/v5 and github.com/jackc/pgx/v5/pgconn. [read]
 package database
@@ -82,6 +83,9 @@ const (
 	TrySeconds = 10
 	// EndWaitMilliseconds is the longest EndLease waits on the database, so a stop stays quick.
 	EndWaitMilliseconds = 1000
+	// ReplyMostBytes bounds each message read from the database, so what the engine reads from
+	// the network has a bound; this part's replies are far shorter.
+	ReplyMostBytes = 1048576
 )
 
 // Schema is the board's schema, version SchemaVersionMadeFor, and the rights of a server's login:
@@ -101,9 +105,13 @@ var (
 	ErrFileUnreadable = errors.New("database: the connection file cannot be read")
 	// ErrFileTooLarge means the file is longer than ConnectionFileMostBytes.
 	ErrFileTooLarge = errors.New("database: the connection file is too large")
-	// ErrFileFormat means the file is not in the connection file's format: not one JSON object
-	// holding the seven fields of ConnectionFile, each of its kind, and no other.
+	// ErrFileFormat means the file is not in the connection file's format: not one JSON object, a
+	// field given twice, or a field not of its kind.
 	ErrFileFormat = errors.New("database: the connection file is not in the connection file's format")
+	// ErrFileFieldUnknown means the file holds a field the format does not name.
+	ErrFileFieldUnknown = errors.New("database: the connection file holds a field the format does not name")
+	// ErrFileFieldMissing means the file lacks one of the format's seven fields.
+	ErrFileFieldMissing = errors.New("database: the connection file is missing a field")
 )
 
 // Why Take failed. ErrUnreachable and ErrLeaseHeld fix themselves, so the program waits and takes
@@ -180,10 +188,17 @@ type ConnectionFile struct {
 //   - If the file cannot be read, then ReadConnectionFile shall return ErrFileUnreadable.
 //   - If the file is longer than ConnectionFileMostBytes, then ReadConnectionFile shall return
 //     ErrFileTooLarge.
-//   - If the file is not one JSON object holding server_id, host, port, database, login, password
-//     and ca_certificate and no other field, server_id an integer, port an integer from 1 to
-//     65535, every other field a non-empty string, and ca_certificate one or more PEM blocks of
-//     type CERTIFICATE and nothing else, then ReadConnectionFile shall return ErrFileFormat.
+//   - If the file is not one JSON object, or gives a field twice, then ReadConnectionFile shall
+//     return ErrFileFormat.
+//   - If the object holds a field whose name is not exactly one of server_id, host, port,
+//     database, login, password and ca_certificate, then ReadConnectionFile shall return
+//     ErrFileFieldUnknown.
+//   - If the object lacks one of those seven fields, then ReadConnectionFile shall return
+//     ErrFileFieldMissing.
+//   - If server_id is not an integer, port is not an integer from 1 to 65535, another field is
+//     not a non-empty string, or ca_certificate is not one or more PEM blocks of type CERTIFICATE,
+//     each an X.509 certificate, and nothing else, then ReadConnectionFile shall return
+//     ErrFileFormat.
 //   - ReadConnectionFile shall return an error whose text holds no part of the file's contents.
 //   - ReadConnectionFile shall read at most ConnectionFileMostBytes and one byte more from the
 //     file, and close it before it returns. [read]
@@ -192,7 +207,8 @@ func ReadConnectionFile(path string) (ConnectionFile, error) {
 }
 
 // ServerDatabase is one run of the engine against its database. It remembers the lease holder it
-// last wrote, so the run can take its own lease back at once after a loss.
+// last sent, whether or not the reply came back, so the run can take its own lease back at once
+// after a loss.
 type ServerDatabase struct {
 	state serverDatabaseState
 }
@@ -232,9 +248,9 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //   - If hadv.servers holds no row for the ConnectionFile's server ID, then Take shall return
 //     ErrNoServerRow.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase
-//     last wrote, Take shall write a new random lease holder and a lease end LeaseSeconds after
+//     last sent, Take shall write a new random lease holder and a lease end LeaseSeconds after
 //     the database's current time to that row, and return the Lease.
-//   - If the lease has not ended and its holder is not the one this ServerDatabase last wrote,
+//   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
 //     then Take shall return ErrLeaseHeld and change nothing.
 //   - If the context has ended when Take is called, or ends while it waits, then Take shall
 //     return the context's error, wrapped.
@@ -248,8 +264,9 @@ func (server *ServerDatabase) Take(ctx context.Context) (*Lease, error) {
 //   - While it is held, the Lease shall renew it every RenewSeconds, writing a lease end
 //     LeaseSeconds after the database's current time, only while the row's lease holder is its
 //     own, and waiting on the database at most TrySeconds.
-//   - If a renewal fails because the database does not answer, then the Lease shall try again at
-//     the next renewal, over a new connection when its connection failed.
+//   - If a renewal fails for any reason but finding the row's lease holder is not its own, then
+//     the Lease shall try again at the next renewal, over a new connection when its connection
+//     failed.
 //   - When LeaseSeconds have passed since it sent its last take or renewal that succeeded, the
 //     Lease shall close the channel Lost returns.
 //   - When a renewal finds the row's lease holder is not its own, the Lease shall close the channel
