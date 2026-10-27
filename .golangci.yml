@@ -84,6 +84,14 @@ linters:
           allow:
             - $gostd
             - golang.org/x/sys/windows$
+        # The tools under tools/ import the standard library only, so the module-wide allow list,
+        # which names golang.org/x/sys/windows for the Telnet unit's one file, reaches no tool
+        # (developer, 2026-10-27).
+        tools:
+          files: ["**/tools/**"]
+          list-mode: strict
+          allow:
+            - $gostd
         session:
           files: ["**/internal/session/**"]
           list-mode: strict
