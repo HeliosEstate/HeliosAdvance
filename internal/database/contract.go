@@ -256,10 +256,13 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //   - If the database asks for any other way of signing in, then Take shall return
 //     ErrSignInMethod without sending the password.
 //   - If the database refuses the sign-in, then Take shall return ErrSignInRefused.
-//   - If the login is a superuser or a member of any role but hadv_server, holds the right to
-//     create roles or databases, owns anything in the hadv schema, or holds, itself or through
-//     PUBLIC, a right on the database, the hadv schema or anything in it that schema.sql does not
-//     grant hadv_server, connecting to the database aside, then Take shall return ErrTooPowerful.
+//   - If the login holds any role attribute but LOGIN and INHERIT (SUPERUSER, CREATEROLE,
+//     CREATEDB, REPLICATION and BYPASSRLS among them), is a member of any role but hadv_server,
+//     owns anything in the database, or holds, itself or through PUBLIC, a right on the database
+//     or on any schema or object in it that schema.sql does not grant hadv_server, then Take
+//     shall return ErrTooPowerful. Connecting to the database, and the rights PostgreSQL gives
+//     every login by default on its own catalogs, are not counted; a right granted beyond those
+//     defaults on a catalog object, such as EXECUTE on pg_read_file, is.
 //   - If the database answers that it is read-only, then Take shall return ErrReadOnly.
 //   - If hadv.schema_version is missing, holds no row, holds anything but one integer, or holds a
 //     version other than SchemaVersionMadeFor and the next, then Take shall return a
