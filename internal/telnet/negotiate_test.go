@@ -130,11 +130,21 @@ func (ctx lateEnd) Deadline() (time.Time, bool) {
 // reply's write fails, so the failure and the end of the context meet. A reply is any write
 // after a read has returned bytes; the opening comes before any read.
 type endsOnFailure struct {
-	*net.TCPConn
+	urgentConn
 	cancel          context.CancelFunc
 	failReply       bool
+	failUrgent      bool
 	hasRead         bool
 	cancelReadOnEOF bool
+}
+
+// WriteUrgent fails the Synch's write on a closed connection, the context cancelled first.
+func (connection *endsOnFailure) WriteUrgent(buffer []byte) (int, error) {
+	if connection.failUrgent {
+		connection.cancel()
+		_ = connection.Close()
+	}
+	return connection.urgentConn.WriteUrgent(buffer)
 }
 
 func (connection *endsOnFailure) Read(buffer []byte) (int, error) {
@@ -167,7 +177,7 @@ const holdPast = 300 * time.Millisecond
 // is measured from when the opening write began, so a call that starts late cannot end the hold
 // inside its 3 seconds.
 type heldCall struct {
-	*net.TCPConn
+	urgentConn
 	testEnds context.Context
 	// holdWrite is the write held, counted from 1 for the opening; 0 holds the first read that
 	// returns bytes or an error.
@@ -179,12 +189,22 @@ type heldCall struct {
 	stop  context.CancelFunc
 	// breaks has the held write fail on a closed connection instead of going through.
 	breaks bool
+	// ignoreWriteDeadline lets every write through whatever deadline it was given, so a write
+	// made after the context has ended shows: on a real socket the deadline would hide it.
+	ignoreWriteDeadline bool
 
 	openingBegan time.Time
 	writes       int
 	readHeld     bool
 	// released is when the held call returned; it is read once Negotiate has returned.
 	released time.Time
+}
+
+func (connection *heldCall) SetWriteDeadline(deadline time.Time) error {
+	if connection.ignoreWriteDeadline {
+		return nil
+	}
+	return connection.urgentConn.SetWriteDeadline(deadline)
 }
 
 func (connection *heldCall) hold() {
@@ -209,31 +229,40 @@ func (connection *heldCall) Read(buffer []byte) (int, error) {
 }
 
 func (connection *heldCall) Write(buffer []byte) (int, error) {
+	return connection.written(buffer, connection.TCPConn.Write)
+}
+
+// WriteUrgent is counted among the writes, so a row can hold the Synch's.
+func (connection *heldCall) WriteUrgent(buffer []byte) (int, error) {
+	return connection.written(buffer, connection.urgentConn.WriteUrgent)
+}
+
+func (connection *heldCall) written(buffer []byte, send func([]byte) (int, error)) (int, error) {
 	connection.writes++
 	if connection.writes == 1 {
 		connection.openingBegan = time.Now()
 	}
 	if connection.writes != connection.holdWrite {
-		return connection.TCPConn.Write(buffer)
+		return send(buffer)
 	}
 	if connection.breaks {
 		connection.hold()
 		_ = connection.Close()
-		return connection.TCPConn.Write(buffer)
+		return send(buffer)
 	}
-	written, err := connection.TCPConn.Write(buffer)
+	written, err := send(buffer)
 	connection.hold()
 	return written, err
 }
 
 // sweep is every option request but the answers, then the answers: WILL and WONT for every
-// option, ECHO and SGA included, and DO and DONT for every other option.
+// option, the caller's side included, and DO and DONT for every option but the engine's side.
 func sweep() []byte {
 	var requests []byte
 	for _, verb := range []byte{will, wont, doVerb, dont} {
 		for code := range 256 {
 			option := byte(code)
-			if (verb == doVerb || verb == dont) && (option == echo || option == sga) {
+			if (verb == doVerb || verb == dont) && isOn(engineSide)(option) {
 				continue
 			}
 			requests = append(requests, request(verb, option)...)
@@ -275,8 +304,16 @@ func expectWriteDeadlineAt(t *testing.T, server *net.TCPConn, deadline time.Time
 
 func TestNegotiate(t *testing.T) {
 	t.Parallel()
-	t.Run("If the context has ended when Negotiate is called, then Negotiate shall return ErrDeadlineEnded without writing to the connection.", func(t *testing.T) {
+	t.Run("If the context has ended when Negotiate is called, judged by the clock, then Negotiate shall return ErrDeadlineEnded without writing to the connection.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("a deadline passed a second ago that the context reports ended only later", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			call := negotiate(endsLate(t, time.Now().Add(-time.Second)), &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: -1, ignoreWriteDeadline: true})
+			got := call.result(t, call.called.Add(margin))
+			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, call.called, call.called.Add(margin))
+			expectNothingWritten(t, pair)
+		})
 		t.Run("a cancelled context", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
@@ -303,10 +340,7 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			got := readExactly(t, pair.client, len(opening), call.called.Add(margin))
-			if string(got) != string(opening) {
-				t.Fatalf("the first bytes were % x, want % x", got, opening)
-			}
+			expectOpening(t, pair.client, call.called.Add(margin))
 		})
 		t.Run("a caller that answers before it reads still gets the opening first", func(t *testing.T) {
 			t.Parallel()
@@ -325,9 +359,9 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
-			oracle := &reading{}
-			for _, ask := range [][]byte{request(doVerb, telnetTypeOption), request(will, windowSizeOption), request(dont, echo), request(doVerb, echo)} {
+			expectOpening(t, pair.client, call.called.Add(margin))
+			oracle := freshReading()
+			for _, ask := range [][]byte{request(doVerb, telnetTypeOption), request(will, telnetTypeOption), request(dont, echo), request(doVerb, echo), command(ayt)} {
 				sent := write(t, pair.client, ask)
 				want, _ := oracle.readAll(ask)
 				got := readExactly(t, pair.client, len(want), sent.Add(margin))
@@ -335,29 +369,139 @@ func TestNegotiate(t *testing.T) {
 					t.Fatalf("the reply to % x was % x, want % x", ask, got, want)
 				}
 			}
-			sent := write(t, pair.client, request(doVerb, sga))
+			sent := write(t, pair.client, join(request(doVerb, sga), request(doVerb, binary), request(will, binary), request(wont, windowSizeOption), request(wont, environOption), request(wont, speedOption)))
 			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
 		})
 	})
-	t.Run("When Receive returns true, Negotiate shall write that call's replies and, if neither that read nor that write returned an error, return Answered with no error.", func(t *testing.T) {
+	t.Run("When Receive returns true on a read that returned no error, Negotiate shall write that call's replies and the Synchs owed and, if those writes returned no error, return Answered with no error.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a refusal and both answers in one write, then requests after the end", func(t *testing.T) {
+		t.Run("a refusal and the eight answers in one write, then requests after the end", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
-			sent := write(t, pair.client, join(request(doVerb, telnetTypeOption), answers, request(doVerb, 25), request(will, windowSizeOption)))
+			expectOpening(t, pair.client, call.called.Add(margin))
+			sent := write(t, pair.client, join(request(doVerb, telnetTypeOption), answers, request(doVerb, 25), request(will, 25), command(abortOutput)))
 			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
 			_ = pair.server.CloseWrite()
 			expectStream(t, pair.client, request(wont, telnetTypeOption), time.Now().Add(margin))
 		})
-		t.Run("DONT for both", func(t *testing.T) {
+		t.Run("every one refused, ECHO and SGA last", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
-			sent := write(t, pair.client, join(request(dont, echo), request(dont, sga)))
+			expectOpening(t, pair.client, call.called.Add(margin))
+			sent := write(t, pair.client, join(refuseAll[6:], refuseAll[:6]))
 			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
+		})
+		t.Run("ECHO and SGA first, then a refusal, then the other six: the refusal answered and Answered after the last", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, join(firstAnswers, request(doVerb, telnetTypeOption)))
+			expectReceived(t, pair.client, request(wont, telnetTypeOption))
+			expectNotReturned(t, call, time.Now().Add(quiet))
+			sent := write(t, pair.client, restAnswers)
+			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
+		})
+		t.Run("AO and the eighth answer in one read: the Synch written, then Answered", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			recorded := &recordingConn{urgentConn: pair.server}
+			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), recorded)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, answers[:21])
+			expectNotReturned(t, call, time.Now().Add(quiet))
+			sent := write(t, pair.client, join(request(doVerb, telnetTypeOption), command(abortOutput), answers[21:]))
+			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(margin))
+			expectWrites(t, recorded, []writeRecord{{data: request(wont, telnetTypeOption)}, synchWrite(1)})
+		})
+	})
+	t.Run("When TakeSynch returns more than zero after a read that returned no error, Negotiate shall write that read's replies, then IAC DM repeated that many times in one WriteUrgent, before its next read.", func(t *testing.T) {
+		t.Parallel()
+		rows := []struct {
+			name    string
+			sent    []byte
+			replies []byte
+			synchs  int
+		}{
+			{name: "AO alone: one IAC DM, urgent", sent: command(abortOutput), synchs: 1},
+			{name: "IP alone: one IAC DM, urgent", sent: command(interruptProcess), synchs: 1},
+			{name: "DO 24, AO, IP and AO in one write: WONT 24, then IAC DM three times in one urgent write", sent: join(request(doVerb, telnetTypeOption), command(abortOutput), command(interruptProcess), command(abortOutput)), replies: request(wont, telnetTypeOption), synchs: 3},
+			{name: "AO, then DO 24 in the same write: WONT 24 before the Synch", sent: join(command(abortOutput), request(doVerb, telnetTypeOption)), replies: request(wont, telnetTypeOption), synchs: 1},
+		}
+		for _, row := range rows {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				pair := connect(t)
+				recorded := &recordingConn{urgentConn: pair.server}
+				call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), recorded)
+				expectOpening(t, pair.client, call.called.Add(margin))
+				write(t, pair.client, row.sent)
+				expectSynchs(t, pair.client, row.replies, row.synchs, time.Now().Add(margin))
+				// The read after the Synch's began only once the urgent write was made.
+				writes := 2
+				if row.replies != nil {
+					writes = 3
+				}
+				if before := recorded.readsBefore(writes); before != 1 {
+					t.Fatalf("%d reads began before the Synch was written, want the one that brought the AO or IP", before)
+				}
+				sent := write(t, pair.client, answers)
+				expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, sent, sent.Add(margin))
+				want := []writeRecord{synchWrite(row.synchs)}
+				if row.replies != nil {
+					want = append([]writeRecord{{data: row.replies}}, want...)
+				}
+				expectWrites(t, recorded, want)
+			})
+		}
+	})
+	t.Run("Negotiate shall return Answered or TimedOut only while the context has not ended, judged by the clock; once it has ended, Negotiate shall write nothing more and return ErrDeadlineEnded.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("the read that brings all eight answers returns after the context's deadline, which the context reports only later: ErrDeadlineEnded, not Answered", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			deadline := time.Now().Add(time.Second)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
+			call := negotiate(endsLate(t, deadline), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, answers)
+			got := call.result(t, deadline.Add(holdPast+margin))
+			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
+		})
+		t.Run("the read that brings DO 24 and AO returns after the context's deadline: no WONT 24 and no Synch written", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			deadline := time.Now().Add(time.Second)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast), ignoreWriteDeadline: true}
+			call := negotiate(endsLate(t, deadline), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, join(request(doVerb, telnetTypeOption), command(abortOutput)))
+			got := call.result(t, deadline.Add(holdPast+margin))
+			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
+			expectNothingWritten(t, pair)
+		})
+		t.Run("the read the 3 seconds end returns after the context's deadline, which the context reports only later: ErrDeadlineEnded, not TimedOut", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			deadline := time.Now().Add(negotiationLimit + holdPast)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
+			call := negotiate(endsLate(t, deadline), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			got := call.result(t, deadline.Add(holdPast+margin))
+			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
+		})
+		t.Run("its edge: the same hold with the context's deadline an hour away: TimedOut", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			released := time.Now().Add(negotiationLimit + 2*holdPast)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: released}
+			call := negotiate(endsLate(t, time.Now().Add(time.Hour)), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			got := call.result(t, released.Add(margin))
+			expectReturn(t, got, telnet.TimedOut, nil, held.released, held.released.Add(margin))
 		})
 	})
 	t.Run("If NegotiationSeconds pass after Negotiate begins the opening write, while a read is waiting, and the context has not ended, then Negotiate shall return TimedOut with no error.", func(t *testing.T) {
@@ -411,8 +555,20 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), holdWrite: 1, after: negotiationLimit + holdPast, stop: cancel}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 1, after: negotiationLimit + holdPast, stop: cancel}
 			call := negotiate(ctx, held)
+			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
+			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, held.released, held.released.Add(margin))
+		})
+		t.Run("the Synch's urgent write ends after the 3 seconds, the call cancelled while it was under way", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
+			call := negotiate(ctx, held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			write(t, pair.client, command(abortOutput))
 			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, held.released, held.released.Add(margin))
 		})
@@ -421,9 +577,9 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
 			call := negotiate(ctx, held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			write(t, pair.client, request(doVerb, telnetTypeOption))
 			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, held.released, held.released.Add(margin))
@@ -433,9 +589,9 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), after: negotiationLimit + holdPast, stop: cancel}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), after: negotiationLimit + holdPast, stop: cancel}
 			call := negotiate(ctx, held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			write(t, pair.client, []byte("x"))
 			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, held.released, held.released.Add(margin))
@@ -444,7 +600,7 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			deadline := time.Now().Add(negotiationLimit + holdPast)
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), holdWrite: 1, after: negotiationLimit + holdPast, until: deadline.Add(holdPast)}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 1, after: negotiationLimit + holdPast, until: deadline.Add(holdPast)}
 			call := negotiate(endsLate(t, deadline), held)
 			got := call.result(t, deadline.Add(holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
@@ -563,8 +719,8 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(10*time.Second))
 			defer cancel()
-			call := negotiate(ctx, &endsOnFailure{TCPConn: pair.server, cancel: cancel, cancelReadOnEOF: true})
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			call := negotiate(ctx, &endsOnFailure{urgentConn: pair.server, cancel: cancel, cancelReadOnEOF: true})
+			expectOpening(t, pair.client, call.called.Add(margin))
 			closed := time.Now()
 			_ = pair.client.CloseWrite()
 			expectReturn(t, call.result(t, closed.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, closed, closed.Add(margin))
@@ -574,18 +730,28 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(10*time.Second))
 			defer cancel()
-			call := negotiate(ctx, &endsOnFailure{TCPConn: pair.server, cancel: cancel, failReply: true})
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			call := negotiate(ctx, &endsOnFailure{urgentConn: pair.server, cancel: cancel, failReply: true})
+			expectOpening(t, pair.client, call.called.Add(margin))
 			sent := write(t, pair.client, request(doVerb, telnetTypeOption))
+			expectReturn(t, call.result(t, sent.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, sent, sent.Add(margin))
+		})
+		t.Run("the context ends as the Synch's urgent write fails on a closed connection", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(10*time.Second))
+			defer cancel()
+			call := negotiate(ctx, &endsOnFailure{urgentConn: pair.server, cancel: cancel, failUrgent: true})
+			expectOpening(t, pair.client, call.called.Add(margin))
+			sent := write(t, pair.client, command(abortOutput))
 			expectReturn(t, call.result(t, sent.Add(margin)), 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, sent, sent.Add(margin))
 		})
 		t.Run("the read meets end of file after the context's deadline, which the context reports only later", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			deadline := time.Now().Add(time.Second)
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
 			call := negotiate(endsLate(t, deadline), held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			_ = pair.client.CloseWrite()
 			got := call.result(t, deadline.Add(holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
@@ -594,9 +760,9 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			deadline := time.Now().Add(time.Second)
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
 			call := negotiate(endsLate(t, deadline), held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			reset(t, pair.client)
 			got := call.result(t, deadline.Add(holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
@@ -605,9 +771,9 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			deadline := time.Now().Add(time.Second)
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), holdWrite: 2, until: deadline.Add(holdPast), breaks: true}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, until: deadline.Add(holdPast), breaks: true}
 			call := negotiate(endsLate(t, deadline), held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			write(t, pair.client, request(doVerb, telnetTypeOption))
 			got := call.result(t, deadline.Add(holdPast+margin))
 			expectReturn(t, got, 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, held.released, held.released.Add(margin))
@@ -619,7 +785,7 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			closed := time.Now()
 			_ = pair.client.CloseWrite()
 			expectReturn(t, call.result(t, closed.Add(margin)), 0, []error{telnet.ErrCallerClosed}, closed, closed.Add(margin))
@@ -629,7 +795,7 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			write(t, pair.client, []byte{iac, doVerb})
 			closed := time.Now()
 			_ = pair.client.CloseWrite()
@@ -640,7 +806,7 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			write(t, pair.client, request(doVerb, echo))
 			closed := time.Now()
 			_ = pair.client.Close()
@@ -653,7 +819,7 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			broken := time.Now()
 			reset(t, pair.client)
 			expectReturn(t, call.result(t, broken.Add(margin)), 0, []error{telnet.ErrConnectionFailed}, broken, broken.Add(margin))
@@ -671,14 +837,23 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			wait(t.Context(), time.Now().Add(200*time.Millisecond))
 			closed := time.Now()
 			_ = pair.server.Close()
 			expectReturn(t, call.result(t, closed.Add(margin)), 0, []error{telnet.ErrConnectionFailed}, closed, closed.Add(margin))
 		})
+		t.Run("the Synch's urgent write fails on a closed connection", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, breaks: true}
+			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), held)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			sent := write(t, pair.client, command(interruptProcess))
+			expectReturn(t, call.result(t, sent.Add(margin)), 0, []error{telnet.ErrConnectionFailed}, sent, sent.Add(margin))
+		})
 	})
-	t.Run("The telnet package shall send the caller no option request other than WILL ECHO, WILL SGA and the replies the tables on Receive give.", func(t *testing.T) {
+	t.Run("The telnet package shall send the caller no option request other than the opening requests and the replies the tables on Receive give.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("every option request in one write", func(t *testing.T) {
 			t.Parallel()
@@ -691,26 +866,39 @@ func TestNegotiate(t *testing.T) {
 			expectStream(t, pair.client, join(opening, expectedReplies(requests)), time.Now().Add(margin))
 		})
 	})
-	t.Run("Negotiate shall write nothing to the connection but the opening requests and the replies Receive appends.", func(t *testing.T) {
+	t.Run("Negotiate shall write nothing to the connection but the opening requests, the replies Receive appends, and IAC DM written with WriteUrgent once for each Synch TakeSynch returns.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("every option request a byte at a time", func(t *testing.T) {
+		t.Run("requests, commands, AYT and AO a byte at a time", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			requests := join(request(doVerb, telnetTypeOption), request(will, windowSizeOption), []byte{iac, nop, 'x'}, request(dont, echo), request(doVerb, echo), request(doVerb, sga))
+			recorded := &recordingConn{urgentConn: pair.server}
+			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), recorded)
+			expectOpening(t, pair.client, call.called.Add(margin))
+			requests := join(request(doVerb, telnetTypeOption), request(will, 25), []byte{iac, nop, 'x'}, request(dont, echo), request(doVerb, echo),
+				command(ayt), command(eraseLine), command(dataMark), command(abortOutput))
 			for index := range requests {
 				write(t, pair.client, requests[index:index+1])
 			}
-			got := call.result(t, time.Now().Add(margin))
-			expectReturn(t, got, telnet.Answered, nil, call.called, got.returned)
+			expectSynchs(t, pair.client, join(request(wont, telnetTypeOption), request(dont, 25), request(will, echo), []byte(aytAnswerBytes)), 1, time.Now().Add(margin))
+			sent := write(t, pair.client, answers[3:])
+			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, call.called, sent.Add(margin))
 			_ = pair.server.CloseWrite()
-			expectStream(t, pair.client, join(opening, request(wont, telnetTypeOption), request(dont, windowSizeOption), request(will, echo)), time.Now().Add(margin))
+			expectStream(t, pair.client, nil, time.Now().Add(margin))
+			urgent := 0
+			for _, record := range recorded.written() {
+				if record.urgent {
+					urgent++
+				}
+			}
+			if urgent != 1 {
+				t.Fatalf("%d urgent writes, want 1", urgent)
+			}
 		})
 		t.Run("a request split by the 256-byte read", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := negotiate(withDeadline(t, time.Now().Add(10*time.Second)), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			count := readBufferBytes/3 + 1
 			sent := write(t, pair.client, join(repeated(request(doVerb, telnetTypeOption), count), answers))
 			expectReturn(t, call.result(t, sent.Add(margin)), telnet.Answered, nil, call.called, sent.Add(margin))
@@ -727,7 +915,7 @@ func TestNegotiate(t *testing.T) {
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			write(t, pair.client, answers)
 			call.result(t, deadline)
-			expectReadDeadlineAt(t, pair.server, deadline)
+			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("answered: a write to a caller that does not read waits until the context's deadline", func(t *testing.T) {
 			t.Parallel()
@@ -737,7 +925,7 @@ func TestNegotiate(t *testing.T) {
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			write(t, pair.client, answers)
 			call.result(t, deadline)
-			expectWriteDeadlineAt(t, pair.server, deadline)
+			expectWriteDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("timed out at 3 seconds: a read waits until the deadline at 5", func(t *testing.T) {
 			t.Parallel()
@@ -748,7 +936,7 @@ func TestNegotiate(t *testing.T) {
 			if got.outcome != telnet.TimedOut {
 				t.Fatalf("Negotiate returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
-			expectReadDeadlineAt(t, pair.server, deadline)
+			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("cancelled at 500 ms: a read waits until the deadline at 2 seconds", func(t *testing.T) {
 			t.Parallel()
@@ -760,7 +948,7 @@ func TestNegotiate(t *testing.T) {
 			wait(t.Context(), call.called.Add(500*time.Millisecond))
 			cancel()
 			call.result(t, deadline)
-			expectReadDeadlineAt(t, pair.server, deadline)
+			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("the caller closed: a write to it waits until the context's deadline", func(t *testing.T) {
 			t.Parallel()
@@ -768,13 +956,13 @@ func TestNegotiate(t *testing.T) {
 			_ = pair.client.SetReadBuffer(4096)
 			deadline := time.Now().Add(2 * time.Second)
 			call := negotiate(withDeadline(t, deadline), pair.server)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			_ = pair.client.CloseWrite()
 			got := call.result(t, deadline)
 			if !errors.Is(got.err, telnet.ErrCallerClosed) {
 				t.Fatalf("Negotiate returned %v, want ErrCallerClosed", got.err)
 			}
-			expectWriteDeadlineAt(t, pair.server, deadline)
+			expectWriteDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 	})
 	t.Run("If any failure not named above occurs, then Negotiate shall return ErrConnectionFailed and leave nothing behind.", func(t *testing.T) {

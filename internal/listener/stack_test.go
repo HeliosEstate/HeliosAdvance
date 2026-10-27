@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Tests of the session's Run and Text I/O's Conn through the real stack the Listener builds: a
-// Telnet Line from Open over a real loopback socket, with the scripted caller at the other end.
+// Telnet Line from Accept over a real loopback socket, with the scripted caller at the other end.
 // They live with the Listener's tests because only this package may use all three units.
 package listener_test
 
@@ -30,8 +30,8 @@ type stackPair struct {
 	line   *telnet.Line
 }
 
-// openStack connects, opens a Line on the server end, and has the caller answer with the given
-// answers and the bytes after them, in one write. It reads the opening and any replies.
+// openStack connects, makes a Line on the server end with Accept, and has the caller answer with
+// the given answers and the bytes after them, in one write. It reads the opening and any replies.
 func openStack(t *testing.T, answer, after []byte) stackPair {
 	t.Helper()
 	listening, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -62,7 +62,7 @@ func openStack(t *testing.T, answer, after []byte) stackPair {
 	}
 	done := make(chan openResult, 1)
 	go func() {
-		line, _, err := telnet.Open(t.Context(), server)
+		line, err := telnet.Accept(t.Context(), server)
 		done <- openResult{line: line, err: err}
 	}()
 	pair := stackPair{client: client, server: server}
@@ -76,7 +76,7 @@ func openStack(t *testing.T, answer, after []byte) stackPair {
 		t.Fatalf("setting up: Open returned %v", result.err)
 	}
 	pair.line = result.line
-	// The answers the rows use, DO DO and DONT ECHO DO SGA, draw no reply.
+	// The answers the rows use, all eight with ECHO agreed or refused, draw no reply.
 	return pair
 }
 
@@ -630,18 +630,29 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, answers, []byte("a"))
 			conn := textio.New(pair.line)
-			done := make(chan string, 1)
+			type received struct {
+				line string
+				err  error
+			}
+			// The call's goroutine hands its result back and reports nothing itself, and the row
+			// waits for it however it ends, so nothing reports after the row has ended.
+			done := make(chan received, 1)
 			go func() {
 				got, err := conn.RecvString(t.Context(), time.Now().Add(5*time.Second), nameMost)
-				if err != nil {
-					t.Errorf("RecvString returned %v", err)
+				done <- received{line: got, err: err}
+			}()
+			finished := false
+			defer func() {
+				if !finished {
+					<-done
 				}
-				done <- got
 			}()
 			pair.expectReceived(t, []byte("a"))
 			pair.send(t, []byte("b\r"))
-			if got := <-done; got != "ab" {
-				t.Fatalf("RecvString returned %q", got)
+			got := <-done
+			finished = true
+			if got.err != nil || got.line != "ab" {
+				t.Fatalf("RecvString returned %q and %v", got.line, got.err)
 			}
 			pair.expectQuiet(t)
 			_ = conn.SendString(t.Context(), "x")

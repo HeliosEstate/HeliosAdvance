@@ -15,6 +15,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +25,7 @@ import (
 )
 
 // The Line's limits, as the contract's lines state them.
-const sendBufferBytes = 1024
+const sendBufferBytes = 2048
 
 // quiet is how long a row watches for bytes that must not come.
 const quiet = 300 * time.Millisecond
@@ -66,8 +69,8 @@ func (call openCall) result(t *testing.T, deadline time.Time) opened {
 	}
 }
 
-// answeredLine opens a Line whose caller answers DO DO with the bytes after, in one write, and
-// reads the opening: negotiation ends Answered.
+// answeredLine opens a Line whose caller answers all eight with the bytes after, in one write,
+// and reads the opening: negotiation ends Answered.
 func answeredLine(t *testing.T, after []byte) (connected, *telnet.Line) {
 	t.Helper()
 	return lineAfter(t, answers, after)
@@ -76,15 +79,20 @@ func answeredLine(t *testing.T, after []byte) (connected, *telnet.Line) {
 // lineAfter opens a Line whose caller sends the answers and the bytes after them in one write.
 func lineAfter(t *testing.T, answer, after []byte) (connected, *telnet.Line) {
 	t.Helper()
-	pair := connect(t)
+	return lineOn(t, connect(t), answer, after)
+}
+
+// lineOn is lineAfter on a connection the row made.
+func lineOn(t *testing.T, pair connected, answer, after []byte) (connected, *telnet.Line) {
+	t.Helper()
 	call := openOn(t.Context(), pair.server)
-	readExactly(t, pair.client, len(opening), time.Now().Add(margin))
+	expectOpening(t, pair.client, time.Now().Add(margin))
 	write(t, pair.client, join(answer, after))
 	got := call.result(t, time.Now().Add(margin))
 	if got.err != nil || got.outcome != telnet.Answered {
 		t.Fatalf("setting up: Open returned (%v, %v), want Answered", got.outcome, got.err)
 	}
-	replies, _ := (&reading{}).readAll(answer)
+	replies, _ := freshReading().readAll(answer)
 	if len(replies) > 0 {
 		readExactly(t, pair.client, len(replies), time.Now().Add(margin))
 	}
@@ -109,6 +117,28 @@ func expectReceived(t *testing.T, client net.Conn, want []byte) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("the caller received\n% x\nwant\n% x", got, want)
 	}
+}
+
+// recvResult is what one RecvChar returned.
+type recvResult struct {
+	value byte
+	err   error
+}
+
+// recvLater calls RecvChar on its own goroutine, with a deadline 5 seconds away, and hands its
+// result back for the row to judge; the row's end waits for it, so nothing reports after the row
+// has ended.
+func recvLater(t *testing.T, line *telnet.Line) <-chan recvResult {
+	t.Helper()
+	done := make(chan recvResult, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		value, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
+		done <- recvResult{value: value, err: err}
+	}()
+	t.Cleanup(func() { <-finished })
+	return done
 }
 
 // recv calls RecvChar with a deadline a margin away.
@@ -158,21 +188,97 @@ func cancelled(t *testing.T) context.Context {
 	return ctx
 }
 
-// lineReadsAs is the test's reading of what a Line reading these bytes after DO DO returns as data
-// and replies.
+// lineReadsAs is the test's reading of what a Line reading these bytes after the answers returns
+// as data and replies.
 func lineReadsAs(input []byte) ([]byte, []byte) {
-	during := &reading{}
+	during := freshReading()
 	during.readAll(answers)
-	after := carryOn(during)
-	var data, replies []byte
-	for _, value := range input {
-		reply, isData := after.strip(value)
-		replies = append(replies, reply...)
-		if isData {
-			data = append(data, value)
+	replies, data, _ := during.takeOver().readLine(input)
+	return data, replies
+}
+
+// writeRecord is one write a recordingConn passed on: its bytes, and whether it was urgent.
+type writeRecord struct {
+	data   []byte
+	urgent bool
+}
+
+// recordingConn is the real server end, every write recorded in order, the urgent ones marked,
+// and every read's bytes beside them, so a row can tell the order of the Synch's urgent write
+// against the replies before it and the reads after it, which the caller's stream alone cannot
+// show.
+type recordingConn struct {
+	urgentConn
+	mutex  sync.Mutex
+	events []writeRecord
+	reads  []int
+}
+
+func (connection *recordingConn) Write(buffer []byte) (int, error) {
+	connection.note(buffer, false)
+	return connection.urgentConn.Write(buffer)
+}
+
+func (connection *recordingConn) WriteUrgent(buffer []byte) (int, error) {
+	connection.note(buffer, true)
+	return connection.urgentConn.WriteUrgent(buffer)
+}
+
+// Read records, for each read, how many writes had been made when it began.
+func (connection *recordingConn) Read(buffer []byte) (int, error) {
+	connection.mutex.Lock()
+	connection.reads = append(connection.reads, len(connection.events))
+	connection.mutex.Unlock()
+	return connection.urgentConn.Read(buffer)
+}
+
+func (connection *recordingConn) note(buffer []byte, urgent bool) {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	connection.events = append(connection.events, writeRecord{data: bytes.Clone(buffer), urgent: urgent})
+}
+
+// written is every write so far, in order.
+func (connection *recordingConn) written() []writeRecord {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	return slices.Clone(connection.events)
+}
+
+// readsBefore is how many reads began before the first count writes had all been made.
+func (connection *recordingConn) readsBefore(count int) int {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+	before := 0
+	for _, written := range connection.reads {
+		if written < count {
+			before++
 		}
 	}
-	return data, replies
+	return before
+}
+
+// expectWrites checks the writes made, in order, past the opening.
+func expectWrites(t *testing.T, connection *recordingConn, want []writeRecord) {
+	t.Helper()
+	got := connection.written()
+	if len(got) == 0 || !bytes.Equal(got[0].data, opening) || got[0].urgent {
+		t.Fatalf("the first write was not the opening: %v", got)
+	}
+	got = got[1:]
+	if len(got) != len(want) {
+		t.Fatalf("the writes after the opening were %v, want %v", got, want)
+	}
+	for index := range want {
+		if !bytes.Equal(got[index].data, want[index].data) || got[index].urgent != want[index].urgent {
+			t.Fatalf("write %d after the opening was % x (urgent %v), want % x (urgent %v)", index, got[index].data, got[index].urgent, want[index].data, want[index].urgent)
+		}
+	}
+}
+
+// synchWrite is the urgent write of count Synchs.
+func synchWrite(count int) writeRecord {
+	return writeRecord{data: repeated(command(dataMark), count), urgent: true}
 }
 
 // splitRead is the real server end, with one read returning bytes and an error together: the
@@ -180,7 +286,7 @@ func lineReadsAs(input []byte) ([]byte, []byte) {
 // file unless another is given, as a read meeting the caller's close or a passed deadline might.
 // Only a wrapper can make the two meet in one call.
 type splitRead struct {
-	*net.TCPConn
+	urgentConn
 	marker byte
 	err    error
 	done   bool
@@ -276,9 +382,9 @@ func TestOpen(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
 			call := openOn(ctx, held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			write(t, pair.client, request(doVerb, telnetTypeOption))
 			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
@@ -290,9 +396,9 @@ func TestOpen(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			deadline := time.Now().Add(time.Second)
-			held := &heldCall{TCPConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
+			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
 			call := openOn(endsLate(t, deadline), held)
-			readExactly(t, pair.client, len(opening), call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(margin))
 			_ = pair.client.CloseWrite()
 			got := call.result(t, deadline.Add(holdPast+margin))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
@@ -328,12 +434,29 @@ func TestOpen(t *testing.T) {
 			})
 		}
 	})
-	t.Run("When negotiation ends with an outcome, Open shall return a Line that writes first, in order, the replies of a read that returned bytes with a passed deadline, which Negotiate did not write.", func(t *testing.T) {
+	t.Run("When negotiation ends with an outcome, Open shall return a Line that writes first, in order, the replies and then the Synchs owed of a read that returned bytes with a passed deadline, which Negotiate did not write.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("DO 24, AO and IP read with a passed deadline: TimedOut, then WONT 24, then two Synchs, before the bytes queued after", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
+			expectReceived(t, pair.client, opening)
+			write(t, pair.client, join(request(doVerb, echo), request(doVerb, telnetTypeOption), command(abortOutput), command(interruptProcess), []byte("z")))
+			got := call.result(t, time.Now().Add(margin))
+			if got.err != nil || got.outcome != telnet.TimedOut {
+				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
+			}
+			expectQuiet(t, pair.client)
+			sendAll(t, got.line, []byte("q"))
+			flush(t, got.line)
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 2, time.Now().Add(margin))
+			expectReceived(t, pair.client, []byte("q"))
+			expectQuiet(t, pair.client)
+		})
 		t.Run("DO 24 and DO 31 read with a passed deadline: TimedOut, then WONT 24 and WONT 31 before the bytes queued after", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			call := openOn(t.Context(), &splitRead{TCPConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
+			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, echo), request(doVerb, telnetTypeOption), request(doVerb, windowSizeOption), []byte("z")))
 			got := call.result(t, time.Now().Add(margin))
@@ -349,28 +472,21 @@ func TestOpen(t *testing.T) {
 		t.Run("the same replies go out first when the Line first waits for the caller", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			call := openOn(t.Context(), &splitRead{TCPConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
+			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, telnetTypeOption), []byte("z")))
 			got := call.result(t, time.Now().Add(margin))
-			done := make(chan byte, 1)
-			go func() {
-				value, err := got.line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
-				if err != nil {
-					t.Errorf("RecvChar returned %v", err)
-				}
-				done <- value
-			}()
+			done := recvLater(t, got.line)
 			expectReceived(t, pair.client, request(wont, telnetTypeOption))
 			write(t, pair.client, []byte("k"))
-			if value := <-done; value != 'k' {
-				t.Fatalf("RecvChar returned %#02x, want k", value)
+			if result := <-done; result.err != nil || result.value != 'k' {
+				t.Fatalf("RecvChar returned %#02x and %v, want k", result.value, result.err)
 			}
 		})
 		t.Run("the replies of a read that met the caller's close are not owed: Open returns ErrCallerClosed", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			call := openOn(t.Context(), &splitRead{TCPConn: pair.server, marker: 'z'})
+			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z'})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, telnetTypeOption), []byte("z")))
 			got := call.result(t, time.Now().Add(margin))
@@ -571,7 +687,7 @@ func TestLine(t *testing.T) {
 		t.Run("a full buffer that cannot be written before the context's deadline: its error, and the byte not queued", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
-			fill(t, pair.server)
+			fill(t, pair.server.TCPConn)
 			queued := repeated([]byte("q"), sendBufferBytes)
 			sendAll(t, line, queued)
 			deadline := time.Now().Add(300 * time.Millisecond)
@@ -617,7 +733,7 @@ func TestLine(t *testing.T) {
 		t.Run("cancelled while it waits on a caller that does not read: returns at once with context.Canceled", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
-			fill(t, pair.server)
+			fill(t, pair.server.TCPConn)
 			queued := []byte("queued")
 			sendAll(t, line, queued)
 			ctx, cancel := context.WithCancel(t.Context())
@@ -636,7 +752,7 @@ func TestLine(t *testing.T) {
 		t.Run("its deadline passes while it waits: context.DeadlineExceeded at the deadline", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
-			fill(t, pair.server)
+			fill(t, pair.server.TCPConn)
 			queued := []byte("queued")
 			sendAll(t, line, queued)
 			deadline := time.Now().Add(500 * time.Millisecond)
@@ -672,7 +788,7 @@ func TestLine(t *testing.T) {
 		t.Run("a Flush cut short by its context's deadline", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, []byte("waiting"))
-			fill(t, pair.server)
+			fill(t, pair.server.TCPConn)
 			queued := repeated([]byte("abcdefghij"), 300)
 			ctx := withDeadline(t, time.Now().Add(300*time.Millisecond))
 			var sent []byte
@@ -691,7 +807,7 @@ func TestLine(t *testing.T) {
 		t.Run("a RecvChar whose write of the queued bytes its deadline cuts short", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
-			fill(t, pair.server)
+			fill(t, pair.server.TCPConn)
 			queued := []byte("queued")
 			sendAll(t, line, queued)
 			if _, err := line.RecvChar(t.Context(), time.Now().Add(300*time.Millisecond)); !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -734,11 +850,11 @@ func TestLine(t *testing.T) {
 			expectReceived(t, pair.client, []byte("abc"))
 		})
 	})
-	t.Run("RecvChar shall return the caller's data bytes in the order sent, and no byte of a Telnet command.", func(t *testing.T) {
+	t.Run("RecvChar shall return the caller's data bytes in the order sent, BS for each EC and Ctrl-U for each EL among them, and no other byte of a Telnet command.", func(t *testing.T) {
 		t.Parallel()
-		input := join([]byte("ab"), request(doVerb, telnetTypeOption), []byte{iac, nop}, []byte("c"),
+		input := join([]byte("ab"), request(doVerb, telnetTypeOption), []byte{iac, nop}, []byte("c"), command(eraseCharacter),
 			[]byte{iac, subnegotiationBegin, telnetTypeOption, 'x', iac, iac, subnegotiationEnd, 'y', iac, subnegotiationEnd},
-			[]byte{iac, iac}, request(will, windowSizeOption), []byte("d"))
+			[]byte{iac, iac}, command(eraseLine), request(will, windowSizeOption), command(dataMark), []byte("d"), command(eraseLine))
 		want, _ := lineReadsAs(input)
 		t.Run("text among commands, in one write", func(t *testing.T) {
 			t.Parallel()
@@ -766,12 +882,22 @@ func TestLine(t *testing.T) {
 			expectData(t, line, values)
 		})
 	})
-	t.Run("RecvChar shall read no byte after the data byte it returns.", func(t *testing.T) {
+	t.Run("RecvChar shall read no byte after the byte it returns.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a, then DO 24, then b: no reply until RecvChar reads past a", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, join([]byte("a"), request(doVerb, telnetTypeOption), []byte("b")))
 			expectData(t, line, []byte("a"))
+			flush(t, line)
+			expectQuiet(t, pair.client)
+			expectData(t, line, []byte("b"))
+			flush(t, line)
+			expectReceived(t, pair.client, request(wont, telnetTypeOption))
+		})
+		t.Run("a, IAC EC, then DO 24: BS returned for EC, and no reply until RecvChar reads past it", func(t *testing.T) {
+			t.Parallel()
+			pair, line := answeredLine(t, join([]byte("a"), command(eraseCharacter), request(doVerb, telnetTypeOption), []byte("b")))
+			expectData(t, line, []byte{'a', backspace})
 			flush(t, line)
 			expectQuiet(t, pair.client)
 			expectData(t, line, []byte("b"))
@@ -813,7 +939,7 @@ func TestLine(t *testing.T) {
 			expectReceived(t, pair.client, join([]byte("before"), request(wont, telnetTypeOption), []byte("after")))
 		})
 	})
-	t.Run("Before it hands Strip a byte, RecvChar shall have room for one reply, 3 bytes, writing the send buffer out as Flush does, under deadline, when it has not.", func(t *testing.T) {
+	t.Run("Before it hands Strip a byte, RecvChar shall have room for MostReply bytes, writing the send buffer out as Flush does, under deadline, when it has not.", func(t *testing.T) {
 		t.Parallel()
 		for _, held := range []int{sendBufferBytes - 2, sendBufferBytes - 3, sendBufferBytes} {
 			t.Run(fmt.Sprintf("%d bytes queued, DO 24 and x in the receive buffer: the queued bytes, then WONT 24", held), func(t *testing.T) {
@@ -828,6 +954,40 @@ func TestLine(t *testing.T) {
 				expectQuiet(t, pair.client)
 			})
 		}
+		// The answers left NEW-ENVIRON in NO with its SEND not sent, so WILL NEW-ENVIRON's last
+		// byte appends DO and the SEND, 14 bytes, the most one byte can.
+		mostReply := join(request(doVerb, environOption), environSend)
+		for _, held := range []int{sendBufferBytes - mostOneReply + 1, sendBufferBytes - mostOneReply, sendBufferBytes - 1} {
+			t.Run(fmt.Sprintf("%d bytes queued, WILL NEW-ENVIRON and x in the receive buffer: the queued bytes, then DO and the SEND whole", held), func(t *testing.T) {
+				t.Parallel()
+				pair, line := answeredLine(t, join(request(will, environOption), []byte("x")))
+				sendAll(t, line, repeated([]byte("n"), held))
+				expectData(t, line, []byte("x"))
+				flush(t, line)
+				expectReceived(t, pair.client, join(repeated([]byte("n"), held), mostReply))
+				expectQuiet(t, pair.client)
+			})
+		}
+		t.Run("a thousand AYT at once: every answer, whole and in order", func(t *testing.T) {
+			t.Parallel()
+			pair, line := answeredLine(t, join(repeated(command(ayt), 1000), []byte("x")))
+			want := []byte(strings.Repeat(aytAnswerBytes, 1000))
+			received := make(chan []byte, 1)
+			go func() {
+				_ = pair.client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				replies := make([]byte, len(want))
+				got, err := io.ReadFull(pair.client, replies)
+				if err != nil {
+					t.Logf("the caller's read stopped after %d bytes: %v", got, err)
+				}
+				received <- replies[:got]
+			}()
+			expectData(t, line, []byte("x"))
+			flush(t, line)
+			if got := <-received; !bytes.Equal(got, want) {
+				t.Fatalf("the answers to a thousand AYT were %d bytes, not a thousand answers", len(got))
+			}
+		})
 		t.Run("a thousand DO 24 at once: every reply, whole and in order", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, join(repeated(request(doVerb, telnetTypeOption), 1000), []byte("x")))
@@ -850,45 +1010,86 @@ func TestLine(t *testing.T) {
 			}
 		})
 	})
+	t.Run("When TakeSynch returns more than zero after Strip, RecvChar shall write IAC DM with WriteUrgent, under deadline, after every reply queued before it and before it hands Strip another byte.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("DO 24, AO, DO 25, then x: WONT 24, the Synch, then WONT 25", func(t *testing.T) {
+			t.Parallel()
+			pair := connect(t)
+			recorded := &recordingConn{urgentConn: pair.server}
+			call := openOn(t.Context(), recorded)
+			expectOpening(t, pair.client, time.Now().Add(margin))
+			write(t, pair.client, join(answers, request(doVerb, telnetTypeOption), command(abortOutput), request(doVerb, 25), []byte("x")))
+			got := call.result(t, time.Now().Add(margin))
+			if got.err != nil || got.outcome != telnet.Answered {
+				t.Fatalf("setting up: Open returned (%v, %v), want Answered", got.outcome, got.err)
+			}
+			expectData(t, got.line, []byte("x"))
+			flush(t, got.line)
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(margin))
+			expectReceived(t, pair.client, request(wont, 25))
+			urgent := 0
+			for _, record := range recorded.written() {
+				if record.urgent {
+					urgent++
+					if !bytes.Equal(record.data, command(dataMark)) {
+						t.Fatalf("the urgent write was % x, want IAC DM", record.data)
+					}
+				}
+			}
+			if urgent != 1 {
+				t.Fatalf("%d urgent writes, want 1", urgent)
+			}
+		})
+		t.Run("DO 24, AO and x in the receive buffer: WONT 24 and the Synch written before RecvChar returns x, with no Flush", func(t *testing.T) {
+			t.Parallel()
+			// x needs no wait for the caller, so nothing but the Synch's own line writes the reply
+			// and the Synch before Strip takes x.
+			pair, line := answeredLine(t, join(request(doVerb, telnetTypeOption), command(abortOutput), []byte("x")))
+			expectData(t, line, []byte("x"))
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(margin))
+		})
+		t.Run("AO, then RecvChar waiting for the caller: the Synch goes before it waits", func(t *testing.T) {
+			t.Parallel()
+			pair, line := answeredLine(t, command(abortOutput))
+			done := make(chan error, 1)
+			go func() {
+				_, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
+				done <- err
+			}()
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			write(t, pair.client, []byte("k"))
+			if err := <-done; err != nil {
+				t.Fatalf("RecvChar returned %v", err)
+			}
+		})
+	})
 	t.Run("Before it waits for the caller, RecvChar shall write the send buffer out as Flush does, under deadline.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("abc queued, the caller silent: abc arrives while RecvChar waits", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
 			sendAll(t, line, []byte("abc"))
-			done := make(chan byte, 1)
-			go func() {
-				value, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
-				if err != nil {
-					t.Errorf("RecvChar returned %v", err)
-				}
-				done <- value
-			}()
+			done := recvLater(t, line)
 			expectReceived(t, pair.client, []byte("abc"))
 			write(t, pair.client, []byte("k"))
-			if value := <-done; value != 'k' {
-				t.Fatalf("RecvChar returned %#02x, want k", value)
+			if result := <-done; result.err != nil || result.value != 'k' {
+				t.Fatalf("RecvChar returned %#02x and %v, want k", result.value, result.err)
 			}
 		})
 		t.Run("a reply queued by RecvChar itself goes out before it waits", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, request(doVerb, telnetTypeOption))
-			done := make(chan byte, 1)
-			go func() {
-				value, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
-				if err != nil {
-					t.Errorf("RecvChar returned %v", err)
-				}
-				done <- value
-			}()
+			done := recvLater(t, line)
 			expectReceived(t, pair.client, request(wont, telnetTypeOption))
 			write(t, pair.client, []byte("k"))
-			<-done
+			if result := <-done; result.err != nil || result.value != 'k' {
+				t.Fatalf("RecvChar returned %#02x and %v, want k", result.value, result.err)
+			}
 		})
 		t.Run("the caller not reading: RecvChar waits on that write and returns os.ErrDeadlineExceeded at its deadline", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
-			fill(t, pair.server)
+			fill(t, pair.server.TCPConn)
 			sendAll(t, line, []byte("queued"))
 			deadline := time.Now().Add(500 * time.Millisecond)
 			if _, err := line.RecvChar(t.Context(), deadline); !errors.Is(err, os.ErrDeadlineExceeded) {
@@ -1016,7 +1217,7 @@ func TestLine(t *testing.T) {
 		t.Run("ab and end of file from one read: a, b, then io.EOF", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			call := openOn(t.Context(), &splitRead{TCPConn: pair.server, marker: 'z'})
+			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z'})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, answers)
 			got := call.result(t, time.Now().Add(margin))
@@ -1032,7 +1233,7 @@ func TestLine(t *testing.T) {
 	})
 	t.Run("While the caller has agreed to ECHO, Echoes shall return true.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("after DO DO", func(t *testing.T) {
+		t.Run("after the answers", func(t *testing.T) {
 			t.Parallel()
 			if _, line := answeredLine(t, nil); !line.Echoes() {
 				t.Fatalf("Echoes is false after DO ECHO")
@@ -1040,7 +1241,7 @@ func TestLine(t *testing.T) {
 		})
 		t.Run("after DONT ECHO, then DO ECHO read by RecvChar", func(t *testing.T) {
 			t.Parallel()
-			_, line := lineAfter(t, join(request(dont, echo), request(doVerb, sga)), join(request(doVerb, echo), []byte("x")))
+			_, line := lineAfter(t, join(request(dont, echo), answers[3:]), join(request(doVerb, echo), []byte("x")))
 			expectData(t, line, []byte("x"))
 			if !line.Echoes() {
 				t.Fatalf("Echoes is false after a late DO ECHO")
@@ -1060,9 +1261,9 @@ func TestLine(t *testing.T) {
 	})
 	t.Run("While the caller has not agreed to ECHO, Echoes shall return false.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("after DONT ECHO, DO SGA", func(t *testing.T) {
+		t.Run("after DONT ECHO and the other seven answers", func(t *testing.T) {
 			t.Parallel()
-			if _, line := lineAfter(t, join(request(dont, echo), request(doVerb, sga)), nil); line.Echoes() {
+			if _, line := lineAfter(t, join(request(dont, echo), answers[3:]), nil); line.Echoes() {
 				t.Fatalf("Echoes is true after DONT ECHO")
 			}
 		})
@@ -1077,7 +1278,7 @@ func TestLine(t *testing.T) {
 				t.Fatalf("Echoes is true for a caller that never answered")
 			}
 		})
-		t.Run("after DO DO, then DONT ECHO read by RecvChar", func(t *testing.T) {
+		t.Run("after the answers, then DONT ECHO read by RecvChar", func(t *testing.T) {
 			t.Parallel()
 			_, line := answeredLine(t, join(request(dont, echo), []byte("x")))
 			expectData(t, line, []byte("x"))
@@ -1091,7 +1292,7 @@ func TestLine(t *testing.T) {
 		t.Run("a Line Accept made after DO ECHO: true", func(t *testing.T) {
 			t.Parallel()
 			if _, line := acceptedLine(t); !line.Echoes() {
-				t.Fatalf("a Line Accept made after DO DO does not echo")
+				t.Fatalf("a Line Accept made after the answers does not echo")
 			}
 		})
 		t.Run("a nil Line", func(t *testing.T) {
@@ -1113,11 +1314,11 @@ func TestLine(t *testing.T) {
 }
 
 // probeEchoes ends a row whose own Echoes rightly returns false: a Line Open made for a caller
-// that answered DO DO echoes, so code that always says false fails the row.
+// that answered the eight echoes, so code that always says false fails the row.
 func probeEchoes(t *testing.T) {
 	t.Helper()
 	if _, line := answeredLine(t, nil); !line.Echoes() {
-		t.Fatalf("a Line after DO DO does not echo")
+		t.Fatalf("a Line after the answers does not echo")
 	}
 }
 
@@ -1156,14 +1357,18 @@ func fill(t *testing.T, server *net.TCPConn) {
 // the bytes queued before the failure, in order: never a byte queued after it.
 func expectNothingMore(t *testing.T, pair connected, line *telnet.Line, queuedBefore []byte) {
 	t.Helper()
-	received := make(chan []byte, 1)
+	type streamResult struct {
+		stream []byte
+		err    error
+	}
+	results := make(chan streamResult, 1)
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		stream, err := readToEnd(pair.client, time.Now().Add(60*time.Second))
-		if !errors.Is(err, io.EOF) {
-			t.Errorf("the caller's stream did not end in order: %v", err)
-		}
-		received <- stream
+		results <- streamResult{stream: stream, err: err}
 	}()
+	t.Cleanup(func() { <-finished })
 	if err := line.SendChar(t.Context(), 'x'); !errors.Is(err, telnet.ErrConnectionFailed) {
 		t.Fatalf("SendChar after the failed write returned %v, want ErrConnectionFailed", err)
 	}
@@ -1174,7 +1379,11 @@ func expectNothingMore(t *testing.T, pair connected, line *telnet.Line, queuedBe
 		t.Fatalf("RecvChar after the failed write returned %v, want ErrConnectionFailed", err)
 	}
 	_ = pair.server.CloseWrite()
-	got := bytes.TrimLeft(<-received, string(filler))
+	result := <-results
+	if !errors.Is(result.err, io.EOF) {
+		t.Fatalf("the caller's stream did not end in order: %v", result.err)
+	}
+	got := bytes.TrimLeft(result.stream, string(filler))
 	if len(got) > len(queuedBefore) || !bytes.Equal(got, queuedBefore[:len(got)]) {
 		t.Fatalf("after the filler the caller received %d bytes, not a part of the %d queued before the failure, in order", len(got), len(queuedBefore))
 	}

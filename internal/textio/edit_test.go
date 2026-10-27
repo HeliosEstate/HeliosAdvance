@@ -19,6 +19,7 @@ import (
 const (
 	backspace      byte = 0x08
 	deleteKey      byte = 0x7F
+	eraseLineKey   byte = 0x15
 	carriageReturn byte = 0x0D
 	lineFeed       byte = 0x0A
 	mostLine            = 255
@@ -51,6 +52,13 @@ func (line edited) read(character byte) (edited, []byte) {
 		}
 		line.text = line.text[:len(line.text)-1]
 		return line, erase
+	case character == eraseLineKey:
+		if line.text == "" {
+			return line, nil
+		}
+		echo := bytes.Repeat(erase, len(line.text))
+		line.text = ""
+		return line, echo
 	case character == carriageReturn || character == lineFeed:
 		if line.text == "" {
 			return line, nil
@@ -132,7 +140,7 @@ func dropped() []byte {
 	for code := range 256 {
 		character := byte(code)
 		isPrintable := character >= 0x20 && character <= 0x7E
-		isNamed := character == backspace || character == deleteKey || character == carriageReturn || character == lineFeed
+		isNamed := character == backspace || character == deleteKey || character == eraseLineKey || character == carriageReturn || character == lineFeed
 		if !isPrintable && !isNamed {
 			characters = append(characters, character)
 		}
@@ -247,6 +255,57 @@ func TestEdit(t *testing.T) {
 			})
 		}
 	})
+	t.Run("When the byte is Ctrl-U (0x15) and the line holds a character, Edit shall remove every character and echo the three bytes BS, space, BS once for each character, one group after another.", func(t *testing.T) {
+		t.Parallel()
+		for _, row := range []struct {
+			most int
+			text string
+		}{
+			{most: nameLimit, text: "a"},
+			{most: nameLimit, text: "ab"},
+			{most: nameLimit, text: "  a b  "},
+			{most: nameLimit, text: strings.Repeat("n", nameLimit)},
+			{most: mostLine, text: strings.Repeat("xy", mostLine/2) + "z"},
+		} {
+			t.Run(fmt.Sprintf("Ctrl-U on %d characters", len(row.text)), func(t *testing.T) {
+				t.Parallel()
+				line, reading := start(t, row.most, row.text)
+				line = expectEdit(t, line, reading, eraseLineKey, "", bytes.Repeat(erase, len(row.text)), false)
+				reading.text = ""
+				probeLine(t, line, reading)
+			})
+		}
+		t.Run("abc, BS, Ctrl-U: two groups, then d and CR end the line as d", func(t *testing.T) {
+			t.Parallel()
+			line, reading := start(t, nameLimit, "abc")
+			line = expectEdit(t, line, reading, backspace, "ab", erase, false)
+			reading.text = "ab"
+			line = expectEdit(t, line, reading, eraseLineKey, "", bytes.Repeat(erase, 2), false)
+			reading.text = ""
+			line = expectEdit(t, line, reading, 'd', "d", []byte("d"), false)
+			reading.text = "d"
+			expectEdit(t, line, reading, carriageReturn, "d", []byte{carriageReturn, lineFeed}, true)
+		})
+		t.Run("Ctrl-U twice on abc: three groups, then nothing", func(t *testing.T) {
+			t.Parallel()
+			line, reading := start(t, nameLimit, "abc")
+			line = expectEdit(t, line, reading, eraseLineKey, "", bytes.Repeat(erase, 3), false)
+			reading.text = ""
+			line = expectEdit(t, line, reading, eraseLineKey, "", nil, false)
+			probeLine(t, line, reading)
+		})
+		t.Run("a full line of 30, Ctrl-U, then 30 more characters fit", func(t *testing.T) {
+			t.Parallel()
+			line, reading := start(t, nameLimit, strings.Repeat("n", nameLimit))
+			line = expectEdit(t, line, reading, eraseLineKey, "", bytes.Repeat(erase, nameLimit), false)
+			reading.text = ""
+			for index := range nameLimit {
+				line = expectEdit(t, line, reading, 'm', reading.text+"m", []byte("m"), false)
+				reading.text = strings.Repeat("m", index+1)
+			}
+			probeLine(t, line, reading)
+		})
+	})
 	t.Run("When the byte is CR or LF and the line holds a character, Edit shall end the line and echo CR LF.", func(t *testing.T) {
 		t.Parallel()
 		for _, key := range []byte{carriageReturn, lineFeed} {
@@ -259,9 +318,9 @@ func TestEdit(t *testing.T) {
 			}
 		}
 	})
-	t.Run("If the byte is BS, DEL, CR or LF and the line is empty, then Edit shall change nothing and echo nothing.", func(t *testing.T) {
+	t.Run("If the byte is BS, DEL, Ctrl-U, CR or LF and the line is empty, then Edit shall change nothing and echo nothing.", func(t *testing.T) {
 		t.Parallel()
-		for _, key := range []byte{backspace, deleteKey, carriageReturn, lineFeed} {
+		for _, key := range []byte{backspace, deleteKey, eraseLineKey, carriageReturn, lineFeed} {
 			t.Run(fmt.Sprintf("%#02x on a new line", key), func(t *testing.T) {
 				t.Parallel()
 				line, reading := start(t, nameLimit, "")
@@ -338,7 +397,7 @@ func TestEdit(t *testing.T) {
 					line := build()
 					before := line.Text()
 					after, echo, _ := textio.Edit(line, byte(code))
-					if len(after.Text()) > mostLine || len(echo) > len(erase) {
+					if len(after.Text()) > mostLine || len(echo) > len(erase)*max(len(before), 1) {
 						t.Fatalf("byte %#02x into %q gave %q and echo % x", code, before, after.Text(), echo)
 					}
 				}

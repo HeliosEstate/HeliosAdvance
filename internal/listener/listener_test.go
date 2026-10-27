@@ -34,9 +34,9 @@ func finish(t *testing.T, call caller, stream *recording, before []byte, echoes 
 
 func TestCall(t *testing.T) {
 	t.Parallel()
-	t.Run("When it accepts a Telnet caller, the engine shall send WILL ECHO and WILL SGA, and no other option request.", func(t *testing.T) {
+	t.Run("When it accepts a Telnet caller, the engine shall send IAC WILL ECHO, IAC WILL SGA, IAC WILL BINARY, IAC DO BINARY, IAC DO TTYPE, IAC DO NAWS, IAC DO NEW-ENVIRON and IAC DO TSPEED, in that order, and no other option request.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a caller that answers DO DO", func(t *testing.T) {
+		t.Run("a caller that answers all eight", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			call.readOpening(t, call.connected.Add(progressLimit))
@@ -56,16 +56,16 @@ func TestCall(t *testing.T) {
 			call.readOpening(t, call.connected.Add(wideMargin))
 		})
 	})
-	t.Run("If, during negotiation, the caller asks for a Telnet option other than ECHO and SGA, then the engine shall refuse it.", func(t *testing.T) {
+	t.Run("If the caller sends WILL for a Telnet option other than SGA, BINARY, TTYPE, NAWS, NEW-ENVIRON and TSPEED, or DO for one other than ECHO, SGA and BINARY, then the engine shall refuse it, WILL with DONT and DO with WONT.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("DO and WILL for other options, then the answers", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(5 * time.Second))
-			call.send(t, join(request(doVerb, 0), request(doVerb, telnetTypeOption), request(doVerb, 255),
-				request(will, telnetTypeOption), request(will, windowSizeOption), answers))
-			finish(t, call, stream, join(opening, request(wont, 0), request(wont, telnetTypeOption), request(wont, 255),
-				request(dont, telnetTypeOption), request(dont, windowSizeOption)), true)
+			call.send(t, join(request(doVerb, 2), request(doVerb, telnetTypeOption), request(doVerb, 255),
+				request(will, echo), request(will, 25), answers))
+			finish(t, call, stream, join(opening, request(wont, 2), request(wont, telnetTypeOption), request(wont, 255),
+				request(dont, echo), request(dont, 25)), true)
 		})
 	})
 	t.Run("The engine shall send at most one reply to each option request.", func(t *testing.T) {
@@ -76,8 +76,9 @@ func TestCall(t *testing.T) {
 			replies []byte
 		}{
 			{name: "DO 24 five times: five WONT 24", sent: join(repeated(request(doVerb, telnetTypeOption), 5), answers), replies: repeated(request(wont, telnetTypeOption), 5)},
-			{name: "DO ECHO three times, then DO SGA: no reply", sent: join(repeated(request(doVerb, echo), 3), request(doVerb, sga))},
-			{name: "DONT ECHO, DO ECHO, DO SGA: one WILL ECHO", sent: join(request(dont, echo), request(doVerb, echo), request(doVerb, sga)), replies: request(will, echo)},
+			{name: "DO ECHO three times, then the other seven: no reply", sent: join(repeated(request(doVerb, echo), 3), answers[3:])},
+			{name: "DONT ECHO, DO ECHO, then the other seven: one WILL ECHO", sent: join(request(dont, echo), request(doVerb, echo), answers[3:]), replies: request(will, echo)},
+			{name: "WILL TTYPE three times among the answers: no reply, and the SEND once, which is no reply", sent: join(repeated(request(will, telnetTypeOption), 3), answers[:12], answers[15:]), replies: terminalTypeSend},
 		}
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
@@ -89,7 +90,7 @@ func TestCall(t *testing.T) {
 			})
 		}
 	})
-	t.Run("If, during negotiation, the caller sends anything that is not an option request, then the engine shall discard it without reply.", func(t *testing.T) {
+	t.Run("If, during negotiation, the caller sends anything that is not an option request, AYT, AO or IP, then the engine shall discard it without reply.", func(t *testing.T) {
 		t.Parallel()
 		var everyDataByte []byte
 		for code := range 255 {
@@ -99,7 +100,7 @@ func TestCall(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(5 * time.Second))
-			call.send(t, join([]byte("hello\r\n"), everyDataByte, []byte{iac, iac, iac, nop, iac, ayt},
+			call.send(t, join([]byte("hello\r\n"), everyDataByte, []byte{iac, iac, iac, nop, iac, dataMark, iac, 247, iac, 248, iac, 249},
 				[]byte{iac, subnegotiationBegin, telnetTypeOption, 1, iac, subnegotiationEnd}, []byte{doVerb, echo, doVerb, sga}))
 			sent := call.send(t, answers)
 			// Nothing negotiation read reaches the name: the name is only what is typed after.
@@ -165,31 +166,21 @@ func TestCall(t *testing.T) {
 		t.Run("a hundred silent callers are served, the hundred and first is closed at once", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			for range connectionCap {
-				call := dial(t, address)
-				call.readOpening(t, call.connected.Add(progressLimit))
-			}
+			fillSilently(t, []string{address})
 			expectRefused(t, address)
 			expectRefused(t, address)
 		})
 		t.Run("fifty on each of two sockets: the next on either is closed at once", func(t *testing.T) {
 			t.Parallel()
 			addresses := startEngine(t, 2)
-			for index := range connectionCap {
-				call := dial(t, addresses[index%2])
-				call.readOpening(t, call.connected.Add(progressLimit))
-			}
+			fillSilently(t, addresses)
 			expectRefused(t, addresses[0])
 			expectRefused(t, addresses[1])
 		})
 		t.Run("refused callers take no place, and a caller that leaves frees one", func(t *testing.T) {
 			t.Parallel()
 			address := startEngine(t, 1)[0]
-			callers := make([]caller, connectionCap)
-			for index := range callers {
-				callers[index] = dial(t, address)
-				callers[index].readOpening(t, callers[index].connected.Add(progressLimit))
-			}
+			callers := fillSilently(t, []string{address})
 			for range 3 {
 				expectRefused(t, address)
 			}
