@@ -103,6 +103,19 @@ jobs:
           go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
           go install github.com/google/go-licenses/v2@"$GO_LICENSES"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # Plink, an outside Telnet client that Part 4's Telnet rows drive as an oracle, is on no
+      # runner's image. Linux takes it from Ubuntu's signed archive for the image; Windows takes
+      # PuTTY's own installer through winget at a fixed version, checked against the SHA256 in
+      # winget's manifest. The installer's folder joins the PATH of later steps by hand, since a
+      # running job does not see the PATH an installer changes.
+      - name: Install Plink
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            winget install --id PuTTY.PuTTY -e --version 0.85.0.0 --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
+            echo 'C:\Program Files\PuTTY' >> "$GITHUB_PATH"
+            export PATH="/c/Program Files/PuTTY:$PATH"
+          else sudo apt-get update -q && sudo apt-get install -y -q putty-tools; fi
+          plink -V
       # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
       # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's
       # "429 Too Many Requests" (developer, 2026-10-09). A partial match restores the images of
