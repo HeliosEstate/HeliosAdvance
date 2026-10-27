@@ -253,7 +253,12 @@ if [ -n "$pkgs" ]; then
   [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
   go test ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
   govulncheck ./...
-  if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
+  if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
+    # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
+    # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
+    # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
+    echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
+  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
