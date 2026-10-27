@@ -52,8 +52,9 @@ func Ended(ctx context.Context) error {
 // is for a call that must wake the connection itself, such as after a release that stopped a wake
 // not yet begun.
 //
-//   - Wake shall set conn's read deadline and then its write deadline to the same time long past,
-//     setting the write deadline even when setting the read deadline fails.
+//   - Wake shall set conn's read deadline and then its write deadline to the same fixed time long
+//     past, setting the write deadline even when setting the read deadline fails.
+//   - Wake shall never set the zero time, which clears a deadline instead of waking a call.
 //   - Wake shall return nil when both are set, and otherwise each failure, joined with
 //     errors.Join.
 func Wake(conn Conn) error {
@@ -62,12 +63,14 @@ func Wake(conn Conn) error {
 
 // WakeOnEnd makes a read or write waiting on conn return once ctx ends, by calling Wake. A call
 // registers it after it sets the deadline the wake must override, and calls the release it returns
-// before it returns.
+// once, before the call returns; calling a release a second time is a wrong call. The wake has
+// begun once the release can no longer stop it.
 //
-//   - When ctx ends, WakeOnEnd shall call Wake on conn once, in a goroutine of its own, unless the
-//     release has been called before then.
-//   - If ctx has already ended when WakeOnEnd is called, then WakeOnEnd shall call Wake on conn at
-//     once, in a goroutine of its own.
+//   - WakeOnEnd shall start no goroutine before ctx ends.
+//   - Once ctx has ended, WakeOnEnd shall begin the wake, which calls Wake on conn once, in a
+//     goroutine of its own, unless the release has stopped it before it began.
+//   - If ctx has already ended when WakeOnEnd is called, then the wake shall have begun when
+//     WakeOnEnd returns.
 //   - If Wake returns an error and onFail is not nil, then the wake shall call onFail with that
 //     error, once, before the wake ends; when onFail is nil, the error is dropped.
 //   - When the release returns, no wake shall be running and none shall begin afterwards: the
