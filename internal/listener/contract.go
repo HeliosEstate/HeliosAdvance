@@ -11,13 +11,14 @@
 // each connection off to a shared execution path as a class. That class defines identical
 // primitives that the shared execution uses." And for Part 5, his words of 2026-10-25: "Which is
 // why I said I wanted a listener per type", with "The cap can live as a global variable.
-// Eventually it will just be a configuration item in the database"; and of 2026-10-28: "Personally
-// I would write each listener as separate function, so that their code is grouped", "So long as
-// each Listener can be started and stopped independently." So each kind of connection has its own
-// Listener, made by its own function in the program from that kind's sockets and its Open, with its
-// own Start and its own Stop. The accept loops are written once, here, for every kind. The class
-// is KindConnection, the identical primitives: SendChar and RecvChar, the page's; Flush and
-// Echoes, which textio's Chars asks of every kind of connection; and Close, the kind's own close.
+// Eventually it will just be a configuration item in the database"; and of 2026-10-28:
+// "Personally, I would write each listener as a separate function, so that their code is
+// grouped", "So long as each Listener can be started and stopped independently." So each kind of
+// connection has its own Listener, made by its own function in the program from that kind's
+// sockets and its Open, with its own Start and its own Stop. The accept loops are written once,
+// here, for every kind. The class is KindConnection, the identical primitives: SendChar and
+// RecvChar, the page's; Flush and Echoes, which textio's Chars asks of every kind of connection;
+// and Close, the kind's own close.
 // Each accepted connection is handed to the shared execution path with its kind's Open, and the
 // path makes it the kind's object there, so that negotiation and the handshake count toward the
 // cap and the ceiling: the developer's decision of 2026-10-25.
@@ -30,8 +31,8 @@
 // connection over the cap at once without writing to it; and each connection's life, from the
 // 70-second ceiling on the whole call, counted from accept, through its kind's Open, textio.New
 // over the KindConnection and the session's Run, to the KindConnection's Close once the call is
-// answered, and the close. Each connection's context is made by its Listener, carries the ceiling,
-// and is ended at once by that Listener's Stop.
+// answered, and the close. Each connection's context is made by the shared execution path,
+// carries the ceiling, and is ended at once by the Stop of the Listener that accepted it.
 //
 // It does not own negotiation, the handshake, urgent data or any kind's own close, which are each
 // kind of connection's; it imports none of them. Reading a line and its echo are the textio
@@ -55,12 +56,14 @@
 //
 // # What it needs from its callers
 //
-// One ConnectionCount per engine, from NewCount, handed to every New of that engine. Listening TCP
-// sockets, already open, each handed to one New only and not used by the caller after a New that
-// returned a Listener; after a refused New, the caller closes them. For each kind, an Open that
-// makes an accepted connection its kind's object under the context it is given, returns an error
-// with a nil KindConnection rather than a KindConnection holding a nil object, and leaves nothing
-// of its own running once the connection is closed.
+// One ConnectionCount per engine, from NewCount, handed to every New of that engine. One New per
+// kind of connection, given every listening socket of that kind and that kind's one Open, so that
+// each Listener is one kind's, as the glossary has it, and its Stop stops that kind alone.
+// Listening TCP sockets, already open, each handed to one New only and not used by the caller
+// after a New that returned a Listener; after a refused New, the caller closes them. For each
+// kind, an Open that makes an accepted connection its kind's object under the context it is
+// given, returns an error with a nil KindConnection rather than a KindConnection holding a nil
+// object, and leaves nothing of its own running once the connection is closed.
 //
 // # The count
 //
@@ -152,7 +155,7 @@ type Open func(ctx context.Context, connection *net.TCPConn) (KindConnection, er
 // it to every New, so all kinds share one ConnectionCap: with 51 Telnet callers, SSH takes the
 // other 49. It is handed in, not global, so that tests running side by side in one test program
 // each count their own engine's callers. A ConnectionCount is safe for use by every Listener at
-// once; its zero value is not one New accepts.
+// once.
 type ConnectionCount struct {
 	state countState
 }
@@ -171,24 +174,29 @@ type Listener struct {
 
 // New makes one kind's Listener from the listening TCP sockets the program opened for that kind,
 // so that each accepted connection is a *net.TCPConn, to make each connection it accepts the
-// kind's object with open and count it in count. It accepts nothing until Start, so the program can
-// make every kind's Listener before any accepts, and a start that fails serves no caller. It
-// refuses before it touches any socket, leaves nothing running, and returns a nil Listener with
-// ErrNoListeners, its only error. When it refuses, it closes none of the sockets it was given: they
-// stay the caller's to close.
+// kind's object with open and count it in count. It serves no caller until Start, so the program
+// can make every kind's Listener before any serves, and a start that fails serves no caller. A
+// caller who connects before Start waits in the operating system's queue for the socket, which
+// this package does not decide and these lines do not pin; once accepted, it is served as any
+// other, its ceiling counted from that accept. It refuses before it touches any socket, leaves
+// nothing running, and returns a nil Listener with ErrNoListeners, its only error. When it
+// refuses, it closes none of the sockets it was given: they stay the caller's to close.
 //
-//   - New shall accept no connection, at any of the sockets it was given, before Start.
+//   - New shall serve no caller, at any of the sockets it was given, before Start: no Open runs
+//     and nothing is written.
 func New(sockets []*net.TCPListener, open Open, count *ConnectionCount) (*Listener, error) {
 	return newListener(sockets, open, count)
 }
 
 // Start starts this Listener accepting: one accept loop per listening socket, each running until
-// this Listener's Stop. Each accepted connection is served on its own goroutine, Open included,
-// so that one slow caller never holds up the next accept, of this kind or another. A second
-// call, and a call after Stop, does nothing.
+// this Listener's Stop, and returns at once. Each accepted connection is served on its own
+// goroutine, Open included, so that one slow caller never holds up the next accept, of this kind
+// or another. A call after Stop does nothing. Start and Stop are safe to call at once, from
+// different goroutines, on one Listener or several.
 //
-//   - Start shall start only this Listener: every other Listener, whether or not it shares this
-//     one's ConnectionCount, shall accept no sooner and no later for it.
+//   - Start shall return at once, without waiting for a caller.
+//   - Start shall start only this Listener: a Listener not yet started shall serve no caller after
+//     another's Start, and one already started shall go on accepting and serving.
 //   - Once Start has returned, this Listener shall accept at every one of its sockets.
 //   - The listener package shall run nothing of a caller's on an accept loop: while one caller's
 //     Open or call is still running, the next caller shall be accepted. [read]
@@ -199,14 +207,16 @@ func (listener *Listener) Start() {
 }
 
 // Stop closes this Listener's listening sockets and every connection it kept at once, and returns
-// when nothing of this Listener's is running. Before Start, it closes the sockets alone. A second
-// call, and a call on a Listener New did not return, does nothing. It never fails. The program
-// stops every kind's Listener together on a stop signal, so that every connection still closes at
-// once.
+// when nothing of this Listener's is running. Before Start, it closes the sockets alone; during
+// Start, it leaves nothing of Start's running once it returns. A second call, and a call on a
+// Listener New did not return, does nothing. It never fails. Stop is safe to call on several
+// Listeners at once, from different goroutines, so that a caller can stop them all together.
 //
 //   - Stop shall close this Listener's listening sockets and every connection it kept, and return
 //     only when nothing of this Listener's is running and every place its connections held in the
 //     ConnectionCount is free.
+//   - When Stop is called on several Listeners at once, each shall close its sockets and
+//     connections without waiting for another's.
 //   - Stop shall leave every other Listener, whether or not it shares this Listener's
 //     ConnectionCount, accepting and serving as before.
 func (listener *Listener) Stop() {
