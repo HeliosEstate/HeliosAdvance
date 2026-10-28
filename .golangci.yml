@@ -77,7 +77,7 @@ linters:
             # The rule for a call's end and the wake, written once (docs/architecture.md).
             - github.com/heliosestate/heliosadvance/internal/timeup
             # Its own path, so its black-box tests in package telnet_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/telnet$
         # The Telnet unit's Windows urgent write, the one file that may import the module's
         # windows package (docs/architecture.md, the developer's of 2026-10-27).
         telnet-windows-urgent:
@@ -130,14 +130,14 @@ linters:
             # Its own path, so its black-box tests in package ssh_test can import it.
             - github.com/heliosestate/heliosadvance/internal/ssh
         # Telnet over TLS: crypto/tls is the standard library's, so no module is added; Telnet's
-        # Open serves the call inside the encrypted connection (docs/architecture.md, Part 5's
+        # Open serves the call inside the encrypted connection (docs/architecture.md, Part 8's
         # shape, a wrapper around Telnet's object).
         telnets:
           files: ["**/internal/telnets/**"]
           list-mode: strict
           allow:
             - $gostd
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/telnet$
             # The rule for a call's end and the wake, written once (docs/architecture.md).
             - github.com/heliosestate/heliosadvance/internal/timeup
             # Its own path, so its black-box tests in package telnets_test can import it.
@@ -161,7 +161,7 @@ linters:
             - $gostd
             - github.com/heliosestate/heliosadvance/internal/textio
             - github.com/heliosestate/heliosadvance/internal/session
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/telnet$
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener
         hadv-service:
@@ -172,10 +172,10 @@ linters:
             # It starts and stops the Listener, and pairs each kind's sockets with its way in
             # (docs/architecture.md, Part 3's shape); Text I/O and the Session are the Listener's.
             - github.com/heliosestate/heliosadvance/internal/listener
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/telnet$
             - github.com/heliosestate/heliosadvance/internal/ssh
             # It reads the TLS certificate and key and pairs the Telnet over TLS listener's
-            # sockets with its way in (Part 5).
+            # sockets with its way in (Part 8).
             - github.com/heliosestate/heliosadvance/internal/telnets
     forbidigo:
       analyze-types: true

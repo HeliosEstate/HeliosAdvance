@@ -13,8 +13,8 @@ import (
 
 // The contract's operations hand their work to the unexported functions below, so the contract
 // builds before the package is built and the build never needs to change the contract. Each
-// placeholder here is replaced by the issue that builds it, and fails until then, so nothing calls
-// it yet.
+// placeholder here is replaced by the issue that builds it, and fails every call until then, so
+// nothing calls it yet and no row passes against it.
 
 type certificateState struct{}
 
@@ -26,9 +26,8 @@ func readCertificate(_, _ string) (*Certificate, error) {
 }
 
 func accept(_ context.Context, _ *net.TCPConn, certificate *Certificate) (*telnet.Line, error) {
-	if certificate == nil {
-		return nil, telnet.ErrConnectionFailed
+	if certificate != nil {
+		_ = certificate.state
 	}
-	_ = certificate.state
 	return nil, errNotBuilt
 }
