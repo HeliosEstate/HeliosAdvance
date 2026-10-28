@@ -5,7 +5,6 @@ package ssh
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"time"
@@ -117,7 +116,7 @@ func (channel *Channel) check(ctx context.Context) error {
 		return err
 	}
 	if channel.state.failed {
-		return ErrConnectionFailed
+		return io.EOF
 	}
 	return nil
 }
@@ -138,16 +137,16 @@ func (channel *Channel) write(ctx context.Context, deadline time.Time, job func(
 	select {
 	case state.jobs <- job:
 	case <-state.connection.ended:
-		return giveUp(ErrConnectionFailed)
+		return giveUp(io.EOF)
 	case <-ctx.Done():
-		return giveUp(ErrConnectionFailed)
+		return giveUp(io.EOF)
 	case <-limit:
 		return giveUp(os.ErrDeadlineExceeded)
 	}
 	select {
 	case err := <-state.written:
 		if err != nil {
-			return giveUp(ErrConnectionFailed)
+			return giveUp(io.EOF)
 		}
 		return nil
 	case <-state.connection.ended:
@@ -156,16 +155,16 @@ func (channel *Channel) write(ctx context.Context, deadline time.Time, job func(
 		select {
 		case err := <-state.written:
 			if err != nil {
-				return giveUp(ErrConnectionFailed)
+				return giveUp(io.EOF)
 			}
 			return nil
 		case <-ctx.Done():
-			return giveUp(ErrConnectionFailed)
+			return giveUp(io.EOF)
 		case <-limit:
 			return giveUp(os.ErrDeadlineExceeded)
 		}
 	case <-ctx.Done():
-		return giveUp(ErrConnectionFailed)
+		return giveUp(io.EOF)
 	case <-limit:
 		return giveUp(os.ErrDeadlineExceeded)
 	}
@@ -257,18 +256,6 @@ func (state *channelState) readAfterEnd() {
 	state.absorb(readResult{count, err})
 }
 
-// readFailure reads a stored end by the socket's own error: a reset is a failure, whatever the
-// library says.
-func (state *channelState) readFailure() error {
-	if state.connection.failed() {
-		return ErrConnectionFailed
-	}
-	if errors.Is(state.readError, io.EOF) {
-		return io.EOF
-	}
-	return ErrConnectionFailed
-}
-
 func (channel *Channel) recvChar(ctx context.Context, deadline time.Time) (byte, error) {
 	if !channel.usable() {
 		return 0, ErrConnectionFailed
@@ -279,9 +266,9 @@ func (channel *Channel) recvChar(ctx context.Context, deadline time.Time) (byte,
 			return 0, err
 		}
 		waiting := state.receiveNext < state.receiveEnd
-		// A stored end or failure is the answer when no byte is waiting, even after the deadline.
+		// A stored end is the answer when no byte is waiting, even after the deadline.
 		if !waiting && state.readError != nil {
-			return 0, state.readFailure()
+			return 0, io.EOF
 		}
 		if !deadline.IsZero() && !time.Now().Before(deadline) {
 			return 0, os.ErrDeadlineExceeded
@@ -292,13 +279,6 @@ func (channel *Channel) recvChar(ctx context.Context, deadline time.Time) (byte,
 			return character, nil
 		}
 		if err := channel.writeOut(ctx, deadline); err != nil {
-			if errors.Is(err, ErrConnectionFailed) && state.connection.hasEnded() && !state.connection.failed() {
-				// The caller closed in order while an echo was queued: the queued bytes have no one
-				// to go to, and what RecvChar owes is the end.
-				state.failed = false
-				state.readError = io.EOF
-				return 0, io.EOF
-			}
 			return 0, err
 		}
 		channel.awaitRead(ctx, deadline)
@@ -344,7 +324,7 @@ func (channel *Channel) close(ctx context.Context) error {
 	}
 	state := &channel.state
 	if state.failed {
-		return ErrConnectionFailed
+		return io.EOF
 	}
 	length := state.sendLength
 	err := channel.write(ctx, time.Time{}, func() error {

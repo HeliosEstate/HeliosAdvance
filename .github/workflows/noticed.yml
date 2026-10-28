@@ -8,13 +8,15 @@
 # request from a fork, and an issue edited by anyone but the developer, the interactive
 # session's App or a loop, open nothing. An issue event runs this file as it is on the default
 # branch, development, so the plan half works once this reaches it; the pull request half works
-# from the branch.
+# from the branch. A pull request into a build branch, feature/issue-<n>, is read too, since every
+# session lists what it notices there (developer, 2026-10-27); a build branch made from
+# development before this reached it reads them once development is merged into it.
 name: noticed
 
 on:
   pull_request:
     types: [opened, edited, reopened]
-    branches: [development, main]
+    branches: [development, main, 'feature/issue-*']
   issues:
     types: [opened, edited]
 
@@ -34,7 +36,7 @@ jobs:
   open:
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-lampetia[bot]", "helios-phaethusa[bot]"]'), github.event.sender.login))
+      (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-aetheria[bot]", "helios-lampetia[bot]", "helios-phaethusa[bot]"]'), github.event.sender.login))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

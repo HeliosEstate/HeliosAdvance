@@ -124,11 +124,11 @@ func TestSSHProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with -ssh-port and a free port, it names and serves that port at both addresses, beside Telnet's", func(t *testing.T) {
 			t.Parallel()
-			port, ipv4, ipv6 := heldPort(t)
-			_ = ipv4.Close()
-			_ = ipv6.Close()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, port)
-			telnet, ssh := program.kinds(t)
+			key := makeKey(t, "ed25519", "")
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
+				return []string{portOption, "0", hostKeyOption, key, sshPortOption, port}
+			})
+			telnet, ssh := kindsOf(t, listeners)
 			expectAddresses(t, ssh, net.JoinHostPort(ipv4Loopback, port), net.JoinHostPort(ipv6Loopback, port))
 			loopbackPorts(t, telnet)
 			for _, address := range ssh {
@@ -295,10 +295,11 @@ func TestSSHProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("SSH's port taken at 127.0.0.1: it names and serves SSH at ::1 alone", func(t *testing.T) {
 			t.Parallel()
-			port, _, ipv6 := heldPort(t)
-			_ = ipv6.Close()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, port)
-			_, ssh := program.kinds(t)
+			key := makeKey(t, "ed25519", "")
+			port, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port string) []string {
+				return []string{portOption, "0", hostKeyOption, key, sshPortOption, port}
+			})
+			_, ssh := kindsOf(t, listeners)
 			expectAddresses(t, ssh, net.JoinHostPort(ipv6Loopback, port))
 			expectSSHServed(t, ssh[0])
 		})

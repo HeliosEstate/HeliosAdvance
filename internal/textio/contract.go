@@ -41,7 +41,9 @@
 //
 //	Result                       Means
 //	os.ErrDeadlineExceeded       the deadline the call was given passed first
-//	io.EOF                       the caller closed its side
+//	io.EOF                       the caller closed its side or, for a kind of
+//	                             connection that does not tell them apart, as
+//	                             SSH does not, the connection ended however
 //	the context's error,         the context ended first: the call's ceiling
 //	wrapped                      (context.DeadlineExceeded) or a stop (context.Canceled)
 //	any other error              the connection failed; RecvString's ErrMostOutOfRange

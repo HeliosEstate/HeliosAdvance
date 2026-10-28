@@ -18,6 +18,7 @@ const (
 	deleteKey      = 0x7F
 	carriageReturn = 0x0D
 	lineFeed       = 0x0A
+	eraseLine      = 0x15
 	space          = 0x20
 	tilde          = 0x7E
 )
@@ -141,6 +142,15 @@ func edit(line Line, character byte) (Line, []byte, bool) {
 		if state.count > 0 {
 			state.count--
 			return line, []byte{backspace, space, backspace}, false
+		}
+	case character == eraseLine:
+		if state.count > 0 {
+			echo := make([]byte, 0, 3*state.count)
+			for range state.count {
+				echo = append(echo, backspace, space, backspace)
+			}
+			state.count = 0
+			return line, echo, false
 		}
 	case character == carriageReturn || character == lineFeed:
 		if state.count > 0 {

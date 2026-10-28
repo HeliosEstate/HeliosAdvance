@@ -151,14 +151,21 @@ if [ "$MUTATION" = 0 ]; then
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
 # base holds it passed this gate on its own branch before it merged; a squash merge drops the
-# trailer that showed it.
+# trailer that showed it. A name ending in an operating system or a processor, as Go lists them,
+# is a build constraint as much as a //go:build line (developer, 2026-10-27).
 onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
+goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
+goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
   [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- "$f" && continue
   last=$(git log -1 --format=%H -- "$f")
   is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
+  stem=${f##*/}; stem=${stem%_test.go}
+  if [[ $stem =~ _($goos)(_($goarch))?$ || $stem =~ _($goarch)$ ]]; then
+    echo "$f"; fail "a non-QA test file is named for an operating system or a processor, a build constraint"
+  fi
 done < <(git ls-files -z '*_test.go')
 
 # 4c. A comment never carries a line number or a step number: both drift silently. Attempt
@@ -246,7 +253,12 @@ if [ -n "$pkgs" ]; then
   [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
   go test ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
   govulncheck ./...
-  if [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
+  if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
+    # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
+    # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
+    # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
+    echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
+  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data

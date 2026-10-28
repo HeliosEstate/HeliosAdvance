@@ -5,7 +5,6 @@ package ssh
 
 import (
 	"context"
-	"errors"
 	"net"
 
 	cryptossh "golang.org/x/crypto/ssh"
@@ -46,7 +45,7 @@ func accept(ctx context.Context, tcp *net.TCPConn, key *HostKey) (*Channel, erro
 		return nil, ErrConnectionFailed
 	}
 	shared := newConnection()
-	release := shared.wakeOnEnd(ctx, tcp)
+	release := wakeOnEnd(ctx, tcp)
 	channel, err := open(ctx, tcp, shared, key)
 	release()
 	// The context's deadline may have passed by the clock before the context reports it, so the
@@ -54,8 +53,7 @@ func accept(ctx context.Context, tcp *net.TCPConn, key *HostKey) (*Channel, erro
 	if cause := endedCause(ctx); cause != nil {
 		// The release can stop a wake that had not begun, and the library goes on answering the
 		// caller until the socket's deadlines are past, so they are set here as well.
-		shared.note(errors.Join(
-			tcp.SetReadDeadline(wokenDeadline), tcp.SetWriteDeadline(wokenDeadline)))
+		wake(tcp)
 		return nil, deadlineEnded(cause)
 	}
 	if err != nil {
@@ -67,15 +65,9 @@ func accept(ctx context.Context, tcp *net.TCPConn, key *HostKey) (*Channel, erro
 // open does the handshake and waits for the shell. Every error is the package's own, never the
 // library's, whose text can quote what the caller sent.
 func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKey) (*Channel, error) {
-	server, channels, requests, err := cryptossh.NewServerConn(
-		recordingConn{Conn: tcp, owner: shared}, serverConfig(key))
+	server, channels, requests, err := cryptossh.NewServerConn(tcp, serverConfig(key))
 	if err != nil {
-		// A disconnect message is the caller ending the connection on purpose, as after the
-		// handshake.
-		if shared.socketClosed() || disconnected(err) {
-			return nil, callerClosed()
-		}
-		return nil, ErrConnectionFailed
+		return nil, ErrNoShell
 	}
 	sessions := make(chan cryptossh.NewChannel, 1)
 	go cryptossh.DiscardRequests(requests)
@@ -85,13 +77,13 @@ func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKe
 	select {
 	case session = <-sessions:
 	case <-shared.ended:
-		return nil, shared.sessionEnd()
+		return nil, ErrNoShell
 	case <-ctx.Done():
 		return nil, deadlineEnded(ctx.Err())
 	}
 	library, sessionRequests, err := session.Accept()
 	if err != nil {
-		return nil, shared.sessionEnd()
+		return nil, ErrNoShell
 	}
 	channel := &Channel{state: newChannelState(library, shared)}
 	state := &channel.state
@@ -100,7 +92,7 @@ func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKe
 	go state.drainExtended()
 	// The requests are drained for as long as the channel lives, even after an error here: the
 	// library's reader blocks when the queue is full.
-	defer func() { go shared.refuseRequests(sessionRequests) }()
+	defer func() { go refuseRequests(sessionRequests) }()
 
 	if err := channel.awaitShell(ctx, sessionRequests); err != nil {
 		return nil, err
@@ -126,33 +118,38 @@ func (connection *connection) serveChannels(
 		if isSession {
 			reason = cryptossh.Prohibited
 		}
-		// A refusal that cannot be sent means the connection is failing, which the read side
-		// reports; the failure is kept for the caller's call to find.
-		connection.note(newChannel.Reject(reason, ""))
+		// A refusal that cannot be sent means the connection is failing, and its end reaches every
+		// call through ended.
+		//nolint:errcheck // nothing else is told of a refusal that cannot be sent
+		newChannel.Reject(reason, "")
 	}
-	connection.finish(server.Wait())
+	//nolint:errcheck // no result reads how the connection ended
+	server.Wait()
+	close(connection.ended)
 }
 
 // refuseRequests answers every request with failure until the library ends the channel. A reply
-// that cannot be sent means the connection is failing; the failure is kept, and the draining goes
-// on, since the library's reader blocks on a full queue.
-func (connection *connection) refuseRequests(requests <-chan *cryptossh.Request) {
+// that cannot be sent means the connection is failing, which every call learns from its end; the
+// draining goes on, since the library's reader blocks on a full queue.
+func refuseRequests(requests <-chan *cryptossh.Request) {
 	for request := range requests {
-		connection.note(request.Reply(false, nil))
+		//nolint:errcheck // a reply that cannot be sent means the connection is ending
+		request.Reply(false, nil)
 	}
 }
 
-// awaitShell answers the channel's requests until the first shell. A request that was queued
-// before an end of file or the connection's end is answered first, in order, since the library
-// queues it before it marks the end.
+// awaitShell answers the channel's requests until the first shell. It reads nothing: end of file
+// before the shell changes nothing, and a read kept waiting through it would store the end, so
+// that RecvChar after the shell would meet it before the wait that writes out the echo. The
+// library closes the session's requests when the connection ends and keeps what was queued, so a
+// shell queued just before that end is still read; it is answered only if it asked for no reply,
+// since a reply cannot be sent on an ended connection and answer then returns ErrNoShell.
 func (channel *Channel) awaitShell(ctx context.Context, requests <-chan *cryptossh.Request) error {
-	state := &channel.state
 	for {
-		state.askRead()
 		select {
 		case request, open := <-requests:
 			if !open {
-				return state.connection.sessionEnd()
+				return ErrNoShell
 			}
 			shell, err := channel.answer(request)
 			if err != nil {
@@ -161,39 +158,8 @@ func (channel *Channel) awaitShell(ctx context.Context, requests <-chan *cryptos
 			if shell {
 				return nil
 			}
-		case result := <-state.results:
-			state.absorb(result)
-			if result.err == nil {
-				continue
-			}
-			return channel.drainBeforeEnd(requests)
-		case <-state.connection.ended:
-			return channel.drainBeforeEnd(requests)
 		case <-ctx.Done():
 			return deadlineEnded(ctx.Err())
-		}
-	}
-}
-
-// drainBeforeEnd answers what the library had queued when the caller's data or the connection
-// ended, since a shell asked for just before an end of file must still be answered.
-func (channel *Channel) drainBeforeEnd(requests <-chan *cryptossh.Request) error {
-	state := &channel.state
-	for {
-		select {
-		case request, open := <-requests:
-			if !open {
-				return state.connection.sessionEnd()
-			}
-			shell, err := channel.answer(request)
-			if err != nil {
-				return err
-			}
-			if shell {
-				return nil
-			}
-		default:
-			return state.connection.sessionEnd()
 		}
 	}
 }
@@ -204,10 +170,7 @@ func (channel *Channel) answer(request *cryptossh.Request) (shell bool, err erro
 	state := &channel.state
 	accepted := request.Type == "pty-req" || request.Type == "shell"
 	if request.Reply(accepted, nil) != nil {
-		if state.connection.socketClosed() {
-			return false, callerClosed()
-		}
-		return false, ErrConnectionFailed
+		return false, ErrNoShell
 	}
 	switch request.Type {
 	case "pty-req":

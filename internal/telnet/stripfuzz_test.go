@@ -16,12 +16,13 @@ func FuzzStrip(fuzzing *testing.F) {
 		cut   uint8
 	}{
 		{nil, 0},
-		{join(answers, []byte("alice\r")), 6},
+		{join(answers, []byte("alice\r")), 24},
 		{join(request(doVerb, echo), []byte{iac, doVerb}, []byte{telnetTypeOption, 'k'}), 5},
-		{join(answers, []byte{iac, iac, 'a', iac, subnegotiationBegin, 24, iac, iac, subnegotiationEnd, 'x', iac, subnegotiationEnd, 'b'}), 6},
-		{join(answers, request(dont, echo), request(doVerb, echo), request(will, 31), request(doVerb, 255)), 6},
+		{join(answers, []byte{iac, iac, 'a', iac, subnegotiationBegin, 24, iac, iac, subnegotiationEnd, 'x', iac, subnegotiationEnd, 'b'}), 24},
+		{join(answers, request(dont, echo), request(doVerb, echo), request(will, 31), request(doVerb, 255)), 24},
 		{join([]byte("typed during"), request(dont, sga)), 3},
-		{join(answers, []byte{iac, nop, iac, ayt, 0, 127, 255}), 6},
+		{join(answers, command(nop), command(ayt), command(abortOutput), command(eraseCharacter), command(eraseLine), []byte{0, 127, 255}), 24},
+		{join(firstAnswers, request(wont, environOption), []byte("ab"), request(will, environOption)), 9},
 	}
 	for _, seed := range seeds {
 		fuzzing.Add(seed.input, seed.cut)
@@ -34,7 +35,7 @@ func FuzzStrip(fuzzing *testing.F) {
 		// Receive takes the bytes one at a time up to the cut, stopping early once it returns
 		// true; Strip takes the rest one at a time, as the Line hands them over.
 		negotiation := fresh()
-		during := &reading{}
+		during := freshReading()
 		var replies []byte
 		handedOver := cut
 		for index := 0; index < cut; index++ {
@@ -46,29 +47,30 @@ func FuzzStrip(fuzzing *testing.F) {
 				break
 			}
 		}
-		after := carryOn(during)
-		want := expectedStrip(after, input[handedOver:])
+		synchsDuring := negotiation.TakeSynch()
+		want := expectedStrip(during.takeOver(), input[handedOver:])
 		got := stripAll(t, negotiation, input[handedOver:])
-		if !bytes.Equal(got.replies, want.replies) || !equalData(got.data, want.data) {
-			t.Fatalf("after %d bytes to Receive, Strip of % x replied % x, data %v; want % x, data %v",
-				handedOver, input[handedOver:], got.replies, got.data, want.replies, want.data)
+		if !bytes.Equal(got.replies, want.replies) || !equalData(got.handed, want.handed) || !bytes.Equal(got.data, want.data) || got.synchs != want.synchs {
+			t.Fatalf("after %d bytes to Receive, Strip of % x replied % x, handed on % x, %d Synchs; want % x, % x, %d",
+				handedOver, input[handedOver:], got.replies, got.data, got.synchs, want.replies, want.data, want.synchs)
 		}
 		replies = append(replies, got.replies...)
 		checkReplies(t, replies, input)
-		// The same replies as when Strip takes over at the first byte.
+		// The same replies and Synchs as when Strip takes over at the first byte.
 		fromStart := stripAll(t, fresh(), input)
-		if !bytes.Equal(fromStart.replies, replies) {
-			t.Fatalf("Strip from the first byte replied % x, Receive then Strip % x", fromStart.replies, replies)
+		if !bytes.Equal(fromStart.replies, replies) || fromStart.synchs != synchsDuring+got.synchs {
+			t.Fatalf("Strip from the first byte replied % x, %d Synchs; Receive then Strip % x, %d", fromStart.replies, fromStart.synchs, replies, synchsDuring+got.synchs)
 		}
 	})
 }
 
-// probeStrip shows Strip is live on a negotiation New returned: a is data, and DO 24 is refused.
+// probeStrip shows Strip is live on a negotiation New returned: a is data, DO 24 is refused, WILL
+// SGA agreed and EC handed on as BS.
 func probeStrip(t *testing.T) {
 	t.Helper()
-	got := stripAll(t, fresh(), join([]byte("a"), request(doVerb, telnetTypeOption)))
-	if !bytes.Equal(got.replies, request(wont, telnetTypeOption)) || !equalData(got.data, []bool{true, false, false, false}) {
-		t.Fatalf("Strip of a and DO 24 on a new negotiation replied % x, data %v", got.replies, got.data)
+	got := stripAll(t, fresh(), join([]byte("a"), request(doVerb, telnetTypeOption), request(will, sga), command(eraseCharacter)))
+	if !bytes.Equal(got.replies, join(request(wont, telnetTypeOption), request(doVerb, sga))) || !bytes.Equal(got.data, []byte{'a', backspace}) {
+		t.Fatalf("Strip of a, DO 24, WILL SGA and EC on a new negotiation replied % x, handed on % x", got.replies, got.data)
 	}
 }
 

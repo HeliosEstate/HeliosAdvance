@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,76 @@ func (client *rawClient) expectNameEnd(want string) {
 	client.t.Helper()
 	client.readUntil(want[strings.LastIndex(want, "Hello "):], time.Now().Add(5*time.Second))
 	client.expectStream(want)
+}
+
+// callAfterEnd signs in to the program, asks for a terminal when terminal is set, sends typed as
+// channel data, then end of file, and fails the row unless the connection stays open and quiet;
+// then it asks for the shell and returns once the shell is answered.
+func callAfterEnd(t *testing.T, program *engine, terminal bool, typed string) *rawClient {
+	t.Helper()
+	client := readyClient(t, program.ssh, "anyone")
+	if terminal {
+		if reply := client.request("pty-req", true, ptyRequest("xterm", []byte{0})); reply[0] != messageChannelSuccess {
+			t.Fatalf("the pty-req: message %d, want SUCCESS", reply[0])
+		}
+	}
+	if typed != "" {
+		client.sendData(typed)
+	}
+	client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
+	client.expectOpen()
+	if reply := client.request("shell", true, nil); reply[0] != messageChannelSuccess {
+		t.Fatalf("the shell after the end of file: message %d, want SUCCESS", reply[0])
+	}
+	return client
+}
+
+// expectOpen fails the row unless, for quietFor, nothing comes and the connection stays open: the
+// read must give up at its deadline, not see the connection end.
+func (client *rawClient) expectOpen() {
+	client.t.Helper()
+	payload, err := client.next(time.Now().Add(quietFor))
+	if err == nil {
+		client.t.Fatalf("the engine sent message %d after the end of file alone, want nothing", payload[0])
+	}
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		client.t.Fatalf("the connection ended after the end of file alone (%v), want it open", err)
+	}
+}
+
+// expectClosedAfter reads to the connection's end and fails the row unless the caller received
+// exactly want, as channel data and no other message, and the end came within margin of from.
+func (client *rawClient) expectClosedAfter(from time.Time, want string) {
+	client.t.Helper()
+	kinds, ended := client.expectEnd(from.Add(margin + time.Second))
+	for _, kind := range kinds {
+		if kind != messageChannelData {
+			client.t.Fatalf("the engine sent messages %v before the close, want channel data alone", kinds)
+		}
+	}
+	client.expectStream(want)
+	expectWithin(client.t, "the engine's close", ended, from, from.Add(margin))
+}
+
+// expectOneCloseAfter reads to the connection's end and fails the row unless, beside channel data,
+// the engine sent one channel close and nothing else, and the end came within margin of from.
+func (client *rawClient) expectOneCloseAfter(from time.Time) {
+	client.t.Helper()
+	kinds, ended := client.expectEnd(from.Add(margin + time.Second))
+	closes, others := 0, 0
+	for _, kind := range kinds {
+		switch kind {
+		case messageChannelData:
+		case messageChannelClose:
+			closes++
+		default:
+			others++
+		}
+	}
+	if closes != 1 || others != 0 {
+		client.t.Fatalf("the engine sent messages %v before the close, want one channel close beside channel data", kinds)
+	}
+	expectWithin(client.t, "the engine's close", ended, from, from.Add(margin))
 }
 
 func TestCall(t *testing.T) {
@@ -173,6 +244,24 @@ func TestCall(t *testing.T) {
 				t.Fatalf("after the close the engine sent messages %v, want none", kinds)
 			}
 		})
+		for _, terminal := range []bool{true, false} {
+			name := "bob CR, end of file, a wait, then shell, with no pty-req"
+			want := asked + helloTo("bob")
+			if terminal {
+				name = "a pty-req, bob CR, end of file, a wait, then shell"
+				want = asked + echoOf("bob") + helloTo("bob")
+			}
+			t.Run(name+": Hello bob, then exactly exit-status 0, end of file and the close", func(t *testing.T) {
+				t.Parallel()
+				program := startEngine(t)
+				client := callAfterEnd(t, program, terminal, typedBob)
+				client.readUntil(helloTo("bob"), time.Now().Add(5*time.Second))
+				expectClosingMessages(t, client, "")
+				client.expectStream(want)
+				// The engine's close waits up to 3 seconds for the caller's.
+				_ = client.connection.Close()
+			})
+		}
 		for _, terminal := range []bool{true, false} {
 			name := "-T"
 			want := asked + helloTo("bob")
@@ -565,45 +654,105 @@ func TestCall(t *testing.T) {
 		})
 	})
 
-	t.Run("If an SSH caller sends end of file or closes the channel before the name ends, then the engine shall close the connection, writing nothing more but the channel close SSH requires in reply.", func(t *testing.T) {
+	t.Run("If an SSH caller closes the channel before the name ends, then the engine shall close the connection, writing nothing more but the channel close SSH requires in reply.", func(t *testing.T) {
 		t.Parallel()
-		ends := []struct {
-			name    string
-			message byte
-			replies []byte
-		}{
-			{"end of file", messageChannelEOF, nil},
-			{"the channel's close", messageChannelClose, []byte{messageChannelClose}},
-		}
-		for _, end := range ends {
-			t.Run("ab, then "+end.name+": "+map[bool]string{true: "nothing more", false: "one channel close"}[end.replies == nil]+", and the connection closed at once", func(t *testing.T) {
-				t.Parallel()
-				program := startEngine(t)
-				client := callAtPrompt(t, program, true)
-				client.sendData("ab")
-				client.readUntil("ab", time.Now().Add(5*time.Second))
-				client.sendPacket(message(end.message).uint32Value(client.engineChannel).data)
-				sent := time.Now()
-				kinds, ended := client.expectEnd(sent.Add(margin + time.Second))
-				if !bytes.Equal(kinds, end.replies) {
-					t.Fatalf("the engine sent messages %v before the close, want %v", kinds, end.replies)
-				}
-				expectWithin(t, "the engine's close", ended, sent, sent.Add(margin))
-				client.expectStream(asked + "ab")
-			})
-		}
-		t.Run("end of file after a pty-req, before the shell: nothing, and the connection closed at once", func(t *testing.T) {
+		t.Run("ab, then the channel's close: one channel close, and the connection closed at once", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, true)
+			client.sendData("ab")
+			client.readUntil("ab", time.Now().Add(5*time.Second))
+			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
+			client.expectOneCloseAfter(time.Now())
+			client.expectStream(asked + "ab")
+		})
+		t.Run("before the shell, 300 bytes unread, then the channel's close: one channel close and nothing else, and the connection closed at once", func(t *testing.T) {
 			t.Parallel()
 			program := startEngine(t)
 			client := readyClient(t, program.ssh, "anyone")
-			client.request("pty-req", true, ptyRequest("xterm", []byte{0}))
+			client.sendData(strings.Repeat("a", 300))
+			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
+			client.expectOneCloseAfter(time.Now())
+			client.expectStream("")
+		})
+		t.Run("before the shell, end of file, a wait, then the channel's close: one channel close and nothing else, and the connection closed at once from the close", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := readyClient(t, program.ssh, "anyone")
 			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
-			sent := time.Now()
-			kinds, ended := client.expectEnd(sent.Add(margin + time.Second))
-			if len(kinds) != 0 || len(client.received) != 0 {
-				t.Fatalf("the engine sent messages %v and %q before the close, want nothing", kinds, client.received)
-			}
-			expectWithin(t, "the engine's close", ended, sent, sent.Add(margin))
+			client.expectOpen()
+			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
+			client.expectOneCloseAfter(time.Now())
+			client.expectStream("")
+		})
+	})
+
+	t.Run("If an SSH caller's data ends, by end of file, before the name ends, then, once the caller has asked for a shell and the greeting and name prompt are written, the engine shall close the connection when it reaches the end of file, writing nothing more but the channel close SSH requires in reply.", func(t *testing.T) {
+		t.Parallel()
+		for _, row := range []struct {
+			name     string
+			terminal bool
+			typed    string
+			want     string
+		}{
+			{"a pty-req, ab, end of file, a wait, then shell: the greeting, the prompt and the echo of ab, then the close and nothing more",
+				true, "ab", asked + "ab"},
+			{"ab, end of file, a wait, then shell, with no pty-req: the greeting and the prompt, then the close and nothing more",
+				false, "ab", asked},
+			{"a pty-req, 300 bytes, more than the Channel holds, end of file, a wait, then shell: the greeting, the prompt and the first 30 echoed, then the close and nothing more",
+				true, strings.Repeat("a", 300), asked + strings.Repeat("a", 30)},
+			{"a pty-req, end of file, a wait, then shell: the greeting and the prompt, then the close and nothing more",
+				true, "", asked},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				program := startEngine(t)
+				client := callAfterEnd(t, program, row.terminal, row.typed)
+				client.expectClosedAfter(time.Now(), row.want)
+			})
+		}
+		for _, row := range []struct {
+			name     string
+			terminal bool
+			typed    string
+			want     string
+		}{
+			{"end of file and shell in one write: the greeting and the prompt, then the close and nothing more",
+				false, "", asked},
+			{"a pty-req, then ab, end of file and shell in one write: the greeting, the prompt and the echo of ab, then the close and nothing more",
+				true, "ab", asked + "ab"},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				program := startEngine(t)
+				client := readyClient(t, program.ssh, "anyone")
+				if row.terminal {
+					if reply := client.request("pty-req", true, ptyRequest("xterm", []byte{0})); reply[0] != messageChannelSuccess {
+						t.Fatalf("the pty-req: message %d, want SUCCESS", reply[0])
+					}
+				}
+				var together [][]byte
+				if row.typed != "" {
+					together = append(together, message(messageChannelData).uint32Value(client.engineChannel).text(row.typed).data)
+				}
+				together = append(together,
+					message(messageChannelEOF).uint32Value(client.engineChannel).data,
+					message(messageChannelRequest).uint32Value(client.engineChannel).text("shell").boolean(true).data)
+				client.sendTogether(together...)
+				if reply, err := client.next(time.Now().Add(5 * time.Second)); err != nil || reply[0] != messageChannelSuccess {
+					t.Fatalf("the shell's reply: %v, %v, want SUCCESS", reply, err)
+				}
+				client.expectClosedAfter(time.Now(), row.want)
+			})
+		}
+		t.Run("after the prompt, with a terminal, ab and its echo, then end of file: nothing more, and the connection closed at once", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, true)
+			client.sendData("ab")
+			client.readUntil("ab", time.Now().Add(5*time.Second))
+			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
+			client.expectClosedAfter(time.Now(), asked+"ab")
 		})
 		t.Run("the OpenSSH client with -T, its input closed after ab: the greeting and the prompt, no Hello", func(t *testing.T) {
 			t.Parallel()
@@ -612,6 +761,31 @@ func TestCall(t *testing.T) {
 			if string(result.stdout) != asked {
 				t.Fatalf("the client wrote %q, want %q alone", result.stdout, asked)
 			}
+		})
+	})
+
+	t.Run("When Open returns an error or a nil KindConnection, or Run returns anything but session.Answered, the listener package shall close the connection without writing to it and without calling Close.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("over SSH, end of file before the shell, then shell: no exit status, end of file or channel close from the engine", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAfterEnd(t, program, false, "")
+			client.expectClosedAfter(time.Now(), asked)
+		})
+		t.Run("over SSH, after the prompt, end of file: no exit status, end of file or channel close from the engine", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, false)
+			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
+			client.expectClosedAfter(time.Now(), asked)
+		})
+		t.Run("over SSH, after the prompt, the channel's close: the one channel close in reply, and no exit status or end of file", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, false)
+			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
+			client.expectOneCloseAfter(time.Now())
+			client.expectStream(asked)
 		})
 	})
 
@@ -648,17 +822,17 @@ func TestCall(t *testing.T) {
 		})
 	})
 
-	t.Run("Apart from BS, DEL, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
+	t.Run("Apart from BS, DEL, Ctrl-U, CR and LF, the engine shall drop every other byte the caller sends after negotiation or, over SSH, after `shell`, and every character past the 30th.", func(t *testing.T) {
 		t.Parallel()
 		var controls strings.Builder
 		for character := range 256 {
-			if (character < 0x20 || character > 0x7e) && character != 0x08 && character != 0x7f && character != '\r' && character != '\n' {
+			if (character < 0x20 || character > 0x7e) && character != 0x08 && character != 0x7f && character != 0x15 && character != '\r' && character != '\n' {
 				controls.WriteByte(byte(character))
 			}
 		}
 		rows := []struct{ name, typed, name2 string }{
 			{"31 characters: the first 30", strings.Repeat("a", 31) + "\r", strings.Repeat("a", 30)},
-			{"every byte from 0x00 to 0xFF that is not printable, BS, DEL, CR or LF, between a and b: dropped, never echoed",
+			{"every byte from 0x00 to 0xFF that is not printable, BS, DEL, Ctrl-U, CR or LF, between a and b: dropped, never echoed",
 				"a" + controls.String() + "b\r", "ab"},
 			{"ESC sequences: ESC dropped, the rest kept as typed", "\x1b[2Jx\r", "[2Jx"},
 			{"0x9B, BEL, NUL and TAB: dropped", "a\x9b\x07\x00\tb\r", "ab"},
@@ -673,6 +847,13 @@ func TestCall(t *testing.T) {
 				client.expectNameEnd(asked + echoOf(row.name2) + helloTo(row.name2))
 			})
 		}
+		t.Run("over SSH with a terminal, the edge: Ctrl-U is not dropped, ab Ctrl-U c CR gives Hello c", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			client := callAtPrompt(t, program, true)
+			client.sendData("ab\x15c\r")
+			client.expectNameEnd(asked + "ab" + strings.Repeat("\b \b", 2) + echoOf("c") + helloTo("c"))
+		})
 		t.Run("over SSH, ab sent before the shell and c CR after: the name abc", func(t *testing.T) {
 			t.Parallel()
 			program := startEngine(t)
@@ -696,6 +877,25 @@ func TestCall(t *testing.T) {
 			client.sendVersion()
 			client.readServerKexInit(time.Now().Add(5 * time.Second))
 			_, ended := client.expectEnd(connected.Add(ceilingLimit + 2*margin))
+			expectWithin(t, "the engine's close", ended, dialed.Add(ceilingLimit), connected.Add(ceilingLimit+margin))
+		})
+		t.Run("an SSH caller that sends end of file before the shell and never asks for one: nothing written, closed at the ceiling, not before", func(t *testing.T) {
+			t.Parallel()
+			program := startEngine(t)
+			dialed := time.Now()
+			client := dialRaw(t, program.ssh)
+			connected := time.Now()
+			client.handshake(curveExchange(t, "curve25519-sha256"), true)
+			client.signIn("anyone")
+			if reply := client.openChannel("session", 0, nil); reply[0] != messageChannelConfirmation {
+				t.Fatalf("the session channel: message %d", reply[0])
+			}
+			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
+			// The ceiling's nearest fault is one 900 ms too long, so the window keeps margin.
+			kinds, ended := client.expectEnd(connected.Add(ceilingLimit + 2*margin))
+			if len(kinds) != 0 || len(client.received) != 0 {
+				t.Fatalf("the engine sent messages %v and %q before the close, want nothing", kinds, client.received)
+			}
 			expectWithin(t, "the engine's close", ended, dialed.Add(ceilingLimit), connected.Add(ceilingLimit+margin))
 		})
 	})

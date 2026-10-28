@@ -7,7 +7,6 @@ rest on are the developer's record, `records/invariants.md` in HeliosDesign, and
 ## Correctness before merge
 
 The developer's words, from his own rules:
-
 These rules outrank finishing the task, keeping work moving and reaching a merge. A green check,
 an approved plan or a passing test never excuses breaking one. When a rule here conflicts with
 getting the task done, the rule wins and you stop.
@@ -16,8 +15,10 @@ getting the task done, the rule wins and you stop.
   the enforcement is narrower than the rule, the rule still holds in full: never use the gap.
   Report the gap to the developer in the same turn you find it.
 - `needs-developer` on an issue or its PR stops all coding on it (no build, no review round, no
-  push of code) until the developer has decided what it flags. Reviews, comments and change
-  requests may go on. The label comes off only on his approval.
+  push to its branch or pull request) until the developer has decided what it flags. Reviews,
+  comments, change requests and throwaway probe branches that only gather facts for his decision
+  may go on; a probe branch is deleted afterwards and reported to him. The label comes off only on
+  his approval.
 - Dismiss a finding ("harmless", "impossible", "never") only on evidence checked for this exact
   case. "Nobody has seen it", "the library does the same" and "unlikely" are not evidence. If it
   can be probed, probe it before the verdict; if it cannot, the verdict is "unknown", with a
@@ -42,8 +43,8 @@ getting the task done, the rule wins and you stop.
 
 ## Roles, mechanically
 
-- A session opens issues, comments and reviews as the estate's App, `helios-aegle`, never as the
-  developer: the loop takes his account's words as his. A design session may commit specs, docs
+- A session opens issues and comments as its own App, `helios-aegle` or `helios-aetheria`, never as
+  the developer: the loop takes his account's words as his. A design session may commit specs, docs
   and CI from his account, each commit and pull request saying a Claude session wrote it; the
   loop's code never comes from his account. His approval is the review and merge he gives on
   GitHub, and only he gives it.

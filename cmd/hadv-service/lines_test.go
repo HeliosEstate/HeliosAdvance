@@ -80,16 +80,14 @@ func TestProgram(t *testing.T) {
 		for _, taken := range []string{ipv4Loopback, ipv6Loopback} {
 			t.Run(fmt.Sprintf("with %s taken at the port, it names and serves the other alone", taken), func(t *testing.T) {
 				t.Parallel()
-				port, ipv4, ipv6 := heldPort(t)
 				free := ipv6Loopback
 				if taken == ipv6Loopback {
 					free = ipv4Loopback
-					_ = ipv4.Close()
-				} else {
-					_ = ipv6.Close()
 				}
-				program := startProgram(t, portOption, port)
-				addresses := program.listening(t)
+				port, listeners := startOnFreedPort(t, []string{free}, func(port string) []string {
+					return []string{portOption, port}
+				})
+				addresses := telnetAlone(t, listeners)
 				expectAddresses(t, addresses, net.JoinHostPort(free, port))
 				expectServed(t, net.JoinHostPort(free, port))
 			})
@@ -100,11 +98,10 @@ func TestProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with -port and a free port, it names and serves that port at both addresses", func(t *testing.T) {
 			t.Parallel()
-			port, ipv4, ipv6 := heldPort(t)
-			_ = ipv4.Close()
-			_ = ipv6.Close()
-			program := startProgram(t, portOption, port)
-			addresses := program.listening(t)
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
+				return []string{portOption, port}
+			})
+			addresses := telnetAlone(t, listeners)
 			expectAddresses(t, addresses, net.JoinHostPort(ipv4Loopback, port), net.JoinHostPort(ipv6Loopback, port))
 			for _, address := range addresses {
 				expectServed(t, address)
@@ -286,8 +283,8 @@ func TestProgram(t *testing.T) {
 			during.send(t, append(append([]byte{iac, subnegotiationBegin, telnetTypeOption}, canary...), iac, subnegotiationEnd))
 			// The engine refuses a request only once it has read every byte the caller sent
 			// before it, so the refusal shows the text above has been read.
-			during.send(t, []byte{iac, will, telnetTypeOption})
-			during.readExactly(t, []byte{iac, dont, telnetTypeOption}, time.Now().Add(margin))
+			during.send(t, []byte{iac, will, unknownOption})
+			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(margin))
 			// The text sent after negotiation becomes the name, cut at 30 characters, and once
 			// Hello is written the engine shuts its sending side and says nothing more, so the
 			// only sign it has read all of the text, to the caller's end of stream, is the call
