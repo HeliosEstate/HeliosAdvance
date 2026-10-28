@@ -1,0 +1,32 @@
+# Passes a pull request into main only when it comes from this repository's development, the
+# release; main's ruleset requires it (the developer, 2026-10-28, HeliosDesign #219). `gh
+# signoff` checks that an engine pull request targets development, but a pull request's base
+# can be changed after that check, and an armed auto-merge stays armed: without this, a reviewed
+# build pointed at main would bring every development commit main lacks there, with no decision
+# of his. A pull request that never runs this, such as one with a merge conflict, has no passing
+# check and cannot merge into main either.
+name: main-from-development
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  from-development:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$HEAD_REPO" = "$REPO" ] && [ "$HEAD_REF" = development ]; then
+            echo "from $REPO's development: a release" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "refused: main takes pull requests from $REPO's development alone, not from $HEAD_REPO's $HEAD_REF" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
