@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/timeup"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
@@ -288,25 +290,10 @@ func (state *negotiationState) answer(verb, option byte, replies []byte) []byte 
 	return replies
 }
 
-// wokenDeadline is long past, so that setting it wakes any read or write that is waiting.
-var wokenDeadline = time.Unix(1, 0)
-
-// wakeOnEnd makes a read or write that is waiting return when ctx ends, by setting both deadlines
-// long past. The release it returns waits for a wake-up that has started, so nothing of the
-// package's runs once the call that registered it returns. It is registered after the deadline it
-// must override is set.
+// wakeOnEnd stays as one line because the urgent send's rows register their wake by this name; it
+// holds no rule, and the wake is timeup's.
 func wakeOnEnd(ctx context.Context, connection Conn) (release func()) {
-	done := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
-		defer close(done)
-		//nolint:errcheck // the connection may already be closed, and there is no one to tell
-		setDeadlines(connection, wokenDeadline, wokenDeadline)
-	})
-	return func() {
-		if !stop() {
-			<-done
-		}
-	}
+	return timeup.WakeOnEnd(ctx, connection)
 }
 
 // handOver is what Open takes from negotiation so that nothing is copied or lost: the last read's
@@ -347,13 +334,13 @@ func negotiateWith(
 		if release != nil {
 			release()
 		}
-		deadline, _ := ctx.Deadline()
+		deadline := timeup.Limit(ctx, time.Time{})
 		if setErr := setDeadlines(connection, deadline, deadline); setErr != nil && err == nil {
 			outcome, err = failure(ctx, setErr)
 		}
 		// The clock may have ended the context while the deadlines were being put back.
 		if err == nil {
-			if ended := endedCause(ctx); ended != nil {
+			if ended := timeup.Ended(ctx); ended != nil {
 				outcome, left, err = 0, handOver{}, endedBy(ended)
 			}
 		}
@@ -364,13 +351,13 @@ func negotiateWith(
 		return finish(outcome, handOver{}, failed)
 	}
 
-	if err := endedCause(ctx); err != nil {
+	if err := timeup.Ended(ctx); err != nil {
 		return finish(0, handOver{}, endedBy(err))
 	}
 
 	timeout := time.Now().Add(NegotiationSeconds * time.Second)
-	readDeadline := connectionDeadline(ctx, timeout)
-	writeDeadline := connectionDeadline(ctx, time.Time{})
+	readDeadline := timeup.Limit(ctx, timeout)
+	writeDeadline := timeup.Limit(ctx, time.Time{})
 	if err := setDeadlines(connection, readDeadline, writeDeadline); err != nil {
 		return fail(err)
 	}
@@ -387,7 +374,7 @@ func negotiateWith(
 	if _, err := connection.Write(opening[:]); err != nil {
 		return fail(err)
 	}
-	if ended := endedCause(ctx); ended != nil {
+	if ended := timeup.Ended(ctx); ended != nil {
 		return finish(0, handOver{}, endedBy(ended))
 	}
 	if !time.Now().Before(timeout) {
@@ -411,14 +398,14 @@ func negotiateWith(
 			}
 			return finish(outcome, left, failed)
 		}
-		if ended := endedCause(ctx); ended != nil {
+		if ended := timeup.Ended(ctx); ended != nil {
 			return finish(0, handOver{}, endedBy(ended))
 		}
 		if len(replies) > 0 {
 			if _, err := connection.Write(replies); err != nil {
 				return fail(err)
 			}
-			if ended := endedCause(ctx); ended != nil {
+			if ended := timeup.Ended(ctx); ended != nil {
 				return finish(0, handOver{}, endedBy(ended))
 			}
 		}
@@ -427,7 +414,7 @@ func negotiateWith(
 			if _, err := connection.WriteUrgent(urgent); err != nil {
 				return fail(err)
 			}
-			if ended := endedCause(ctx); ended != nil {
+			if ended := timeup.Ended(ctx); ended != nil {
 				return finish(0, handOver{}, endedBy(ended))
 			}
 		}
@@ -440,7 +427,8 @@ func negotiateWith(
 	}
 }
 
-// setDeadlines sets both deadlines even when the first fails, so that a wake-up reaches both.
+// setDeadlines sets the write deadline even when the read one fails, so that neither keeps a
+// deadline the other has been given.
 func setDeadlines(connection Conn, read, write time.Time) error {
 	readErr := connection.SetReadDeadline(read)
 	writeErr := connection.SetWriteDeadline(write)
@@ -454,7 +442,7 @@ func endedBy(cause error) error {
 // failure turns a failed read, write or deadline setting into Negotiate's result. A passed
 // deadline is told apart by the clock, because the context may not have reported its end yet.
 func failure(ctx context.Context, cause error) (Outcome, error) {
-	if ended := endedCause(ctx); ended != nil {
+	if ended := timeup.Ended(ctx); ended != nil {
 		return 0, endedBy(ended)
 	}
 	switch {

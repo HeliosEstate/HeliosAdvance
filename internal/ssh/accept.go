@@ -7,6 +7,7 @@ import (
 	"context"
 	"net"
 
+	"github.com/heliosestate/heliosadvance/internal/timeup"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -38,22 +39,23 @@ func serverConfig(key *HostKey) *cryptossh.ServerConfig {
 }
 
 func accept(ctx context.Context, tcp *net.TCPConn, key *HostKey) (*Channel, error) {
-	if cause := endedCause(ctx); cause != nil {
+	if cause := timeup.Ended(ctx); cause != nil {
 		return nil, deadlineEnded(cause)
 	}
 	if tcp == nil || key == nil || key.state.signer == nil {
 		return nil, ErrConnectionFailed
 	}
 	shared := newConnection()
-	release := wakeOnEnd(ctx, tcp)
+	release := timeup.WakeOnEnd(ctx, tcp)
 	channel, err := open(ctx, tcp, shared, key)
 	release()
 	// The context's deadline may have passed by the clock before the context reports it, so the
 	// call is judged after the wake is released, whatever it returned.
-	if cause := endedCause(ctx); cause != nil {
+	if cause := timeup.Ended(ctx); cause != nil {
 		// The release can stop a wake that had not begun, and the library goes on answering the
 		// caller until the socket's deadlines are past, so they are set here as well.
-		wake(tcp)
+		//nolint:errcheck // a socket that cannot be set is failing, and its end reaches every call
+		timeup.Wake(tcp)
 		return nil, deadlineEnded(cause)
 	}
 	if err != nil {
@@ -79,7 +81,7 @@ func open(ctx context.Context, tcp *net.TCPConn, shared *connection, key *HostKe
 	case <-shared.ended:
 		return nil, ErrNoShell
 	case <-ctx.Done():
-		return nil, deadlineEnded(ctx.Err())
+		return nil, deadlineEnded(timeup.Ended(ctx))
 	}
 	library, sessionRequests, err := session.Accept()
 	if err != nil {
@@ -159,7 +161,7 @@ func (channel *Channel) awaitShell(ctx context.Context, requests <-chan *cryptos
 				return nil
 			}
 		case <-ctx.Done():
-			return deadlineEnded(ctx.Err())
+			return deadlineEnded(timeup.Ended(ctx))
 		}
 	}
 }
