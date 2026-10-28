@@ -67,9 +67,10 @@ jobs:
           set_label() { # label, wanted
             if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
           }
-          # A workflow, or a script one runs, which runs with the workflow's token.
-          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' '.github/tool-versions' || true)
-          code_files=$(git diff --name-only "$BASE...HEAD" -- . ':(exclude,icase)*.md' ':!docs/' || true)
+          # A workflow, or a script one runs, which runs with the workflow's token. git exits 0
+          # when nothing matches, so an error here fails the run rather than reading as no review.
+          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' '.github/tool-versions')
+          code_files=$(git diff --name-only "$BASE...HEAD" -- . ':(exclude,icase)*.md' ':!docs/')
           security=no; code=no
           [ -n "$touched$imports$workflows" ] && security=yes
           [ -n "$code_files" ] && code=yes
