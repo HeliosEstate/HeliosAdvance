@@ -90,32 +90,32 @@ func (state *listenerState) acceptLoop(socket *net.TCPListener) {
 		}
 		acceptedAt := time.Now()
 		pause = time.Duration(AcceptPauseFirstMilliseconds) * time.Millisecond
-		if !state.count.state.takePlace() {
+		if !state.count.take() {
 			//nolint:errcheck // nothing was written to it, so a failed close has no one to tell
 			connection.Close()
 			continue
 		}
 		state.goroutines.Go(func() {
-			defer state.count.state.givePlace()
+			defer state.count.give()
 			state.serve(connection, acceptedAt)
 		})
 	}
 }
 
-func (state *countState) takePlace() bool {
-	state.openLock.Lock()
-	defer state.openLock.Unlock()
-	if state.open >= ConnectionCap {
+func (count *ConnectionCount) take() bool {
+	count.state.openLock.Lock()
+	defer count.state.openLock.Unlock()
+	if count.state.open >= ConnectionCap {
 		return false
 	}
-	state.open++
+	count.state.open++
 	return true
 }
 
-func (state *countState) givePlace() {
-	state.openLock.Lock()
-	defer state.openLock.Unlock()
-	state.open--
+func (count *ConnectionCount) give() {
+	count.state.openLock.Lock()
+	defer count.state.openLock.Unlock()
+	count.state.open--
 }
 
 // A failure in a call ends it without a log: the local log holds only the start and its failure.

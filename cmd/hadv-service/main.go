@@ -90,15 +90,15 @@ func run(arguments []string, logOutput io.Writer) int {
 		addresses = append(addresses, urls("ssh", sshAddresses)...)
 	}
 
-	for _, started := range listeners {
-		started.Start()
+	for _, kindListener := range listeners {
+		kindListener.Start()
 	}
 	log("started", strings.Join(addresses, ","))
 
 	<-stopContext.Done()
 	var stopping sync.WaitGroup
-	for _, stopped := range listeners {
-		stopping.Go(stopped.Stop)
+	for _, kindListener := range listeners {
+		stopping.Go(kindListener.Stop)
 	}
 	stopping.Wait()
 	return 0
