@@ -16,8 +16,8 @@
 // table below and nothing else, on the Go standard library's crypto/tls; the handshake; and the
 // encrypted connection as Telnet's connection: its urgent write, which writes DM as an ordinary
 // byte, since TLS carries no urgent data, and its CloseWrite, which sends TLS's close_notify
-// before it shuts down the sending side, unless a write has failed before it. It writes nothing
-// to the local log.
+// before it shuts down the sending side, unless the encrypted connection's sending side has
+// failed before it. It writes nothing to the local log.
 //
 // It does not own negotiation, the Line or Telnet's own close, which are the telnet package's; nor
 // accepting, the cap of 100, the ceiling on a whole call or closing the connection, which the
@@ -40,10 +40,13 @@
 // file, as a hang-up; a damaged record ends them with a failure. A caller that asks to
 // renegotiate is answered by crypto/tls with a fatal unexpected_message alert, and the reads end
 // with a failure. Every other record after the handshake, a key update, a warning alert or an
-// empty record, is crypto/tls's to read, within its own bounds. No error this package returns
-// holds crypto/tls's text, which can quote what the caller sent. The two files are the sysop's,
-// not the caller's; each is read once, at most TLSFileMostBytes and one byte more. There is no
-// fuzz target here: crypto/tls parses the wire.
+// empty record, is crypto/tls's to read, within its own bounds; a reply it writes inside a read,
+// to a key update, is bounded by the deadline the telnet package sets before each read. No error
+// the handshake gives holds crypto/tls's text, which can quote what the caller sent; after the
+// handshake, the telnet package's errors wrap the connection's failure as their cause, as they do
+// for every kind of connection, and the engine writes none of them to the log. The two files are
+// the sysop's, not the caller's; each is read once, at most TLSFileMostBytes and one byte more.
+// There is no fuzz target here: crypto/tls parses the wire.
 //
 // # Oracles
 //
@@ -88,14 +91,16 @@
 // The order within each row is crypto/tls's own; the caller and crypto/tls pick from what is
 // offered. These are Go 1.27.3's defaults with its four TLS 1.2 CBC suites taken out. The engine
 // sets the versions, the TLS 1.2 suites, the key exchanges, the client certificate and session
-// tickets itself; TLS 1.3's suites cannot be set in crypto/tls, and are its own. A GODEBUG
-// setting in the engine's environment can still change what crypto/tls offers: fips140=on
-// narrows every row, and tlssha1=1 widens TLS 1.2's signature schemes. The engine sets none, and
-// the table holds with none set.
+// tickets itself; TLS 1.3's suites cannot be set in crypto/tls, and are its own. Go's own
+// settings can still change what crypto/tls offers: FIPS 140 mode, from a GODEBUG setting in the
+// engine's environment, a godebug line in go.mod or GOFIPS140 when the engine is built, narrows
+// the versions, suites and key exchanges; tlssha1=1 widens the signature schemes TLS 1.2
+// accepts, which the table leaves to crypto/tls. The engine sets none of them, and the table
+// holds with none set.
 //
 // # Lines for the package
 //
-//   - With no GODEBUG setting in its environment, the telnets package shall offer, in every
+//   - With none of Go's own settings above in force, the telnets package shall offer, in every
 //     handshake, only what the TLS table names.
 //   - The telnets package shall store, log and show nothing a caller sends in its handshake, the
 //     server name it asks for among it. [read]
@@ -134,6 +139,9 @@ var (
 	// holds a certificate block that is not a certificate or a key block that is not a key, or is
 	// longer than TLSFileMostBytes.
 	ErrTLSFileNotPEM = errors.New("telnets: the file is not a PEM certificate or key")
+	// ErrCertificateHoldsKey means the certificate file holds a private key, which only the key
+	// file's mode protects.
+	ErrCertificateHoldsKey = errors.New("telnets: the certificate file holds a private key")
 	// ErrKeyPassphrase means the key is protected by a passphrase.
 	ErrKeyPassphrase = errors.New("telnets: the key is protected by a passphrase")
 	// ErrKeyMismatch means the key does not match the certificate.
@@ -145,13 +153,9 @@ var (
 	ErrKeyReadableByOthers = errors.New("telnets: the key file can be read by its group or others")
 )
 
-// Why the call ended before Telnet took it; neither holds anything the caller sent.
-var (
-	// ErrHandshakeFailed means the handshake failed, however it failed.
-	ErrHandshakeFailed = errors.New("telnets: the TLS handshake failed")
-	// ErrDeadlineEnded means the call's ceiling or a stop came before the handshake completed.
-	ErrDeadlineEnded = errors.New("telnets: the call ended before the handshake completed")
-)
+// ErrHandshakeFailed means the handshake failed, however it failed, before Telnet took the call;
+// it holds nothing the caller sent.
+var ErrHandshakeFailed = errors.New("telnets: the TLS handshake failed")
 
 // Certificate is the certificate with its chain and its private key, read once at start. A
 // Certificate ReadCertificate did not make, or nil, fails every Accept. One Certificate is safe
@@ -163,12 +167,13 @@ type Certificate struct {
 // ReadCertificate reads the certificate file at certificatePath and the key file at keyPath once
 // each: the certificate file holds the certificate first and then its chain, as PEM CERTIFICATE
 // blocks; the key file holds its private key, as a PEM private key block with no passphrase, and
-// the first such block is the key. Blocks of other types in either file, such as the parameters
-// block some tools write before an ECDSA key, and text outside the blocks, as PEM allows, are
-// skipped: never taken as the certificate or the key, and never sent. Each file is opened once,
-// and every check after the open is made on the opened file, never on its path again. The checks
-// run in the order of the lines below, the certificate file's first, and the first that applies
-// is the result; its error wraps one of the errors above.
+// the first such block is the key. A private key block, one whose type is PRIVATE KEY or ends in
+// " PRIVATE KEY", belongs in the key file alone. Blocks of other types in either file, such as
+// the parameters block some tools write before an ECDSA key, and text outside the blocks, as PEM
+// allows, are skipped: never taken as the certificate or the key, and never sent. Each file is
+// opened once, and every check after the open is made on the opened file, never on its path
+// again. The checks run in the order of the lines below, the certificate file's first, and the
+// first that applies is the result; its error wraps one of the errors above.
 //
 //   - ReadCertificate shall check the certificate file and then the key file, in the order of
 //     these lines, and return the first refusal that applies.
@@ -185,6 +190,8 @@ type Certificate struct {
 //   - If the certificate file holds no CERTIFICATE block, or a CERTIFICATE block that does not
 //     hold an X.509 certificate, the chain's later blocks included, then ReadCertificate shall
 //     return ErrTLSFileNotPEM.
+//   - If the certificate file holds a private key block, then ReadCertificate shall return
+//     ErrCertificateHoldsKey.
 //   - If the key file holds no private key block, then ReadCertificate shall return
 //     ErrTLSFileNotPEM.
 //   - If the key is protected by a passphrase, then ReadCertificate shall return
@@ -212,23 +219,26 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 // and its CloseWrite sends close_notify and then shuts down the TCP connection's sending side. On
 // an error it returns a nil Line.
 //
-// CloseWrite first writes no bytes, which sends nothing but fails once an earlier write on the
-// encrypted connection has failed, a reply crypto/tls made on its own to a caller's key update
-// among them, since crypto/tls keeps that failure for the next write. What a write cut short
-// sent cannot be known, so no close_notify follows it. A reply that fails after that write and
-// before close_notify, while a read runs, is not caught; then the stream is already broken and
-// the caller's client reports an error, or none of the call's output was lost, so no clean end is
-// ever falsely reported. How long close_notify may wait for room is crypto/tls's own, and is not
-// pinned; a stop or the call's ceiling still ends the call at once, since the shared execution
-// path closes the connection when the call's context ends.
+// The encrypted connection's sending side has failed once any write on it has failed, a reply
+// crypto/tls wrote on its own to a caller's key update among them, or once crypto/tls has sent a
+// fatal alert. What a write cut short sent cannot be known, so no close_notify follows it: a
+// clean close would tell the caller it has the whole call when it may not. How long close_notify
+// may wait for room is crypto/tls's own, and is not pinned; a stop or the call's ceiling still
+// ends the call at once, since the shared execution path closes the connection when the call's
+// context ends.
+//
+// When the handshake fails and the context has ended, judged by the clock, the context ending
+// wins, as it does on the Line: a context whose deadline has passed has ended, with
+// context.DeadlineExceeded, whether or not it reports it yet.
 //
 //   - Accept shall write nothing to the connection but the TLS handshake until the handshake
 //     completes.
-//   - If the handshake fails, then Accept shall return ErrHandshakeFailed and a nil Line, having
-//     written no Telnet byte to the connection.
+//   - If the handshake fails while the context has not ended, then Accept shall return
+//     ErrHandshakeFailed and a nil Line, having written no Telnet byte to the connection.
 //   - If the context ends before the handshake completes, then Accept shall return
-//     ErrDeadlineEnded, which also matches the context's error through errors.Is, and a nil Line,
-//     having written no Telnet byte to the connection.
+//     telnet.ErrDeadlineEnded, wrapping context.DeadlineExceeded or context.Canceled so that
+//     errors.Is matches it and the one wrapped, and a nil Line, having written no Telnet byte to
+//     the connection.
 //   - Accept shall leave closing the connection to the shared execution path, the context ending
 //     during the handshake included.
 //   - When the handshake completes, Accept shall call telnet.Open once over the encrypted
@@ -237,17 +247,19 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 //   - When the engine sends a Synch on a Line Accept made, the caller shall receive IAC DM inside
 //     the encrypted stream, DM as an ordinary byte, and the engine shall send no TCP urgent data
 //     on the connection.
-//   - When the Line's Close shuts down the sending side, the encrypted connection shall write no
-//     bytes, then send close_notify, then shut down the TCP connection's sending side.
-//   - If that write of no bytes fails, then the encrypted connection shall send no close_notify,
-//     still shut down the TCP connection's sending side, and return an error.
+//   - When the Line's Close shuts down the sending side, the encrypted connection shall send
+//     close_notify, then shut down the TCP connection's sending side.
+//   - If the encrypted connection's sending side has failed before the Line's Close, then its
+//     CloseWrite shall send no close_notify, still shut down the TCP connection's sending side,
+//     and return an error.
 //   - If close_notify's write fails, then the encrypted connection shall still shut down the TCP
 //     connection's sending side, and return an error; every later write on it fails.
 //   - When the caller sends close_notify, the encrypted connection's reads shall end with end of
 //     file; when it sends a damaged record or asks to renegotiate, they shall end with a failure.
 //   - If connection is nil, or certificate was not made by ReadCertificate or is nil, then Accept
 //     shall return telnet.ErrConnectionFailed and a nil Line without touching the connection.
-//   - Accept shall return no error that holds crypto/tls's text. [read]
+//   - Accept shall return no error from the handshake that holds crypto/tls's text; after the
+//     handshake, it returns Open's error as Open gives it. [read]
 func Accept(
 	ctx context.Context, connection *net.TCPConn, certificate *Certificate,
 ) (*telnet.Line, error) {
