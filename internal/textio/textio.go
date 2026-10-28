@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/timeup"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
@@ -74,16 +76,10 @@ func (conn *Conn) sendString(ctx context.Context, text string) error {
 	return chars.Flush(ctx)
 }
 
-// contextEnded lets the clock judge the deadline, since a connection's deadline can wake a call
-// before the context's own timer reports that the context has ended.
 func contextEnded(ctx context.Context) error {
-	cause := ctx.Err()
+	cause := timeup.Ended(ctx)
 	if cause == nil {
-		deadline, ok := ctx.Deadline()
-		if !ok || time.Now().Before(deadline) {
-			return nil
-		}
-		cause = context.DeadlineExceeded
+		return nil
 	}
 	return fmt.Errorf("textio: the call's context ended: %w", cause)
 }

@@ -11,6 +11,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/timeup"
 )
 
 // lineState keeps a read's error until the bytes that came with it are read, since the caller's
@@ -65,20 +67,8 @@ func (line *Line) usable() bool {
 	return line != nil && line.state.connection != nil
 }
 
-// endedCause lets the clock judge the deadline, since a connection's deadline can wake a call
-// before the context's own timer reports that the context has ended.
-func endedCause(ctx context.Context) error {
-	if cause := ctx.Err(); cause != nil {
-		return cause
-	}
-	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return context.DeadlineExceeded
-	}
-	return nil
-}
-
 func contextEnded(ctx context.Context) error {
-	cause := endedCause(ctx)
+	cause := timeup.Ended(ctx)
 	if cause == nil {
 		return nil
 	}
@@ -98,16 +88,6 @@ func judge(ctx context.Context, cause error) error {
 		return os.ErrDeadlineExceeded
 	}
 	return fmt.Errorf("%w: %w", ErrConnectionFailed, cause)
-}
-
-// connectionDeadline is the earlier of the two because either ending must wake the call; none when
-// neither has one, which clears any deadline an earlier call left.
-func connectionDeadline(ctx context.Context, deadline time.Time) time.Time {
-	contextDeadline, ok := ctx.Deadline()
-	if ok && (deadline.IsZero() || contextDeadline.Before(deadline)) {
-		return contextDeadline
-	}
-	return deadline
 }
 
 // check puts the context ending before a failed write so that a stop is reported as a stop, not as
@@ -132,7 +112,7 @@ func (line *Line) writeOut(ctx context.Context, deadline time.Time) error {
 	if state.sendLength == 0 {
 		return nil
 	}
-	if err := state.connection.SetWriteDeadline(connectionDeadline(ctx, deadline)); err != nil {
+	if err := state.connection.SetWriteDeadline(timeup.Limit(ctx, deadline)); err != nil {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	release := wakeOnEnd(ctx, state.connection)
@@ -258,7 +238,7 @@ func (line *Line) recvChar(ctx context.Context, deadline time.Time) (byte, error
 // at the next step.
 func (line *Line) readMore(ctx context.Context, deadline time.Time) error {
 	state := &line.state
-	if err := state.connection.SetReadDeadline(connectionDeadline(ctx, deadline)); err != nil {
+	if err := state.connection.SetReadDeadline(timeup.Limit(ctx, deadline)); err != nil {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	release := wakeOnEnd(ctx, state.connection)
@@ -309,7 +289,7 @@ func (line *Line) close(ctx context.Context) error {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	waitEnd := time.Now().Add(ClosingWaitSeconds * time.Second)
-	if err := connection.SetReadDeadline(connectionDeadline(ctx, waitEnd)); err != nil {
+	if err := connection.SetReadDeadline(timeup.Limit(ctx, waitEnd)); err != nil {
 		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
 	}
 	release := wakeOnEnd(ctx, line.state.connection)
