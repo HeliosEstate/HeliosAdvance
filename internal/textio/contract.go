@@ -59,7 +59,7 @@
 //     [read]
 //   - The textio package shall keep no copy of a line once RecvString returns. [read]
 //   - The textio package shall write nothing to standard output or standard error. [read]
-//   - The textio package shall judge whether a call's time has run out only with timeup.Ended,
+//   - The textio package shall judge whether a call's context has run out only with timeup.Ended,
 //     keeping no copy of its rule. [read]
 //   - The textio package shall import nothing outside the Go standard library and the timeup
 //     package. [read]
