@@ -7,13 +7,11 @@ package main_test
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"net"
 	"os/exec"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -98,36 +96,13 @@ func nextLine(t *testing.T, lines chan string, limit time.Duration) string {
 	return ""
 }
 
-// portTwentyTwo keeps the rows that read port 22 apart: one that dials 22 must not meet the
-// other's program listening there.
-var portTwentyTwo sync.Mutex
-
-// freeAtStart is which of SSH's and Telnet over TLS's fixed ports were free as the test program
-// began, before any row started the engine, so one held then is the machine's own. Read once a
-// row runs, a port could be held by another row's engine that wrongly listens there, and the
-// default-port row would skip the very fault it is there to see.
-var freeAtStart = freeAddresses("127.0.0.1:22", "[::1]:22", "127.0.0.1:992", "[::1]:992")
-
-func freeAddresses(addresses ...string) map[string]bool {
-	free := map[string]bool{}
-	for _, address := range addresses {
-		held, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", address)
-		if err == nil {
-			_ = held.Close()
-			free[address] = true
-		}
-	}
-	return free
-}
-
-func TestWindowsDefaultPort(t *testing.T) {
-	t.Parallel()
-	t.Run("When it starts with no command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("with no option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) {
-			t.Parallel()
-			portTwentyTwo.Lock()
-			defer portTwentyTwo.Unlock()
+// TestWindowsDefaultPort runs alone, its rows one after the other, so that while a row runs no
+// other engine does and a fixed port held then is the machine's own. Beside other rows, an engine
+// that wrongly listened at 22 or 992 would hold it in their engines too, and the row would skip
+// the very fault it is there to see.
+func TestWindowsDefaultPort(t *testing.T) { //nolint:paralleltest // it must run alone
+	t.Run("When it starts with no command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("with no option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			// Port 23 is one port for every user of the machine: one held by anything else is
 			// a fault of the machine the test runs on, named as one.
 			for _, address := range []string{"127.0.0.1:23", "[::1]:23"} {
@@ -143,10 +118,12 @@ func TestWindowsDefaultPort(t *testing.T) {
 			// without a certificate.
 			var freeOtherKinds []string
 			for _, address := range []string{"127.0.0.1:22", "[::1]:22", "127.0.0.1:992", "[::1]:992"} {
-				if !freeAtStart[address] {
-					t.Logf("%s was busy as the test program began, so this row cannot tell whether the engine listens there", address)
+				held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
+				if err != nil {
+					t.Logf("%s is held on this machine, so this row cannot tell whether the engine listens there", address)
 					continue
 				}
+				_ = held.Close()
 				freeOtherKinds = append(freeOtherKinds, address)
 			}
 			program := startProgram(t)
@@ -162,12 +139,8 @@ func TestWindowsDefaultPort(t *testing.T) {
 			<-program.exited
 		})
 	})
-	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("with a host key and no SSH port: at 22 where it is free at both addresses; else refused, where an SSH port the system picks starts", func(t *testing.T) {
-			t.Parallel()
-			portTwentyTwo.Lock()
-			defer portTwentyTwo.Unlock()
+	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("with a host key and no SSH port: at 22 where it is free at both addresses; else refused, where an SSH port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			defaultSSHPortRow(t)
 		})
 	})
