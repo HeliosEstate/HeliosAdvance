@@ -254,9 +254,9 @@ type Conn interface {
 	// on a connection Accept made, the TCP connection's own. A connection with its own close
 	// message, as TLS has close_notify, may send it first, and then shuts down the TCP connection's
 	// sending side; how long that message may wait for room is the connection's own, and no
-	// deadline the Line sets is promised to wake it. It returns an error when the connection
-	// cannot close cleanly: a close message it fails to send or must leave unsent, or a failed
-	// shutdown.
+	// deadline the Line sets is promised to wake it. It returns an error when the shutdown fails,
+	// or a close message it tries to send fails; a close message it leaves unsent, as TLS does
+	// after a failed write, is no error.
 	CloseWrite() error
 }
 
@@ -268,8 +268,9 @@ var (
 	// ErrConnectionFailed means any other read or write failure on the connection, a reset
 	// included.
 	ErrConnectionFailed = errors.New("telnet: the connection failed")
-	// ErrDeadlineEnded means Negotiate's context ended first: the call's ceiling or a forced stop,
-	// also when it had ended before anything was written. It is returned wrapping
+	// ErrDeadlineEnded means the call's context ended first, in Negotiate or, for Telnet over TLS,
+	// in its handshake: the call's ceiling or a forced stop, also when it had ended before anything
+	// was written. It is returned wrapping
 	// context.DeadlineExceeded or context.Canceled, so errors.Is matches it and the one wrapped.
 	ErrDeadlineEnded = errors.New("telnet: the deadline ended first")
 )
@@ -566,12 +567,12 @@ const SendBufferSize = 2048
 // failure. When two happen at once, the context ending wins, then a failure, then a passed
 // deadline. Each is judged by the clock: a context whose deadline has passed has ended, with
 // context.DeadlineExceeded, whether or not it reports it yet. A context ending wakes a waiting
-// call at once, a Synch's write included, but for Close while the Conn's CloseWrite sends a close
-// message, which waits as the connection lets it. A call sets the connection's deadline itself
-// before each read or write, the earlier of its own deadline and the context's, or none when
-// neither has one; before a read it sets the write deadline to the same time, since a read may
-// write, as a TLS connection's does to answer a caller's key update. It leaves nothing of its own
-// running when it returns. Once a write fails, whatever it
+// call at once, a Synch's write included. A call sets the connection's deadline itself before
+// each read or write, the earlier of its own deadline and the context's, or none when neither has
+// one, and leaves nothing of its own running when it returns. These deadlines hold for the Telnet
+// bytes. Over TLS, a message the connection sends on its own, a reply to a caller's key update
+// during a read or close_notify during Close, is bounded by the call's ceiling and not pinned
+// finer. Once a write fails, whatever it
 // wrote, the Line writes nothing more, for the reason given on Negotiate: what a write cut short
 // sent cannot be known.
 type Line struct {
@@ -738,9 +739,6 @@ func (line *Line) Echoes() bool {
 //   - Close shall read only into a buffer of DiscardBufferSize bytes, and keep no copy of what it
 //     reads. [read]
 //   - When the caller closes, or ClosingWaitSeconds pass, Close shall return no error.
-//   - When a read in its wait fails for any other reason while the context has not ended, judged
-//     by the clock, a reset or, over TLS, a damaged record among them, Close shall stop reading
-//     and return no error.
 //   - If the context has ended when Close is called, then Close shall return the context's
 //     error, wrapped, without touching the connection.
 //   - If the context ends while Close waits, then Close shall return the context's error,
