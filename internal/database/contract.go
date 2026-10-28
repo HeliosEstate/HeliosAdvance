@@ -260,9 +260,10 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     CREATEDB, REPLICATION and BYPASSRLS among them), is a member of any role but hadv_server,
 //     owns anything in the database, or holds, itself or through PUBLIC, a right on the database
 //     or on any schema or object in it that schema.sql does not grant hadv_server, then Take
-//     shall return ErrTooPowerful. Connecting to the database, and the rights PostgreSQL gives
-//     every login by default on its own catalogs, are not counted; a right granted beyond those
-//     defaults on a catalog object, such as EXECUTE on pg_read_file, is.
+//     shall return ErrTooPowerful. Connecting to the database; USAGE on a language, on a data
+//     type and on the schema public, which PostgreSQL gives every login by default; and the
+//     rights PostgreSQL gives every login by default on its own catalogs, are not counted; a right
+//     granted beyond those defaults on a catalog object, such as EXECUTE on pg_read_file, is.
 //   - If the database answers that it is read-only, then Take shall return ErrReadOnly.
 //   - If hadv.schema_version is missing, holds no row, holds anything but one integer, or holds a
 //     version other than SchemaVersionMadeFor and the next, then Take shall return a
