@@ -21,40 +21,55 @@ type listenerState struct {
 	stopContext context.Context
 	cancel      context.CancelFunc
 	sockets     []*net.TCPListener
+	open        Open
+	count       *ConnectionCount
 	goroutines  sync.WaitGroup
+	startOnce   sync.Once
 	stopOnce    sync.Once
+}
 
+// countState is the open connections of one engine, shared by every Listener made with its
+// ConnectionCount.
+type countState struct {
 	openLock sync.Mutex
 	open     int
 }
 
-func start(kinds []Kind) (*Listener, error) {
-	if len(kinds) == 0 {
+func newCount() *ConnectionCount {
+	return &ConnectionCount{}
+}
+
+// The stop context is made here, not in start, so that a Stop before Start has something to
+// cancel.
+func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount) (*Listener, error) {
+	if len(sockets) == 0 || slices.Contains(sockets, nil) || open == nil || count == nil {
 		return nil, ErrNoListeners
-	}
-	for _, kind := range kinds {
-		if len(kind.Sockets) == 0 || slices.Contains(kind.Sockets, nil) || kind.Open == nil {
-			return nil, ErrNoListeners
-		}
 	}
 	listener := &Listener{}
 	state := &listener.state
 	state.stopContext, state.cancel = context.WithCancel(context.Background())
-	for _, kind := range kinds {
-		state.sockets = append(state.sockets, kind.Sockets...)
-	}
-	for _, kind := range kinds {
-		for _, socket := range kind.Sockets {
-			state.goroutines.Go(func() { state.acceptLoop(socket, kind.Open) })
-		}
-	}
+	state.sockets = slices.Clone(sockets)
+	state.open = open
+	state.count = count
 	return listener, nil
+}
+
+func (listener *Listener) start() {
+	if listener == nil || listener.state.cancel == nil {
+		return
+	}
+	state := &listener.state
+	state.startOnce.Do(func() {
+		for _, socket := range state.sockets {
+			state.goroutines.Go(func() { state.acceptLoop(socket) })
+		}
+	})
 }
 
 // acceptLoop's pause is its own, so one socket failing to accept never slows another. The pause
 // is capped at AcceptPauseMostMilliseconds, which is what keeps "accept again within 1 second"
 // true however long accepting keeps failing.
-func (state *listenerState) acceptLoop(socket *net.TCPListener, open Open) {
+func (state *listenerState) acceptLoop(socket *net.TCPListener) {
 	pause := time.Duration(AcceptPauseFirstMilliseconds) * time.Millisecond
 	longest := time.Duration(AcceptPauseMostMilliseconds) * time.Millisecond
 	for {
@@ -75,19 +90,19 @@ func (state *listenerState) acceptLoop(socket *net.TCPListener, open Open) {
 		}
 		acceptedAt := time.Now()
 		pause = time.Duration(AcceptPauseFirstMilliseconds) * time.Millisecond
-		if !state.takePlace() {
+		if !state.count.state.takePlace() {
 			//nolint:errcheck // nothing was written to it, so a failed close has no one to tell
 			connection.Close()
 			continue
 		}
 		state.goroutines.Go(func() {
-			defer state.givePlace()
-			state.serve(connection, open, acceptedAt)
+			defer state.count.state.givePlace()
+			state.serve(connection, acceptedAt)
 		})
 	}
 }
 
-func (state *listenerState) takePlace() bool {
+func (state *countState) takePlace() bool {
 	state.openLock.Lock()
 	defer state.openLock.Unlock()
 	if state.open >= ConnectionCap {
@@ -97,14 +112,14 @@ func (state *listenerState) takePlace() bool {
 	return true
 }
 
-func (state *listenerState) givePlace() {
+func (state *countState) givePlace() {
 	state.openLock.Lock()
 	defer state.openLock.Unlock()
 	state.open--
 }
 
 // A failure in a call ends it without a log: the local log holds only the start and its failure.
-func (state *listenerState) serve(connection *net.TCPConn, open Open, acceptedAt time.Time) {
+func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time) {
 	ceiling := acceptedAt.Add(CeilingSeconds * time.Second)
 	ctx, cancel := context.WithDeadline(state.stopContext, ceiling)
 	closed := make(chan struct{})
@@ -119,7 +134,7 @@ func (state *listenerState) serve(connection *net.TCPConn, open Open, acceptedAt
 		<-closed
 	}()
 
-	kindConnection, err := open(ctx, connection)
+	kindConnection, err := state.open(ctx, connection)
 	if err != nil || kindConnection == nil {
 		return
 	}
@@ -138,6 +153,9 @@ func (listener *Listener) stop() {
 	}
 	state := &listener.state
 	state.stopOnce.Do(func() {
+		// Using up startOnce makes a Start after Stop accept nothing, and makes a Start running now
+		// add its loops before the wait below, so the wait never races an addition.
+		state.startOnce.Do(func() {})
 		state.cancel()
 		for _, socket := range state.sockets {
 			//nolint:errcheck // the socket is closing for good; a failed close has no one to tell
