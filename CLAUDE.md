@@ -43,8 +43,8 @@ getting the task done, the rule wins and you stop.
 
 ## Roles, mechanically
 
-- A session opens issues, comments and reviews as the estate's App, `helios-aegle`, never as the
-  developer: the loop takes his account's words as his. A design session may commit specs, docs
+- A session opens issues and comments as its own App, `helios-aegle` or `helios-aetheria`, never as
+  the developer: the loop takes his account's words as his. A design session may commit specs, docs
   and CI from his account, each commit and pull request saying a Claude session wrote it; the
   loop's code never comes from his account. His approval is the review and merge he gives on
   GitHub, and only he gives it.
