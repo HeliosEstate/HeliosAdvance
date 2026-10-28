@@ -7,6 +7,7 @@ package main_test
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -101,6 +102,24 @@ func nextLine(t *testing.T, lines chan string, limit time.Duration) string {
 // other's program listening there.
 var portTwentyTwo sync.Mutex
 
+// freeAtStart is which of SSH's and Telnet over TLS's fixed ports were free as the test program
+// began, before any row started the engine, so one held then is the machine's own. Read once a
+// row runs, a port could be held by another row's engine that wrongly listens there, and the
+// default-port row would skip the very fault it is there to see.
+var freeAtStart = freeAddresses("127.0.0.1:22", "[::1]:22", "127.0.0.1:992", "[::1]:992")
+
+func freeAddresses(addresses ...string) map[string]bool {
+	free := map[string]bool{}
+	for _, address := range addresses {
+		held, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", address)
+		if err == nil {
+			_ = held.Close()
+			free[address] = true
+		}
+	}
+	return free
+}
+
 func TestWindowsDefaultPort(t *testing.T) {
 	t.Parallel()
 	t.Run("When it starts with no command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) {
@@ -124,10 +143,11 @@ func TestWindowsDefaultPort(t *testing.T) {
 			// without a certificate.
 			var freeOtherKinds []string
 			for _, address := range []string{"127.0.0.1:22", "[::1]:22", "127.0.0.1:992", "[::1]:992"} {
-				if held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address); err == nil {
-					_ = held.Close()
-					freeOtherKinds = append(freeOtherKinds, address)
+				if !freeAtStart[address] {
+					t.Logf("%s was busy as the test program began, so this row cannot tell whether the engine listens there", address)
+					continue
 				}
+				freeOtherKinds = append(freeOtherKinds, address)
 			}
 			program := startProgram(t)
 			addresses := program.listening(t)
