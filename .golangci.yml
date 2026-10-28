@@ -234,14 +234,19 @@ linters:
       - path: tools/
         linters: [forbidigo, gosec]
         text: fmt\.Print|os\.Std(out|err)|G204|G703
-      # The program hands its standard output to the slog logger it writes the local log through,
-      # unless the command line names a log file (Part 6); standard error until Part 6's build.
+      # The program hands its standard error to the slog logger it writes the local log through.
       - path: cmd/hadv-service/main\.go
         linters: [forbidigo]
-        text: os\.Std(out|err)
-      # systemd names its ready socket only in the environment, NOTIFY_SOCKET (sd_notify); it is
-      # the only variable the engine reads (Part 6's page, its line on NOTIFY_SOCKET).
-      - path: internal/servicemanager/
+        text: os\.Stderr
+      # From Part 6, the local log goes to standard output unless the command line names a log
+      # file; the standard error exception above goes once Part 6's build has moved the log.
+      - path: cmd/hadv-service/main\.go
+        linters: [forbidigo]
+        text: os\.Stdout
+      # systemd names its ready socket only in the environment, NOTIFY_SOCKET (sd_notify), read in
+      # the Linux ready message's one file; it is the only variable the engine reads (Part 6's
+      # page, its line on NOTIFY_SOCKET).
+      - path: internal/servicemanager/notify_linux\.go
         linters: [forbidigo]
         text: os\.LookupEnv
       # A test's child process reports to the test through its standard output; the console

@@ -39,11 +39,14 @@
 // # What it needs from its callers
 //
 // StartedByWindowsServiceManager asked first, before anything that can fail, and when it says
-// yes, RunWindowsService called next, once, so that even a refused start reaches the service
-// manager as stopped with its code rather than as a service that never answered. A Run that
-// returns 0 or a positive code and never ends the process itself, since the service manager
-// reports a process that ends before the service reports stopped as ended unexpectedly. Ready, of
-// either kind, called once the engine is ready; later calls are harmless.
+// yes, or cannot say, RunWindowsService called next, once, so that even a refused start reaches
+// the service manager as stopped with its code rather than as a service that never answered;
+// after ErrStartedHowUnknown, ErrServiceManagerConnect from it means no service manager started
+// the engine. A Run that returns 0 or a positive code, and that has finished all its work, its
+// log file written and closed among it, before it returns: once the service is reported stopped,
+// Windows may end the process at any moment. A Run that never ends the process itself, since the
+// service manager reports a process that ends before the service reports stopped as ended
+// unexpectedly. Ready, of either kind, called once the engine is ready; later calls are harmless.
 //
 // # Lines for the package
 //
@@ -69,8 +72,8 @@ var (
 	// ErrStartedHowUnknown means Windows could not say whether its service manager started this
 	// process.
 	ErrStartedHowUnknown = errors.New("servicemanager: cannot tell whether Windows' service manager started the engine")
-	// ErrServiceManagerConnect means the engine could not connect to Windows' service manager,
-	// or, on Linux, that there is none.
+	// ErrServiceManagerConnect means the engine could not connect to Windows' service manager or
+	// tell it the service's state, or, on Linux, that there is none.
 	ErrServiceManagerConnect = errors.New("servicemanager: cannot connect to Windows' service manager")
 )
 
@@ -90,7 +93,7 @@ type Run func(stop context.Context, ready Ready) int
 //   - When this process was started any other way, StartedByWindowsServiceManager shall return
 //     false.
 //   - If Windows cannot say, then StartedByWindowsServiceManager shall return false with
-//     ErrStartedHowUnknown.
+//     ErrStartedHowUnknown. [read]
 //   - On Linux, StartedByWindowsServiceManager shall return false and no error.
 func StartedByWindowsServiceManager() (bool, error) {
 	return startedByWindowsServiceManager()
@@ -105,8 +108,8 @@ func StartedByWindowsServiceManager() (bool, error) {
 //     then as running, accepting stop and shutdown.
 //   - RunWindowsService shall accept no request from the service manager but stop, shutdown and
 //     its status queries.
-//   - When the service manager sends stop or shutdown, RunWindowsService shall report the service
-//     as stop pending and end stop.
+//   - When the service manager sends stop or shutdown, RunWindowsService shall end stop.
+//   - A call to ready after run has returned shall do nothing.
 //   - When run returns 0, RunWindowsService shall report the service stopped with no error, and
 //     return 0.
 //   - When run returns any other code, RunWindowsService shall report the service stopped with
@@ -114,7 +117,11 @@ func StartedByWindowsServiceManager() (bool, error) {
 //     service-specific exit code, and return run's code.
 //   - If it cannot connect to Windows' service manager, then RunWindowsService shall return
 //     ErrServiceManagerConnect without calling run.
+//   - If it cannot tell Windows' service manager the service's state while run runs, then
+//     RunWindowsService shall end stop, and return ErrServiceManagerConnect only once run has
+//     returned. [read]
 //   - RunWindowsService shall call run once at most.
+//   - On Linux, RunWindowsService shall return ErrServiceManagerConnect without calling run.
 func RunWindowsService(run Run) (int, error) {
 	return runWindowsService(run)
 }
