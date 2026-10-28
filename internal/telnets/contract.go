@@ -40,8 +40,8 @@
 // file, as a hang-up; a damaged record ends them with a failure. A caller that asks to
 // renegotiate is answered by crypto/tls with a fatal unexpected_message alert, and the reads end
 // with a failure. Every other record after the handshake, a key update, a warning alert or an
-// empty record, is crypto/tls's to read, within its own bounds; a reply it writes inside a read,
-// to a key update, is bounded by the deadline the telnet package sets before each read. No error
+// empty record, is crypto/tls's to read, within its own bounds; a message it sends on its own, a
+// reply to a key update among them, is bounded by the call's ceiling and not pinned finer. No error
 // the handshake gives holds crypto/tls's text, which can quote what the caller sent; after the
 // handshake, the telnet package's errors wrap the connection's failure as their cause, as they do
 // for every kind of connection, and the engine writes none of them to the log. The two files are
@@ -92,15 +92,12 @@
 // offered. These are Go 1.27.3's defaults with its four TLS 1.2 CBC suites taken out. The engine
 // sets the versions, the TLS 1.2 suites, the key exchanges, the client certificate and session
 // tickets itself; TLS 1.3's suites cannot be set in crypto/tls, and are its own. Go's own
-// settings can still change what crypto/tls offers: FIPS 140 mode, from a GODEBUG setting in the
-// engine's environment, a godebug line in go.mod or GOFIPS140 when the engine is built, narrows
-// the versions, suites and key exchanges; tlssha1=1 widens the signature schemes TLS 1.2
-// accepts, which the table leaves to crypto/tls. The engine sets none of them, and the table
-// holds with none set.
+// settings, a FIPS 140 mode or a GODEBUG setting, from the build or the environment, can change
+// what crypto/tls offers; the engine sets none, and the table holds with none set.
 //
 // # Lines for the package
 //
-//   - With none of Go's own settings above in force, the telnets package shall offer, in every
+//   - With none of Go's own settings in force, the telnets package shall offer, in every
 //     handshake, only what the TLS table names.
 //   - The telnets package shall store, log and show nothing a caller sends in its handshake, the
 //     server name it asks for among it. [read]
@@ -222,23 +219,22 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 // The encrypted connection's sending side has failed once any write on it has failed, a reply
 // crypto/tls wrote on its own to a caller's key update among them, or once crypto/tls has sent a
 // fatal alert. What a write cut short sent cannot be known, so no close_notify follows it: a
-// clean close would tell the caller it has the whole call when it may not. How long close_notify
-// may wait for room is crypto/tls's own, and is not pinned; a stop or the call's ceiling still
-// ends the call at once, since the shared execution path closes the connection when the call's
-// context ends.
+// clean close would tell the caller it has the whole call when it may not; a close_notify left
+// unsent so is still a clean shutdown, and no error. How long close_notify may wait for room is
+// crypto/tls's own, bounded by the call's ceiling and not pinned finer; a stop or the ceiling
+// still ends the call at once, since the shared execution path closes the connection when the
+// call's context ends.
 //
-// When the handshake fails and the context has ended, judged by the clock, the context ending
-// wins, as it does on the Line: a context whose deadline has passed has ended, with
+// A context ending during the handshake makes it fail, so a failed handshake is judged when it
+// fails, by the clock, as on the Line: a context whose deadline has passed has ended, with
 // context.DeadlineExceeded, whether or not it reports it yet.
 //
 //   - Accept shall write nothing to the connection but the TLS handshake until the handshake
 //     completes.
-//   - If the handshake fails while the context has not ended, then Accept shall return
-//     ErrHandshakeFailed and a nil Line, having written no Telnet byte to the connection.
-//   - If the context ends before the handshake completes, then Accept shall return
-//     telnet.ErrDeadlineEnded, wrapping context.DeadlineExceeded or context.Canceled so that
-//     errors.Is matches it and the one wrapped, and a nil Line, having written no Telnet byte to
-//     the connection.
+//   - If the handshake fails, then Accept shall return a nil Line, having written no Telnet byte
+//     to the connection, with telnet.ErrDeadlineEnded, wrapping context.DeadlineExceeded or
+//     context.Canceled so that errors.Is matches it and the one wrapped, when the context has
+//     ended by then, and otherwise with ErrHandshakeFailed.
 //   - Accept shall leave closing the connection to the shared execution path, the context ending
 //     during the handshake included.
 //   - When the handshake completes, Accept shall call telnet.Open once over the encrypted
@@ -251,7 +247,7 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 //     close_notify, then shut down the TCP connection's sending side.
 //   - If the encrypted connection's sending side has failed before the Line's Close, then its
 //     CloseWrite shall send no close_notify, still shut down the TCP connection's sending side,
-//     and return an error.
+//     and return no error unless that shutdown fails.
 //   - If close_notify's write fails, then the encrypted connection shall still shut down the TCP
 //     connection's sending side, and return an error; every later write on it fails.
 //   - When the caller sends close_notify, the encrypted connection's reads shall end with end of
