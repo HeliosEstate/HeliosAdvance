@@ -252,10 +252,10 @@ type Conn interface {
 	SetWriteDeadline(deadline time.Time) error
 	// CloseWrite shuts down the sending side of the TCP connection beneath, for the Line's Close:
 	// on a connection Accept made, the TCP connection's own. A connection with its own close
-	// message, as TLS has close_notify, sends it first and then shuts down the TCP connection's
-	// sending side, but sends no close message once a write on it has failed, since what a write
-	// cut short sent cannot be known. Like Write, a passed write deadline wakes it, a deadline set
-	// while it waits included.
+	// message, as TLS has close_notify, may send it first, and then shuts down the TCP connection's
+	// sending side; how long that message may wait for room is the connection's own, and no
+	// deadline the Line sets is promised to wake it. It returns an error when the close message or
+	// the shutdown fails.
 	CloseWrite() error
 }
 
@@ -720,7 +720,10 @@ func (line *Line) Echoes() bool {
 // sends until the caller closes or ClosingWaitSeconds pass, no later than the context's deadline.
 // It writes nothing itself, what is still queued included, and leaves closing the connection to
 // the shared execution path. A close with the caller's bytes still unread may reach the caller as
-// a reset rather than an orderly end of stream; either is the close these lines ask for.
+// a reset rather than an orderly end of stream; either is the close these lines ask for. Shutting
+// down the sending side takes as long as the Conn's CloseWrite: no wait on a connection Accept
+// made, and over TLS as long as the connection lets its close_notify wait, which these lines do
+// not pin.
 //
 //   - Close shall shut down the sending side of the Line's connection with the Conn's CloseWrite,
 //     then read and discard until the caller closes or ClosingWaitSeconds pass, no later than the
@@ -735,8 +738,8 @@ func (line *Line) Echoes() bool {
 //     among them, Close shall stop reading and return no error.
 //   - If the context has ended when Close is called, then Close shall return the context's
 //     error, wrapped, without touching the connection.
-//   - If the context ends while Close shuts down the sending side or waits, then Close shall
-//     return the context's error, wrapped, at once.
+//   - If the context ends while Close waits, then Close shall return the context's error,
+//     wrapped.
 //   - If shutting down the sending side or setting the read deadline fails, then Close shall
 //     return the context's error, wrapped, when the context has ended, and otherwise
 //     ErrConnectionFailed, at once.
