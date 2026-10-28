@@ -274,9 +274,9 @@ func startChild(t *testing.T) childListener {
 	}
 }
 
-// holdListener is the child's part: it starts the Listener on two loopback sockets, names its
-// limits, its free descriptors and its addresses on standard output, and holds the Listener
-// until standard input ends.
+// holdListener is the child's part: it makes and starts the Listener on two loopback sockets,
+// names its limits, its free descriptors and its addresses on standard output, and holds the
+// Listener until standard input ends.
 func holdListener(t *testing.T) {
 	t.Helper()
 	limits, err := os.ReadFile("/proc/self/limits")
@@ -305,7 +305,7 @@ func holdListener(t *testing.T) {
 		sockets = append(sockets, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.Start([]listener.Kind{{Sockets: sockets, Open: openTelnet}})
+	engine, err := listener.New(sockets, openTelnet, listener.NewCount())
 	if err != nil {
 		for _, socket := range sockets {
 			_ = socket.Close()
@@ -314,6 +314,7 @@ func holdListener(t *testing.T) {
 		return
 	}
 	defer engine.Stop()
+	engine.Start()
 	// The limit caps a descriptor's number, not how many are open, so only those numbered below
 	// it take a place: a runner can hand the child higher ones, as GitHub's Linux runners do.
 	// The listing holds the descriptor it was read through, which is closed again after.

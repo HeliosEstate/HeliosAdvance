@@ -174,9 +174,9 @@ done < <(git ls-files -z '*_test.go')
 pointers=$(git ls-files -z '*.go' | grep -zv '_test\.go$' | xargs -0 -r grep -niE '//.*[^[:alpha:]](line|step) [0-9]+' || true)
 [ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
 
-# 4d. GitHub reads .github/ from the default branch, main, so a merge into main must bring
-# development's copy with it. Keyed on the base: a PR to development is never blocked by main
-# being stale; a PR to main is blocked until .github/ is in step.
+# 4d. A merge into main brings development's .github/ with it: main takes pull requests from
+# development alone, so the two stay in step. Keyed on the base: a PR to development is never
+# blocked by main being stale; a PR to main is blocked until .github/ is in step.
 if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
   git diff --quiet origin/development HEAD -- .github || { git diff --stat origin/development HEAD -- .github; fail ".github/ differs from development; main must carry development's copy"; }
 fi
@@ -268,7 +268,12 @@ if [ -n "$pkgs" ]; then
     # cmd/ is left out: its tests run the built program as its own process, which gremlins'
     # coverage cannot see, so every mutant there reads "Not covered". The rows and QA's broken
     # copies prove it instead (the developer, 2026-10-22).
-    mutants=$(GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^cmd/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
+    # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
+    # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
+    # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
+    # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
+    # The run stays at the repository root (.): a package path matches no diff entry (its 278).
+    mutants=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^cmd/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
     echo "$mutants"
     grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$mutants" || fail "mutation testing: no result lines, so there is nothing to report"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

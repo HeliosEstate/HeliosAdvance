@@ -66,8 +66,9 @@ const (
 // the four calls of the developer's design, with SendString and RecvString built on SendChar and
 // RecvChar. A textio.Conn over any kind of connection is one. Results are the standard library's
 // own, the same at every layer: os.ErrDeadlineExceeded when the deadline given passed first,
-// io.EOF when the caller closed its side, the context's error, wrapped, when the context ended
-// first, any other error when the connection failed.
+// io.EOF when the caller closed its side or, for a kind of connection that does not tell them
+// apart, as SSH does not, the connection ended however, the context's error, wrapped, when the
+// context ended first, any other error when the connection failed.
 type Connection interface {
 	// SendChar queues one byte for the caller; it goes out with the next SendString, when
 	// RecvChar or RecvString waits for the caller or needs room for the connection's own replies,
@@ -93,7 +94,8 @@ const (
 )
 
 var (
-	// ErrCallerClosed means the caller closed its side before the call ended.
+	// ErrCallerClosed means a call returned io.EOF before the call ended: the caller closed its
+	// side or, over a kind of connection that does not tell them apart, the connection ended.
 	ErrCallerClosed = errors.New("session: the caller closed the connection")
 	// ErrConnectionFailed means any other failure of the Connection.
 	ErrConnectionFailed = errors.New("session: the connection failed")

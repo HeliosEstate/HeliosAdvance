@@ -138,6 +138,7 @@ func startKind(t *testing.T, sockets int, open listener.Open) []string {
 }
 
 // startListener is startKind, also returning the Listener, for the rows that stop it themselves.
+// Each Listener it makes has a count of its own.
 func startListener(t *testing.T, sockets int, open listener.Open) (*listener.Listener, []string) {
 	t.Helper()
 	var listening []*net.TCPListener
@@ -154,14 +155,15 @@ func startListener(t *testing.T, sockets int, open listener.Open) (*listener.Lis
 		listening = append(listening, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.Start([]listener.Kind{{Sockets: listening, Open: open}})
+	engine, err := listener.New(listening, open, listener.NewCount())
 	if err != nil {
 		for _, socket := range listening {
 			_ = socket.Close()
 		}
-		t.Fatalf("Start refused: %v", err)
+		t.Fatalf("New refused: %v", err)
 	}
 	t.Cleanup(engine.Stop)
+	engine.Start()
 	return engine, addresses
 }
 

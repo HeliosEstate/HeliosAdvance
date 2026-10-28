@@ -21,7 +21,7 @@ What the engine sends at accept, and which option requests it takes or refuses, 
 lines.
 
 - When it starts with no command-line option, the engine shall listen for Telnet callers on port
-  23, and for no SSH caller.
+  23, and for no SSH or Telnet over TLS caller.
 - The engine shall send at most one reply to each option request.
 - If, during negotiation, the caller sends anything that is not an option request, AYT, AO or IP,
   then the engine shall discard it without reply.
@@ -63,10 +63,10 @@ What the engine writes after negotiation, and when it gives up on a call, are Pa
 #### The local log
 
 - When it has started listening, the engine shall write one `started` line to the local log
-  naming the kind, address and port of every listener.
+  naming the kind, address and port of everywhere it listens.
 - If a command-line option is malformed, or the engine fails to listen at both addresses for
-  Telnet or, when SSH is on, for SSH, then the engine shall write one `start_failed` line to the
-  local log saying why, and exit with a non-zero code.
+  Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one
+  `start_failed` line to the local log saying why, and exit with a non-zero code.
 - The engine shall write no line to the local log other than `started` and `start_failed`.
 - The engine shall write each line of the local log as one key and its value, `key=value`.
 - The engine shall not write anything a caller sent to the local log.
@@ -126,7 +126,7 @@ that only a Telnet caller meets to a Telnet caller.
 #### Turning SSH on
 
 - When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH
-  callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listeners.
+  callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.
 - When the sysop passes an SSH port on the command line as well, the engine shall listen for SSH
   callers on that port in place of port 22.
 - If the host key file is missing, unreadable, not in OpenSSH's format, protected by a passphrase
@@ -166,8 +166,8 @@ that only a Telnet caller meets to a Telnet caller.
 - The engine shall accept `pty-req` and `shell` on the session channel until the first `shell`,
   and refuse every other channel request and every global request.
 - The engine shall discard everything an SSH caller sends as extended data.
-- If an SSH caller sends end of file or closes the channel before the name ends, then the engine
-  shall close the connection, writing nothing more but the channel close SSH requires in reply.
+- If an SSH caller closes the channel before the name ends, then the engine shall close the
+  connection, writing nothing more but the channel close SSH requires in reply.
 
 #### Nothing kept
 
@@ -217,3 +217,16 @@ standard requires. It keeps nothing a caller's terminal reports.
 
 - The engine shall not store, log or show anything a caller sends inside a subnegotiation.
 - The engine shall write the same to a caller, whatever it sends inside a subnegotiation.
+
+### Part 7: End of file before the shell
+
+An SSH caller that sends end of file before it asks for a shell is still answered when it asks:
+what it sent before the end of file is read in order, and when the name has not ended by then, the
+call ends at the end of file. Part 7 changes one of Part 3's lines, on the connection.
+
+#### End of file
+
+- If an SSH caller's data ends, by end of file, before the name ends, then, once the caller has
+  asked for a shell and the greeting and name prompt are written, the engine shall close the
+  connection when it reaches the end of file, writing nothing more but the channel close SSH
+  requires in reply.

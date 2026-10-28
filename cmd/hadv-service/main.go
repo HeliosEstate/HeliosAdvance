@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Command hadv-service is the Helios Advance engine as a sysop runs it: it opens the loopback
-// listening sockets, hands them to the Listener, and closes everything when told to stop. It
-// exists so the sysop has one program to start, and one local log, standard error, to read.
+// listening sockets, makes each kind's Listener from that kind's sockets, and closes everything
+// when told to stop. It exists so the sysop has one program to start, and one local log, standard
+// error, to read.
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
@@ -26,9 +28,6 @@ import (
 )
 
 const (
-	defaultPort    = "23"
-	defaultSSHPort = "22"
-	// The addresses are the only ones the engine listens on, IPv4 first.
 	ipv4Address = "127.0.0.1"
 	ipv6Address = "::1"
 
@@ -71,38 +70,37 @@ func run(arguments []string, logOutput io.Writer) int {
 	stopContext, release := signal.NotifyContext(context.Background(), stopSignals()...)
 	defer release()
 
-	telnetSockets, telnetAddresses, err := listen(stopContext, options.telnetPort)
+	count := listener.NewCount()
+	telnetListener, telnetAddresses, err := newTelnetListener(stopContext, options.telnetPort, count)
 	if err != nil {
 		log("start_failed", "telnet listeners: "+err.Error())
 		return exitFailed
 	}
-	kinds := []listener.Kind{{Sockets: telnetSockets, Open: openTelnet}}
-	listeners := urls("telnet", telnetAddresses)
+	listeners := []*listener.Listener{telnetListener}
+	addresses := urls("telnet", telnetAddresses)
 
 	if hostKey != nil {
-		sshSockets, sshAddresses, err := listen(stopContext, options.sshPort)
+		sshListener, sshAddresses, err := newSSHListener(stopContext, options.sshPort, hostKey, count)
 		if err != nil {
-			err = errors.Join(fmt.Errorf("ssh listeners: %w", err), closeAll(telnetSockets))
-			log("start_failed", err.Error())
+			telnetListener.Stop()
+			log("start_failed", "ssh listeners: "+err.Error())
 			return exitFailed
 		}
-		kinds = append(kinds, listener.Kind{Sockets: sshSockets, Open: sshOpener(hostKey)})
-		listeners = append(listeners, urls("ssh", sshAddresses)...)
+		listeners = append(listeners, sshListener)
+		addresses = append(addresses, urls("ssh", sshAddresses)...)
 	}
 
-	engine, err := listener.Start(kinds)
-	if err != nil {
-		for _, kind := range kinds {
-			err = errors.Join(err, closeAll(kind.Sockets))
-		}
-		log("start_failed", err.Error())
-		return exitFailed
+	for _, kindListener := range listeners {
+		kindListener.Start()
 	}
-
-	log("started", strings.Join(listeners, ","))
+	log("started", strings.Join(addresses, ","))
 
 	<-stopContext.Done()
-	engine.Stop()
+	var stopping sync.WaitGroup
+	for _, kindListener := range listeners {
+		stopping.Go(kindListener.Stop)
+	}
+	stopping.Wait()
 	return 0
 }
 
@@ -195,25 +193,21 @@ func stopSignals() []os.Signal {
 // listen opens each loopback address on its own network. One address failing is not a failure
 // while the other opens; the addresses are taken here because the Listener owns the sockets
 // once it has them.
-func listen(ctx context.Context, port string) ([]*net.TCPListener, []string, error) {
-	targets := []struct{ network, address string }{
-		{"tcp4", ipv4Address},
-		{"tcp6", ipv6Address},
-	}
+func listen(ctx context.Context, targets []target, port string) ([]*net.TCPListener, []string, error) {
 	var sockets []*net.TCPListener
 	var addresses []string
 	var failures []error
-	for _, target := range targets {
-		socket, err := (&net.ListenConfig{}).Listen(ctx, target.network,
-			net.JoinHostPort(target.address, port))
+	for _, endpoint := range targets {
+		socket, err := (&net.ListenConfig{}).Listen(ctx, endpoint.network,
+			net.JoinHostPort(endpoint.address, port))
 		if err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", target.address, err))
+			failures = append(failures, fmt.Errorf("%s: %w", endpoint.address, err))
 			continue
 		}
 		tcpSocket, ok := socket.(*net.TCPListener)
 		if !ok {
 			failures = append(failures, errors.Join(
-				fmt.Errorf("%s: not a TCP listener", target.address), socket.Close()))
+				fmt.Errorf("%s: not a TCP listener", endpoint.address), socket.Close()))
 			continue
 		}
 		sockets = append(sockets, tcpSocket)
@@ -232,3 +226,7 @@ func closeAll(sockets []*net.TCPListener) error {
 	}
 	return errors.Join(failures...)
 }
+
+// target is a kind's address with the network it must be opened on, since the address alone does
+// not say IPv4 or IPv6 to net.Listen.
+type target struct{ network, address string }

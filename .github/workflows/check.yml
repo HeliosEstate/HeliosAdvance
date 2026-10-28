@@ -232,17 +232,18 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      # main holds releases and what GitHub reads from the default branch, nothing else: a
-      # pull request into it comes from development, a release or hotfix branch, or a
-      # github/* branch carrying .github/ into step. A stranger's PR defaults to main and
-      # is refused here, not merged by accident.
+      # main holds releases, nothing else: a pull request into it comes from this repository's
+      # development alone, the branch only reviewed pull requests reach (the developer,
+      # 2026-10-28, HeliosDesign #219). check.yml runs on no change of base, so a pull request
+      # pointed at main after its checks is stopped by main-from-development, which main's
+      # ruleset requires, and which also compares the name with its case.
       # The branch name is a stranger's text, so it reaches the shell as data in the environment,
       # never inside the script (the codebase review, 2026-10-24).
-      - if: github.base_ref == 'main' && !(github.head_ref == 'development' || startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/') || startsWith(github.head_ref, 'github/'))
+      - if: github.base_ref == 'main' && !(github.head_ref == 'development' && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          echo "::error::a pull request into main comes from development, release/*, hotfix/* or github/*, not $HEAD_REF"
+          echo "::error::a pull request into main comes from this repository's development alone, not $HEAD_REF"
           exit 1
       - run: |
           test "${{ needs.changes.result }}" = success

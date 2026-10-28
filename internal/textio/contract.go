@@ -41,7 +41,9 @@
 //
 //	Result                       Means
 //	os.ErrDeadlineExceeded       the deadline the call was given passed first
-//	io.EOF                       the caller closed its side
+//	io.EOF                       the caller closed its side or, for a kind of
+//	                             connection that does not tell them apart, as
+//	                             SSH does not, the connection ended however
 //	the context's error,         the context ended first: the call's ceiling
 //	wrapped                      (context.DeadlineExceeded) or a stop (context.Canceled)
 //	any other error              the connection failed; RecvString's ErrMostOutOfRange
@@ -57,7 +59,10 @@
 //     [read]
 //   - The textio package shall keep no copy of a line once RecvString returns. [read]
 //   - The textio package shall write nothing to standard output or standard error. [read]
-//   - The textio package shall import nothing outside the Go standard library. [read]
+//   - The textio package shall judge whether a call's context has run out only with timeup.Ended,
+//     keeping no copy of its rule. [read]
+//   - The textio package shall import nothing outside the Go standard library and the timeup
+//     package. [read]
 package textio
 
 import (
