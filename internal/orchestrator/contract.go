@@ -31,11 +31,12 @@
 // # What it needs from its callers
 //
 // One Orchestrator per hold of the server's lease, made from services already made and not yet
-// started, each handed to one New only and not started or stopped by the caller after. A
-// Service's Start returns once it is serving; its Stop returns when nothing of it is running,
-// works before Start as after it, and is safe to call on several services at once. A stopped
-// service is not started again: when the program takes its server's lease again, it makes new
-// services and a new Orchestrator.
+// started, none of them a nil pointer, each handed to one New only and not started or stopped by
+// the caller after. Its Start and Stop called from one goroutine: Stop after Start, or in its
+// place. A Service's Start returns once it is serving; its Stop returns when nothing of it is
+// running, works before Start as after it, and is safe to call on several services at once. A
+// stopped service is not started again: when the program takes its server's lease again, it
+// makes new services and a new Orchestrator.
 //
 // # Lines for the package
 //
@@ -64,21 +65,22 @@ type Orchestrator struct {
 	state orchestratorState
 }
 
-// New holds the services the program made, in the order given, and starts none of them. Given
-// none, it holds none, and Start and Stop return at once. It refuses a nil Service before it
-// holds any, and returns a nil Orchestrator with ErrNoService; the services stay the caller's to
-// stop.
+// New holds the services the program made, and starts none of them. Given none, it holds none,
+// and Start and Stop return at once. When it refuses, it returns a nil Orchestrator, and the
+// services stay the caller's to stop.
+//
+//   - New shall call nothing of any service it is given.
+//   - If any Service it is given is nil, then New shall return ErrNoService and hold none of
+//     them.
 func New(services []Service) (*Orchestrator, error) {
 	return newOrchestrator(services)
 }
 
 // Start starts every service this Orchestrator holds and returns once each has started: the
-// engine is then ready, and the program says so to the service manager. Start and Stop are safe
-// to call at once, from different goroutines.
+// engine is then ready, and the program says so to the service manager.
 //
 //   - Start shall call each service's Start once, and return only once every one has returned.
-//   - Start after Stop shall start nothing.
-//   - When Stop is called while Start runs, Start shall start no service once Stop has begun.
+//   - A second Start, or a Start after Stop, shall start nothing.
 func (orchestrator *Orchestrator) Start() {
 	orchestrator.start()
 }
@@ -88,7 +90,7 @@ func (orchestrator *Orchestrator) Start() {
 //
 //   - Stop shall call each service's Stop once, none waiting for another's to return.
 //   - Stop shall return only once every service's Stop has returned.
-//   - A second Stop shall do nothing, and return once the first has.
+//   - A second Stop shall do nothing.
 func (orchestrator *Orchestrator) Stop() {
 	orchestrator.stop()
 }

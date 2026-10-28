@@ -120,10 +120,19 @@ linters:
         # It holds the engine's services and calls only their Start and Stop, naming no kind of
         # service (docs/architecture.md, Part 6).
         orchestrator:
-          files: ["**/internal/orchestrator/**"]
+          files: ["**/internal/orchestrator/**", "!$test"]
           list-mode: strict
           allow:
             - $gostd
+        # The Orchestrator's tests hold real services, Telnet's Listeners on real sockets, never a
+        # fake, as the Listener's own tests do; its code still names no kind of service.
+        orchestrator-tests:
+          files: ["**/internal/orchestrator/**_test.go"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/listener$
+            - github.com/heliosestate/heliosadvance/internal/telnet$
             # Its own path, so its black-box tests in package orchestrator_test can import it.
             - github.com/heliosestate/heliosadvance/internal/orchestrator$
         ssh:
