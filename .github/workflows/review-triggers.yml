@@ -1,9 +1,14 @@
 # Labels a pull request with the reviews it needs before the developer signs off, from what a
-# script can read (developer, 2026-10-05). needs-security-review: it touches a package in
-# security-paths, or adds an import of crypto, os/exec, net, unsafe, syscall or golang.org/x/sys
-# outside a test. needs-code-review: it touches a security path; since 2026-10-16 every such
-# pull request gets the code review, not only one whose issue has a [read] line, so a review
-# probes it before the developer does. A review label comes off when its trigger no longer holds.
+# script can read (developer, 2026-10-05). needs-code-review: it changes anything but
+# documentation (a Markdown file, or a file under docs/), since a code review probes any code,
+# gates and workflows included (the developer, 2026-10-28). needs-security-review: it touches a
+# package in security-paths, a workflow under .github/workflows/ or a script one runs (under
+# .github/, or the root check.sh), which run with the repository's tokens, or adds an import of
+# crypto, os/exec, net, unsafe, syscall or golang.org/x/sys outside a test. The labels only say
+# which reviews a head needs, and the run's summary says it for that head: the loop can take a
+# label off, so nothing relies on one. Whether the reviews were done for the head is the
+# reviewing session's record, which `gh signoff` itself reads (the developer, 2026-10-28,
+# HeliosDesign #203).
 # The run's summary also lists each line the pull request adds that silences a linter (nolint or
 # #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision for the
 # developer by name (developer, 2026-10-07: "fail loud"); a line from a QA commit, which he read
@@ -42,18 +47,23 @@ jobs:
           BASE: origin/${{ github.base_ref }}
           ACTION: ${{ github.event.action }}
           SENDER: ${{ github.event.sender.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # A loop's build waits for QA to replay its broken copies against the built code before
           # the developer reviews it (agreed with him, 2026-10-16). The label goes on when a loop
           # opens, reopens or pushes to the pull request; QA takes it off, and the signoff refuses
           # while it is on. A push by anyone else, a QA commit included, leaves it as it is.
-          loops=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' loop-identities | grep . || true)
+          # Both lists are read from the base, never the pull request's copy, so a pull request
+          # cannot change its own labels; a list missing there fails the run.
+          loop_list=$(git show "$BASE:loop-identities")
+          path_list=$(git show "$BASE:security-paths")
+          loops=$(printf '%s\n' "$loop_list" | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep . || true)
           if [ "$ACTION" != edited ] && grep -qxF -- "$SENDER" <<< "$loops"; then
             gh pr edit "$PR" --add-label needs-qa-replay
             echo "needs-qa-replay: on, a loop's build ($SENDER)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          mapfile -t paths < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' security-paths | grep . || true)
+          mapfile -t paths < <(printf '%s\n' "$path_list" | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep . || true)
           touched=""
           [ "${#paths[@]}" -gt 0 ] && touched=$(git diff --name-only "$BASE...HEAD" -- "${paths[@]}")
           imports=$(git diff -U0 "$BASE...HEAD" -- '*.go' ':!*_test.go' |
@@ -62,12 +72,19 @@ jobs:
           set_label() { # label, wanted
             if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
           }
+          # A workflow, or a script one runs, which runs with the workflow's token: actions/checkout
+          # leaves the token in the clone's git config. git exits 0 when nothing matches, so an
+          # error here fails the run rather than reading as no review.
+          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' '.github/tool-versions' 'check.sh')
+          code_files=$(git diff --name-only "$BASE...HEAD" -- . ':(exclude,icase)*.md' ':!docs/')
           security=no; code=no
-          [ -n "$touched$imports" ] && security=yes
-          [ -n "$touched" ] && code=yes
+          [ -n "$touched$imports$workflows" ] && security=yes
+          [ -n "$code_files" ] && code=yes
           {
+            echo "head: $HEAD_SHA"
             echo "security paths touched: ${touched:-none}"
             echo "imports added outside tests: ${imports:-none}"
+            echo "workflows or the scripts they run, touched: ${workflows:-none}"
             echo "needs-security-review: $security; needs-code-review: $code"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           set_label needs-security-review "$security"
