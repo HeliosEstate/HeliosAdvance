@@ -120,20 +120,18 @@ jobs:
       # PostgreSQL, the database tests' oracle (database Part 1, HeliosAdvance #159). Each test run
       # makes its own throwaway server in a temporary folder with initdb and pg_ctl, as the
       # ordinary user, so it can stop and start it and change its sign-in rules; no system
-      # service is started (developer, 2026-10-28). Ubuntu x86-64 and Windows carry PostgreSQL
-      # with its service off; Linux ARM64 has none, installs it from Ubuntu's archive, and stops
-      # the service the install starts. The tools' folder, on no runner's PATH, joins the PATH of
-      # later steps, and a runner without them fails here, not in the tests.
+      # service is started (developer, 2026-10-28). Every runner's image carries PostgreSQL with
+      # its service off, each its own version (on 2026-10-28: 18 on ubuntu-latest, 16 on Linux
+      # ARM64, 17 on Windows); nothing is installed. The tools' folder, on no runner's PATH, joins
+      # the PATH of later steps, and a runner without them fails here, not in the tests.
       - name: PostgreSQL's tools
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
+            [ -n "$PGBIN" ] || { echo "::error::no PostgreSQL on this runner: PGBIN is not set"; exit 1; }
             echo "$PGBIN" >> "$GITHUB_PATH"
             export PATH="$(cygpath -u "$PGBIN"):$PATH"
           else
-            if ! compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null; then
-              sudo apt-get update -q && sudo apt-get install -y -q postgresql
-              sudo systemctl stop postgresql.service
-            fi
+            compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
             bin="$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")"
             echo "$bin" >> "$GITHUB_PATH"
             export PATH="$bin:$PATH"
