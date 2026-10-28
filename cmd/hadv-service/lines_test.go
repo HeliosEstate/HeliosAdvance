@@ -167,7 +167,7 @@ func TestProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("When it has started listening, the engine shall write one `started` line to the local log naming the kind, address and port of every listener.", func(t *testing.T) {
+	t.Run("When it has started listening, the engine shall write one `started` line to the local log naming the kind, address and port of everywhere it listens.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("one started line, written once both listen: a caller at each, dialed as the line arrives, is served", func(t *testing.T) {
 			t.Parallel()
@@ -210,7 +210,7 @@ func TestProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH is on, for SSH, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, options := range [][]string{
 			{portOption},
@@ -390,7 +390,7 @@ func TestLinuxHighestPort(t *testing.T) {
 
 func TestLinuxLowPort(t *testing.T) {
 	t.Parallel()
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH is on, for SSH, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("with no option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
