@@ -90,8 +90,16 @@
 // A context carrying the call's ceiling, cancelled by a stop. One Negotiate, one Open or one
 // Accept per connection, never two, from that connection's own goroutine, before anything else is
 // written to it. After any of them returns an error, the shared execution path closes the
-// connection without writing to it, and it closes the connection after Close. One goroutine per
-// Negotiation and per Line: neither is safe for use from two at once.
+// connection without writing to it, and it closes the connection after Close, or at once when the
+// call's context ends. One goroutine per Negotiation and per Line: neither is safe for use from
+// two at once.
+//
+// Every time these lines pin, NegotiationSeconds, a call's own deadline, ClosingWaitSeconds and a
+// context ending waking a waiting call at once, holds for the Telnet bytes this package reads and
+// writes. A message the connection sends on its own, over TLS a reply to a caller's key update
+// during a read or close_notify during Close, is bounded only by the call's ceiling, and not pinned
+// finer; a stop still ends the call at once, since the shared execution path closes the connection
+// when the call's context ends.
 //
 // # The wire format
 //
@@ -254,9 +262,8 @@ type Conn interface {
 	// on a connection Accept made, the TCP connection's own. A connection with its own close
 	// message, as TLS has close_notify, may send it first, and then shuts down the TCP connection's
 	// sending side; how long that message may wait for room is the connection's own, and no
-	// deadline the Line sets is promised to wake it. It returns an error when the shutdown fails,
-	// or a close message it tries to send fails; a close message it leaves unsent, as TLS does
-	// after a failed write, is no error.
+	// deadline the Line sets is promised to wake it. It returns an error when the close message or
+	// the shutdown fails.
 	CloseWrite() error
 }
 
@@ -567,14 +574,12 @@ const SendBufferSize = 2048
 // failure. When two happen at once, the context ending wins, then a failure, then a passed
 // deadline. Each is judged by the clock: a context whose deadline has passed has ended, with
 // context.DeadlineExceeded, whether or not it reports it yet. A context ending wakes a waiting
-// call at once, a Synch's write included. A call sets the connection's deadline itself before
-// each read or write, the earlier of its own deadline and the context's, or none when neither has
-// one, and leaves nothing of its own running when it returns. These deadlines hold for the Telnet
-// bytes. Over TLS, a message the connection sends on its own, a reply to a caller's key update
-// during a read or close_notify during Close, is bounded by the call's ceiling and not pinned
-// finer. Once a write fails, whatever it
-// wrote, the Line writes nothing more, for the reason given on Negotiate: what a write cut short
-// sent cannot be known.
+// call at once, a Synch's write included, except a message the connection sends on its own, as
+// the package's description gives. A call sets the connection's deadline itself before each read
+// or write, the earlier of its own deadline and the context's, or none when neither has one, and
+// leaves nothing of its own running when it returns. Once a write fails, whatever it wrote, the
+// Line writes nothing more, for the reason given on Negotiate: what a write cut short sent cannot
+// be known.
 type Line struct {
 	state lineState
 }
