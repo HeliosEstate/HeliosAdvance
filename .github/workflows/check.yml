@@ -61,8 +61,9 @@ jobs:
   # gate with the race detector and the oracles. Windows runs every gate and every test except
   # those named TestOracle… or TestLinux…: its runners cannot run Linux containers, so the rows
   # that drive a container oracle cannot run there, a Linux-only row is named for it, and the race
-  # detector would need a C compiler installed every run. Database tests will be Linux-only for
-  # the same reason (developer, 2026-10-02). The Windows runner is elevated, so
+  # detector would need a C compiler installed every run. Database tests run on all three, against
+  # a real PostgreSQL the tests make themselves (database Part 1's page, 2026-10-27, in place of
+  # the developer's Linux-only of 2026-10-02). The Windows runner is elevated, so
   # TestWindowsElevated rows run there, which no loop's machine can (developer, 2026-10-05).
   # Part 1's tests run on Windows too, by its behavior lines (2026-10-16).
   # On a pull request, ubuntu-latest also runs check.sh's mutation mode on the changed code, so
@@ -116,6 +117,29 @@ jobs:
             export PATH="/c/Program Files/PuTTY:$PATH"
           else sudo apt-get update -q && sudo apt-get install -y -q putty-tools; fi
           plink -V
+      # PostgreSQL, the database tests' oracle (database Part 1, HeliosAdvance #159). Each test run
+      # makes its own throwaway server in a temporary folder with initdb and pg_ctl, as the
+      # ordinary user, so it can stop and start it and change its sign-in rules; no system
+      # service is started (developer, 2026-10-28). Ubuntu x86-64 and Windows carry PostgreSQL
+      # with its service off; Linux ARM64 has none, installs it from Ubuntu's archive, and stops
+      # the service the install starts. The tools' folder, on no runner's PATH, joins the PATH of
+      # later steps, and a runner without them fails here, not in the tests.
+      - name: PostgreSQL's tools
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$PGBIN" >> "$GITHUB_PATH"
+            export PATH="$(cygpath -u "$PGBIN"):$PATH"
+          else
+            if ! compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null; then
+              sudo apt-get update -q && sudo apt-get install -y -q postgresql
+              sudo systemctl stop postgresql.service
+            fi
+            bin="$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")"
+            echo "$bin" >> "$GITHUB_PATH"
+            export PATH="$bin:$PATH"
+          fi
+          initdb --version
+          pg_ctl --version
       # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
       # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's
       # "429 Too Many Requests" (developer, 2026-10-09). A partial match restores the images of
