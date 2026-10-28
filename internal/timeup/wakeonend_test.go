@@ -44,7 +44,7 @@ func expectWakesAtAll(t *testing.T) {
 func TestWakeOnEnd(t *testing.T) {
 	t.Parallel()
 
-	t.Run("WakeOnEnd shall start no goroutine before ctx ends.", func(t *testing.T) {
+	t.Run("Where ctx was made by the context package, WakeOnEnd shall start no goroutine before ctx ends.", func(t *testing.T) {
 		t.Parallel()
 		for _, row := range []struct {
 			name string

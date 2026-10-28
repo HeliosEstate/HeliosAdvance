@@ -83,7 +83,8 @@ func Wake(conn Conn) error {
 // once, before the call returns; calling a release a second time is a wrong call. The wake has
 // begun once the release can no longer stop it.
 //
-//   - WakeOnEnd shall start no goroutine before ctx ends.
+//   - Where ctx was made by the context package, WakeOnEnd shall start no goroutine before ctx
+//     ends.
 //   - Once ctx has ended, WakeOnEnd shall begin the wake, which calls Wake on conn once, in a
 //     goroutine of its own, unless the release has stopped it before it began.
 //   - If ctx has already ended when WakeOnEnd is called, then the wake shall have begun when
