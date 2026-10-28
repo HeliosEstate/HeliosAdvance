@@ -16,8 +16,7 @@
 // table below and nothing else, on the Go standard library's crypto/tls; the handshake; and the
 // encrypted connection as Telnet's connection: its urgent write, which writes DM as an ordinary
 // byte, since TLS carries no urgent data, and its CloseWrite, which sends TLS's close_notify
-// before it shuts down the sending side, unless the encrypted connection's sending side has
-// failed before it. It writes nothing to the local log.
+// before it shuts down the sending side. It writes nothing to the local log.
 //
 // It does not own negotiation, the Line or Telnet's own close, which are the telnet package's; nor
 // accepting, the cap of 100, the ceiling on a whole call or closing the connection, which the
@@ -65,7 +64,9 @@
 // cancelled by a stop. One Accept per connection, from that connection's own goroutine, before
 // anything else is written to it. After Accept returns an error, the shared execution path
 // closes the connection without writing to it, and it closes the connection after the Line's
-// Close, or at once when the call's context ends.
+// Close, or at once when the call's context ends. It calls the Line's Close only after a call
+// whose writes all succeeded, as the Listener calls a kind's Close only once the call is
+// answered, so no close_notify follows a write cut short.
 //
 // # The TLS table
 //
@@ -79,6 +80,7 @@
 //	                        an Ed25519 certificate is served on the ECDSA suites
 //	key exchanges           X25519MLKEM768, SecP256r1MLKEM768 and SecP384r1MLKEM1024 in TLS 1.3
 //	                        alone; X25519, P-256, P-384 and P-521 in both versions
+//	signature schemes       crypto/tls's own, for the certificate's key
 //	certificate             the certificate file's whole chain, its CERTIFICATE blocks in the
 //	                        file's order
 //	client certificate      none asked for
@@ -150,8 +152,9 @@ var (
 	ErrKeyReadableByOthers = errors.New("telnets: the key file can be read by its group or others")
 )
 
-// ErrHandshakeFailed means the handshake failed, however it failed, before Telnet took the call;
-// it holds nothing the caller sent.
+// ErrHandshakeFailed means the handshake failed before Telnet took the call, other than by the
+// call's time running out or a stop, which give telnet.ErrDeadlineEnded; it holds nothing the
+// caller sent.
 var ErrHandshakeFailed = errors.New("telnets: the TLS handshake failed")
 
 // Certificate is the certificate with its chain and its private key, read once at start. A
@@ -216,11 +219,9 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 // and its CloseWrite sends close_notify and then shuts down the TCP connection's sending side. On
 // an error it returns a nil Line.
 //
-// The encrypted connection's sending side has failed once any write on it has failed, a reply
-// crypto/tls wrote on its own to a caller's key update among them, or once crypto/tls has sent a
-// fatal alert. What a write cut short sent cannot be known, so no close_notify follows it: a
-// clean close would tell the caller it has the whole call when it may not; a close_notify left
-// unsent so is still a clean shutdown, and no error. How long close_notify may wait for room is
+// No close_notify follows a write cut short, since what it sent cannot be known and a clean close
+// would tell the caller it has the whole call when it may not; the shared execution path keeps
+// that, as "What it needs from its callers" gives. How long close_notify may wait for room is
 // crypto/tls's own, bounded by the call's ceiling and not pinned finer; a stop or the ceiling
 // still ends the call at once, since the shared execution path closes the connection when the
 // call's context ends.
@@ -229,6 +230,12 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 // fails, by the clock, as on the Line: a context whose deadline has passed has ended, with
 // context.DeadlineExceeded, whether or not it reports it yet.
 //
+//   - If connection is nil, or certificate was not made by ReadCertificate or is nil, then Accept
+//     shall return telnet.ErrConnectionFailed and a nil Line without touching the connection,
+//     whether or not the context has ended.
+//   - If the context has ended when Accept is called, judged by the clock, then Accept shall
+//     return a nil Line and telnet.ErrDeadlineEnded, wrapping context.DeadlineExceeded or
+//     context.Canceled, without writing to the connection.
 //   - Accept shall write nothing to the connection but the TLS handshake until the handshake
 //     completes.
 //   - If the handshake fails, then Accept shall return a nil Line, having written no Telnet byte
@@ -245,15 +252,10 @@ func ReadCertificate(certificatePath, keyPath string) (*Certificate, error) {
 //     on the connection.
 //   - When the Line's Close shuts down the sending side, the encrypted connection shall send
 //     close_notify, then shut down the TCP connection's sending side.
-//   - If the encrypted connection's sending side has failed before the Line's Close, then its
-//     CloseWrite shall send no close_notify, still shut down the TCP connection's sending side,
-//     and return no error unless that shutdown fails.
 //   - If close_notify's write fails, then the encrypted connection shall still shut down the TCP
 //     connection's sending side, and return an error; every later write on it fails.
 //   - When the caller sends close_notify, the encrypted connection's reads shall end with end of
 //     file; when it sends a damaged record or asks to renegotiate, they shall end with a failure.
-//   - If connection is nil, or certificate was not made by ReadCertificate or is nil, then Accept
-//     shall return telnet.ErrConnectionFailed and a nil Line without touching the connection.
 //   - Accept shall return no error from the handshake that holds crypto/tls's text; after the
 //     handshake, it returns Open's error as Open gives it. [read]
 func Accept(
