@@ -14,7 +14,7 @@ import (
 
 const defaultPort = "23"
 
-// telnetTargets are the only addresses Telnet listens on, IPv4 first.
+// telnetTargets are Telnet's own list, so that its addresses can change without SSH's.
 var telnetTargets = []target{{"tcp4", ipv4Address}, {"tcp6", ipv6Address}}
 
 // openTelnet adapts Telnet's way in to the Listener's, which wants a nil KindConnection on an
@@ -27,8 +27,8 @@ func openTelnet(ctx context.Context, connection *net.TCPConn) (listener.KindConn
 	return line, nil
 }
 
-// newTelnetListener returns Telnet's Listener, not started, with the addresses it listens at. The
-// sockets are closed here only when New refuses, since they are the Listener's once it has them.
+// newTelnetListener closes the sockets only when New refuses: once it has them they are the
+// Listener's.
 func newTelnetListener(ctx context.Context, port string, count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
 	sockets, addresses, err := listen(ctx, telnetTargets, port)

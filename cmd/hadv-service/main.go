@@ -28,7 +28,6 @@ import (
 )
 
 const (
-	// The addresses are the only ones the engine listens on, IPv4 first.
 	ipv4Address = "127.0.0.1"
 	ipv6Address = "::1"
 
@@ -228,5 +227,6 @@ func closeAll(sockets []*net.TCPListener) error {
 	return errors.Join(failures...)
 }
 
-// target is one address a kind listens at, with the network it is opened on.
+// target is a kind's address with the network it must be opened on, since the address alone does
+// not say IPv4 or IPv6 to net.Listen.
 type target struct{ network, address string }

@@ -28,8 +28,8 @@ type listenerState struct {
 	stopOnce    sync.Once
 }
 
-// countState is the open connections of one engine, shared by every Listener made with its
-// ConnectionCount.
+// countState sits apart from listenerState because every Listener made with one ConnectionCount
+// shares it.
 type countState struct {
 	openLock sync.Mutex
 	open     int

@@ -14,7 +14,7 @@ import (
 
 const defaultSSHPort = "22"
 
-// sshTargets are the only addresses SSH listens on, IPv4 first.
+// sshTargets are SSH's own list, so that its addresses can change without Telnet's.
 var sshTargets = []target{{"tcp4", ipv4Address}, {"tcp6", ipv6Address}}
 
 // sshOpener is SSH's way in with the host key read at start.
@@ -28,8 +28,8 @@ func sshOpener(key *ssh.HostKey) listener.Open {
 	}
 }
 
-// newSSHListener returns SSH's Listener, not started, with the addresses it listens at. The
-// sockets are closed here only when New refuses, since they are the Listener's once it has them.
+// newSSHListener closes the sockets only when New refuses: once it has them they are the
+// Listener's.
 func newSSHListener(ctx context.Context, port string, key *ssh.HostKey,
 	count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
