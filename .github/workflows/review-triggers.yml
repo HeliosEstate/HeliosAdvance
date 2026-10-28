@@ -4,11 +4,10 @@
 # gates and workflows included (the developer, 2026-10-28). needs-security-review: it touches a
 # package in security-paths, a workflow under .github/workflows/ or a script one runs under
 # .github/, which run with the repository's tokens, or adds an import of crypto, os/exec, net,
-# unsafe, syscall or golang.org/x/sys outside a test. A label means the review is not yet
-# recorded for the pull request's head: both come off when the reviewing session's App posts a
-# comment "Reviews done, through <commit>" naming the current head's full hash, and go back on
-# with the next push, and `gh signoff` refuses while either is on (the developer, 2026-10-28,
-# HeliosDesign #203).
+# unsafe, syscall or golang.org/x/sys outside a test. The labels only say which reviews a head
+# needs, and the run's summary says it for that head: the loop can take a label off, so nothing
+# relies on one. Whether the reviews were done for the head is the reviewing session's record,
+# which `gh signoff` itself reads (the developer, 2026-10-28, HeliosDesign #203).
 # The run's summary also lists each line the pull request adds that silences a linter (nolint or
 # #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision for the
 # developer by name (developer, 2026-10-07: "fail loud"); a line from a QA commit, which he read
@@ -27,47 +26,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
     branches: [development, main]
-  # A review comment on a pull request, read only from the reviewing session's App below. Only
-  # when it is posted: anyone with write access can edit a comment, so an edited record counts
-  # for nothing, and a correction is a new comment.
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  # A review is recorded by the reviewing session's App alone: a login GitHub gives no person,
-  # so no one else's comment can take a label off. The commit it names, in full, since a short
-  # prefix can be matched on purpose, must be the head now. A pull request from a fork is left
-  # alone: its labels are the developer's to set, and nothing here would put them back on.
-  reviewed:
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login == 'helios-aetheria[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.issue.number }}
-          BODY: ${{ github.event.comment.body }}
-        run: |
-          set -euo pipefail
-          named=$(grep -oE 'Reviews done, through [0-9a-f]{40}' <<< "$BODY" | tail -1 | grep -oE '[0-9a-f]{40}$' || true)
-          [ -n "$named" ] || { echo "not a review record"; exit 0; }
-          [ "$(gh pr view "$PR" --json isCrossRepository -q .isCrossRepository)" = false ] ||
-            { echo "a pull request from a fork: its labels are the developer's" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
-          head=$(gh pr view "$PR" --json headRefOid -q .headRefOid)
-          if [ "$head" = "$named" ]; then
-            gh pr edit "$PR" --remove-label needs-security-review || true
-            gh pr edit "$PR" --remove-label needs-code-review || true
-            echo "reviews recorded through $head: both review labels off" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "the record names $named, but the head is $head: the labels stay" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-
   label:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -102,27 +68,16 @@ jobs:
             if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
           }
           # A workflow, or a script one runs, which runs with the workflow's token.
-          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' || true)
+          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' '.github/tool-versions' || true)
           code_files=$(git diff --name-only "$BASE...HEAD" -- . ':(exclude,icase)*.md' ':!docs/' || true)
           security=no; code=no
           [ -n "$touched$imports$workflows" ] && security=yes
           [ -n "$code_files" ] && code=yes
-          # A review recorded for this head keeps the labels off: an edit to the pull request's
-          # text does not undo it, and a push, with a new head, does. A record edited since it
-          # was posted counts for nothing. The head is read again now, as a run for an older
-          # head can finish after the run for a newer one; which finishes first is not pinned.
-          recorded=$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
-            -q '.[] | select(.user.login == "helios-aetheria[bot]" and .created_at == .updated_at) | .body' |
-            grep -oE 'Reviews done, through [0-9a-f]{40}' | grep -oE '[0-9a-f]{40}$' | tail -1 || true)
-          live=$(gh pr view "$PR" --json headRefOid -q .headRefOid)
-          reviewed=no
-          [ -n "$recorded" ] && [ "$recorded" = "$HEAD_SHA" ] && [ "$recorded" = "$live" ] && reviewed=yes
-          [ "$reviewed" = yes ] && { security=no; code=no; }
           {
+            echo "head: $HEAD_SHA"
             echo "security paths touched: ${touched:-none}"
             echo "imports added outside tests: ${imports:-none}"
             echo "workflows touched: ${workflows:-none}"
-            echo "reviews recorded for this head ($HEAD_SHA): $reviewed"
             echo "needs-security-review: $security; needs-code-review: $code"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           set_label needs-security-review "$security"
