@@ -245,7 +245,7 @@ linters:
         text: os\.Stdout
       # systemd names its ready socket only in the environment, NOTIFY_SOCKET (sd_notify), read in
       # the Linux ready message's one file; it is the only variable the engine reads (Part 6's
-      # page, its line on NOTIFY_SOCKET).
+      # page, its line on NOTIFY_SOCKET; developer, 2026-10-28).
       - path: internal/servicemanager/notify_linux\.go
         linters: [forbidigo]
         text: os\.LookupEnv
