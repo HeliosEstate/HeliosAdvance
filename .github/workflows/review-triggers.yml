@@ -84,7 +84,7 @@ jobs:
             echo "head: $HEAD_SHA"
             echo "security paths touched: ${touched:-none}"
             echo "imports added outside tests: ${imports:-none}"
-            echo "workflows touched: ${workflows:-none}"
+            echo "workflows or the scripts they run, touched: ${workflows:-none}"
             echo "needs-security-review: $security; needs-code-review: $code"
           } | tee -a "$GITHUB_STEP_SUMMARY"
           set_label needs-security-review "$security"
