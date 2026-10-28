@@ -209,7 +209,7 @@ func TestSSHProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH is on, for SSH, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		withKey := func(t *testing.T, options ...string) []string {
 			t.Helper()
@@ -354,7 +354,7 @@ func TestLinuxSSHProgram(t *testing.T) {
 		t.Fatalf("these rows need an ordinary user: root reads a file of any mode, and listens at 22")
 	}
 
-	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listeners.", func(t *testing.T) {
+	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("with a host key and no SSH port, as an ordinary user who may not listen below 1024: refused, where an SSH port the system picks starts", func(t *testing.T) {
 			t.Parallel()
