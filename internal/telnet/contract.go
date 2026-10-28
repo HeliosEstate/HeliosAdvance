@@ -149,8 +149,8 @@
 //     side. [read]
 //   - The telnet package shall keep nothing a subnegotiation carries. [read]
 //   - The telnet package shall write nothing to the local log. [read]
-//   - The telnet package shall judge whether a call's time has run out only with timeup.Ended, take
-//     every time a call must stop by from timeup.Limit, and wake a waiting call only with
+//   - The telnet package shall judge whether a call's context has run out only with timeup.Ended,
+//     take every time a call must stop by from timeup.Limit, and wake a waiting call only with
 //     timeup.WakeOnEnd or timeup.Wake, keeping no copy of their rules. [read]
 //   - The telnet package shall call each release timeup.WakeOnEnd returns once, before the call
 //     that registered it returns. [read]
