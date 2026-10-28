@@ -1,5 +1,6 @@
 # Passes a pull request into main only when it comes from this repository's development, the
-# release; main's ruleset requires it (the developer, 2026-10-28, HeliosDesign #219). `gh
+# release; main's ruleset requires it from GitHub Actions, by this job's name, from-development
+# (the developer, 2026-10-28, HeliosDesign #219). `gh
 # signoff` checks that an engine pull request targets development, but a pull request's base
 # can be changed after that check, and an armed auto-merge stays armed: without this, a reviewed
 # build pointed at main would bring every development commit main lacks there, with no decision

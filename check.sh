@@ -174,9 +174,9 @@ done < <(git ls-files -z '*_test.go')
 pointers=$(git ls-files -z '*.go' | grep -zv '_test\.go$' | xargs -0 -r grep -niE '//.*[^[:alpha:]](line|step) [0-9]+' || true)
 [ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
 
-# 4d. GitHub reads .github/ from the default branch, main, so a merge into main must bring
-# development's copy with it. Keyed on the base: a PR to development is never blocked by main
-# being stale; a PR to main is blocked until .github/ is in step.
+# 4d. A merge into main brings development's .github/ with it: main takes pull requests from
+# development alone, so the two stay in step. Keyed on the base: a PR to development is never
+# blocked by main being stale; a PR to main is blocked until .github/ is in step.
 if [ "$BASE" = "origin/main" ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
   git diff --quiet origin/development HEAD -- .github || { git diff --stat origin/development HEAD -- .github; fail ".github/ differs from development; main must carry development's copy"; }
 fi
