@@ -235,8 +235,8 @@ jobs:
       # main holds releases, nothing else: a pull request into it comes from this repository's
       # development alone, the one branch here the loop cannot push to directly, as
       # main-from-development.yml also checks, on a change of base too (the developer,
-      # 2026-10-28, HeliosDesign #219). A stranger's PR defaults to main and is refused here,
-      # not merged by accident.
+      # 2026-10-28, HeliosDesign #219). check.yml runs on no change of base, so the guard that
+      # holds when a pull request is pointed at main after its checks is main-from-development.
       # The branch name is a stranger's text, so it reaches the shell as data in the environment,
       # never inside the script (the codebase review, 2026-10-24).
       - if: github.base_ref == 'main' && !(github.head_ref == 'development' && github.event.pull_request.head.repo.full_name == github.repository)
