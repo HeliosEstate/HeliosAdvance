@@ -2,12 +2,13 @@
 # script can read (developer, 2026-10-05). needs-code-review: it changes anything but
 # documentation (a Markdown file, or a file under docs/), since a code review probes any code,
 # gates and workflows included (the developer, 2026-10-28). needs-security-review: it touches a
-# package in security-paths, a workflow under .github/workflows/ or a script one runs under
-# .github/, which run with the repository's tokens, or adds an import of crypto, os/exec, net,
-# unsafe, syscall or golang.org/x/sys outside a test. The labels only say which reviews a head
-# needs, and the run's summary says it for that head: the loop can take a label off, so nothing
-# relies on one. Whether the reviews were done for the head is the reviewing session's record,
-# which `gh signoff` itself reads (the developer, 2026-10-28, HeliosDesign #203).
+# package in security-paths, a workflow under .github/workflows/ or a script one runs (under
+# .github/, or the root check.sh), which run with the repository's tokens, or adds an import of
+# crypto, os/exec, net, unsafe, syscall or golang.org/x/sys outside a test. The labels only say
+# which reviews a head needs, and the run's summary says it for that head: the loop can take a
+# label off, so nothing relies on one. Whether the reviews were done for the head is the
+# reviewing session's record, which `gh signoff` itself reads (the developer, 2026-10-28,
+# HeliosDesign #203).
 # The run's summary also lists each line the pull request adds that silences a linter (nolint or
 # #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision for the
 # developer by name (developer, 2026-10-07: "fail loud"); a line from a QA commit, which he read
@@ -67,9 +68,10 @@ jobs:
           set_label() { # label, wanted
             if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
           }
-          # A workflow, or a script one runs, which runs with the workflow's token. git exits 0
-          # when nothing matches, so an error here fails the run rather than reading as no review.
-          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' '.github/tool-versions')
+          # A workflow, or a script one runs, which runs with the workflow's token: actions/checkout
+          # leaves the token in the clone's git config. git exits 0 when nothing matches, so an
+          # error here fails the run rather than reading as no review.
+          workflows=$(git diff --name-only "$BASE...HEAD" -- '.github/workflows/' '.github/*.sh' '.github/tool-versions' 'check.sh')
           code_files=$(git diff --name-only "$BASE...HEAD" -- . ':(exclude,icase)*.md' ':!docs/')
           security=no; code=no
           [ -n "$touched$imports$workflows" ] && security=yes
