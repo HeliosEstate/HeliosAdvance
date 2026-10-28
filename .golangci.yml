@@ -57,6 +57,11 @@ linters:
             # on Go's overlapped socket and a 10 ms retry, rests on behaviour Microsoft does not
             # document (developer, 2026-10-27).
             - golang.org/x/sys/windows$
+            # The Service Manager unit's Windows service, and only that package of the module: the
+            # Go team's, already in go.sum through the SSH library, watched by govulncheck and
+            # Dependabot; it uses unsafe and system calls inside itself, none in the engine's code
+            # (developer, Part 6's page, 2026-10-25).
+            - golang.org/x/sys/windows/svc$
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -110,6 +115,16 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/timeup
             # Its own path, so its black-box tests in package textio_test can import it.
             - github.com/heliosestate/heliosadvance/internal/textio
+        # It runs the engine under Windows' service manager through the Go team's svc package, and
+        # sends systemd's ready message with the standard library (docs/architecture.md, Part 6).
+        servicemanager:
+          files: ["**/internal/servicemanager/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - golang.org/x/sys/windows/svc$
+            # Its own path, so its black-box tests in package servicemanager_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/servicemanager$
         timeup:
           files: ["**/internal/timeup/**"]
           list-mode: strict
@@ -161,6 +176,10 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/listener
             - github.com/heliosestate/heliosadvance/internal/telnet
             - github.com/heliosestate/heliosadvance/internal/ssh
+            # It hands the listeners to the Orchestrator to start and stop, and runs under a
+            # service manager through the Service Manager (docs/architecture.md, Part 6).
+            - github.com/heliosestate/heliosadvance/internal/orchestrator$
+            - github.com/heliosestate/heliosadvance/internal/servicemanager$
     forbidigo:
       analyze-types: true
       forbid:
@@ -215,10 +234,16 @@ linters:
       - path: tools/
         linters: [forbidigo, gosec]
         text: fmt\.Print|os\.Std(out|err)|G204|G703
-      # The program hands its standard error to the slog logger it writes the local log through.
+      # The program hands its standard output to the slog logger it writes the local log through,
+      # unless the command line names a log file (Part 6); standard error until Part 6's build.
       - path: cmd/hadv-service/main\.go
         linters: [forbidigo]
-        text: os\.Stderr
+        text: os\.Std(out|err)
+      # systemd names its ready socket only in the environment, NOTIFY_SOCKET (sd_notify); it is
+      # the only variable the engine reads (Part 6's page, its line on NOTIFY_SOCKET).
+      - path: internal/servicemanager/
+        linters: [forbidigo]
+        text: os\.LookupEnv
       # A test's child process reports to the test through its standard output; the console
       # rule is for the engine's log.
       - path: _test\.go
