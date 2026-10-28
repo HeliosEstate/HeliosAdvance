@@ -86,12 +86,12 @@
 // side. For Open and the Line it makes, a connection that keeps TCP urgent data in line
 // (SO_OOBINLINE), as RFC 6093 section 6 requires of Telnet: without it a Synch's DM byte leaves
 // the stream and the lone IAC before it would swallow the caller's next character; Accept sets it
-// itself. A connection that carries no urgent data, as TLS carries none, needs no such setting. A context carrying the call's
-// ceiling, cancelled by a stop. One Negotiate, one Open or one Accept per connection, never two,
-// from that connection's own goroutine, before anything else is written to it. After any of them
-// returns an error, the shared execution path closes the connection without writing to it, and it
-// closes the connection after Close. One goroutine per Negotiation and per Line: neither is safe
-// for use from two at once.
+// itself. A connection that carries no urgent data, as TLS carries none, needs no such setting.
+// A context carrying the call's ceiling, cancelled by a stop. One Negotiate, one Open or one
+// Accept per connection, never two, from that connection's own goroutine, before anything else is
+// written to it. After any of them returns an error, the shared execution path closes the
+// connection without writing to it, and it closes the connection after Close. One goroutine per
+// Negotiation and per Line: neither is safe for use from two at once.
 //
 // # The wire format
 //
@@ -112,8 +112,8 @@
 // "[Yes]" CR LF. The Synch is IAC DM, written by the connection's urgent write: on a connection
 // Accept made, with DM as TCP urgent data. The commands Receive and Strip read by name are IAC
 // 255, DONT 254, DO 253, WONT 252, WILL 251, SB 250, EL 248, EC 247, AYT 246, AO 245, IP 244 and
-// SE 240; a subnegotiation runs from IAC SB to IAC SE (RFC 855). The
-// tables on Receive give how every byte is read and answered.
+// SE 240; a subnegotiation runs from IAC SB to IAC SE (RFC 855). The tables on Receive give how
+// every byte is read and answered.
 //
 // # Calls
 //
@@ -232,8 +232,8 @@ const (
 	TimedOut
 )
 
-// Conn is the connection as Negotiate needs it; Accept makes one of an accepted TCP connection.
-// Declared here, where it is used.
+// Conn is the connection as Negotiate, Open and the Line need it, CloseWrite for the Line's Close
+// alone; Accept makes one of an accepted TCP connection. Declared here, where it is used.
 type Conn interface {
 	// Read returns end of file, a passed deadline and any other failure as its error.
 	Read(buffer []byte) (int, error)
@@ -250,9 +250,12 @@ type Conn interface {
 	// SetWriteDeadline wakes a write that is waiting when the deadline has passed; zero clears
 	// it.
 	SetWriteDeadline(deadline time.Time) error
-	// CloseWrite shuts down the sending side, for the Line's Close: on a connection Accept made,
-	// the TCP connection's own. A connection with its own close message, as TLS has close_notify,
-	// sends it first.
+	// CloseWrite shuts down the sending side of the TCP connection beneath, for the Line's Close:
+	// on a connection Accept made, the TCP connection's own. A connection with its own close
+	// message, as TLS has close_notify, sends it first and then shuts down the TCP connection's
+	// sending side, but sends no close message once a write on it has failed, since what a write
+	// cut short sent cannot be known. Like Write, a passed write deadline wakes it, a deadline set
+	// while it waits included.
 	CloseWrite() error
 }
 
@@ -553,9 +556,8 @@ const SendBufferSize = 2048
 // SendBufferSize, and the negotiation, whose option states go on changing as the caller asks.
 // It reads in stream order, so an option request is answered, a command acted on, and ECHO
 // changes, exactly where it falls among the caller's characters. A Line not made by Open or
-// Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes returns false. Close
-// needs a Line made by Accept: on one made by Open it fails with ErrConnectionFailed. One goroutine
-// per Line.
+// Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes returns false. One
+// goroutine per Line.
 //
 // Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
 // deadline given passed first; io.EOF when the caller closed its side; the context's error,
@@ -729,12 +731,15 @@ func (line *Line) Echoes() bool {
 //   - Close shall read only into a buffer of DiscardBufferSize bytes, and keep no copy of what it
 //     reads. [read]
 //   - When the caller closes, or ClosingWaitSeconds pass, Close shall return no error.
+//   - When a read in its wait fails for any other reason, a reset or, over TLS, a damaged record
+//     among them, Close shall stop reading and return no error.
 //   - If the context has ended when Close is called, then Close shall return the context's
 //     error, wrapped, without touching the connection.
-//   - If the context ends while Close waits, then Close shall return the context's error,
-//     wrapped.
+//   - If the context ends while Close shuts down the sending side or waits, then Close shall
+//     return the context's error, wrapped, at once.
 //   - If shutting down the sending side or setting the read deadline fails, then Close shall
-//     return ErrConnectionFailed at once.
+//     return the context's error, wrapped, when the context has ended, and otherwise
+//     ErrConnectionFailed, at once.
 //   - If the Line was made by neither Open nor Accept, or is nil, then Close shall return
 //     ErrConnectionFailed without touching the connection.
 func (line *Line) Close(ctx context.Context) error {
