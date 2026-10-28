@@ -427,8 +427,9 @@ func negotiateWith(
 	}
 }
 
-// setDeadlines sets the write deadline even when the read one fails, so that neither keeps a
-// deadline the other has been given.
+// setDeadlines sets the write deadline even when the read one fails, because negotiation sets its
+// first deadlines and puts them back afterwards, and a failed read-deadline set must not leave the
+// write deadline at an old value.
 func setDeadlines(connection Conn, read, write time.Time) error {
 	readErr := connection.SetReadDeadline(read)
 	writeErr := connection.SetWriteDeadline(write)

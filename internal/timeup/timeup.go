@@ -28,8 +28,8 @@ func ended(ctx context.Context) error {
 	return nil
 }
 
-// limit is the earlier of the two because either ending must wake the call; none when neither has
-// one, which clears any deadline an earlier call left.
+// limit is the earlier of the two because either ending must wake the call; it returns the zero
+// time when neither has one.
 func limit(ctx context.Context, deadline time.Time) time.Time {
 	contextDeadline, ok := ctx.Deadline()
 	if ok && (deadline.IsZero() || contextDeadline.Before(deadline)) {
