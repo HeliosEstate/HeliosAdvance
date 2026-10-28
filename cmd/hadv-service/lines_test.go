@@ -80,16 +80,14 @@ func TestProgram(t *testing.T) {
 		for _, taken := range []string{ipv4Loopback, ipv6Loopback} {
 			t.Run(fmt.Sprintf("with %s taken at the port, it names and serves the other alone", taken), func(t *testing.T) {
 				t.Parallel()
-				port, ipv4, ipv6 := heldPort(t)
 				free := ipv6Loopback
 				if taken == ipv6Loopback {
 					free = ipv4Loopback
-					_ = ipv4.Close()
-				} else {
-					_ = ipv6.Close()
 				}
-				program := startProgram(t, portOption, port)
-				addresses := program.listening(t)
+				port, listeners := startOnFreedPort(t, []string{free}, func(port string) []string {
+					return []string{portOption, port}
+				})
+				addresses := telnetAlone(t, listeners)
 				expectAddresses(t, addresses, net.JoinHostPort(free, port))
 				expectServed(t, net.JoinHostPort(free, port))
 			})
@@ -100,11 +98,10 @@ func TestProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with -port and a free port, it names and serves that port at both addresses", func(t *testing.T) {
 			t.Parallel()
-			port, ipv4, ipv6 := heldPort(t)
-			_ = ipv4.Close()
-			_ = ipv6.Close()
-			program := startProgram(t, portOption, port)
-			addresses := program.listening(t)
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
+				return []string{portOption, port}
+			})
+			addresses := telnetAlone(t, listeners)
 			expectAddresses(t, addresses, net.JoinHostPort(ipv4Loopback, port), net.JoinHostPort(ipv6Loopback, port))
 			for _, address := range addresses {
 				expectServed(t, address)
