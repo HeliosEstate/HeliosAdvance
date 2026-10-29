@@ -348,7 +348,9 @@ func launchPostgres(directory string, options serverOptions) (*postgres, error) 
 
 // startStandby makes a primary with a board on it, then a standby copied from the primary by
 // pg_basebackup and following it, in recovery with hot standby off, so it answers that it is
-// recovering. It returns the board and the standby, both stopped when the row ends.
+// recovering. It returns the board and the standby, both stopped when the row ends. The copy asks
+// for its checkpoint at once: the default spreads it out, which can outlast the tools' limit on a
+// busy machine.
 func startStandby(t *testing.T) (*board, *postgres) {
 	t.Helper()
 	primary := startPostgres(t, serverOptions{settings: []string{"wal_level = replica", "max_wal_senders = 4"}})
@@ -357,7 +359,7 @@ func startStandby(t *testing.T) (*board, *postgres) {
 	standby := &postgres{directory: directory, data: filepath.Join(directory, "data"), password: primary.password,
 		authority: primary.authority, logPath: filepath.Join(directory, "server.log")}
 	if output, err := runTool(primary.superuserEnvironment(), "pg_basebackup", "-h", databaseHost,
-		"-p", strconv.Itoa(primary.port), "-U", superuser, "-D", standby.data, "-R", "-X", "stream", "--no-sync"); err != nil {
+		"-p", strconv.Itoa(primary.port), "-U", superuser, "-D", standby.data, "-R", "-X", "stream", "--checkpoint=fast", "--no-sync"); err != nil {
 		t.Fatalf("pg_basebackup: %v: %s", err, output)
 	}
 	t.Cleanup(func() {

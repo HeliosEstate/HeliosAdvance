@@ -32,10 +32,13 @@ func TestPackage(t *testing.T) {
 				header := []byte{'E', 0, 0, 0, 0}
 				binary.BigEndian.PutUint32(header[1:], 2*replyMostBytes)
 				body := errorBody("28P01", strings.Repeat("x", 64<<10))
+				// The window opens as the write begins: a client that reads the header and closes
+				// at once can return before the write does.
+				began := time.Now()
 				if _, err := connection.connection.Write(append(header, body...)); err != nil {
 					t.Logf("the fake's write failed: %v", err)
 				}
-				sent <- time.Now()
+				sent <- began
 				closed <- connection.awaitEnd(time.Now().Add(takeLimit))
 			})
 			lease, err := take(t, server.file())
