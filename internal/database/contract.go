@@ -251,6 +251,8 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     shall return ErrNotReady.
 //   - If the database answers that it has no connection free, then Take shall return
 //     ErrNoConnectionFree.
+//   - If the database will not use TLS 1.2 or 1.3, then Take shall return ErrRefused without
+//     sending the password.
 //   - If the database's certificate fails its check, or cannot be used for channel binding, then
 //     Take shall return ErrCertificate without sending the password.
 //   - If the database asks for any other way of signing in, then Take shall return
