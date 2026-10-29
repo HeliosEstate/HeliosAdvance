@@ -38,3 +38,22 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user. A test that can run on Linux
 alone is named `TestLinux…`, and one that needs a Linux container oracle `TestOracle…`: Windows
 CI skips both. Green is `bash check.sh`, never `go test` alone.
+
+## A database the tests make
+
+- The tests make their own PostgreSQL with its programs, never a service: a template cluster
+  made once, copied per server, each with its own certificate authority and sign-in rules.
+- A program that starts a server writes to a file, not a pipe: the server inherits its handles
+  and would hold a pipe open. A cleanup that stops a server runs on a context of its own, since
+  the test's has ended by then.
+- A test that sets the process's environment runs alone, before the parallel tests resume.
+- A client that gives up does not end PostgreSQL's wait on a lock: the server notices a closed
+  client only when it next writes to it. A client's give-up is read from the server's statement
+  log, not from the server's list of what waits.
+- Windows hands a new process an ended one's ID at once, so a server's connection is told apart
+  by its process and its start time together.
+- A window for what follows a retry holds only the retry: the try's own time is read from the
+  server's log and judged against the cadence, and what the try leads to against its own bound.
+- A copy of a server by `pg_basebackup` asks for its checkpoint at once: the default spreads it
+  out, and on a loaded runner it ran close to two minutes.
+- A refusal row asserts the exact refusal, so the unbuilt code's own error cannot pass it.
