@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -511,6 +512,47 @@ func (server *postgres) serverLog(t *testing.T) string {
 		t.Fatalf("reading the server's log: %v", err)
 	}
 	return string(text)
+}
+
+// tryPrefix is how a log entry of one login's begins: its time, its process, the login and the
+// database, as the settings' log_line_prefix writes them.
+var tryPrefix = regexp.MustCompile(`^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) UTC \[\d+\] (\S*)@\S* (\S+):`)
+
+// triesBy returns when each of the login's tries to sign in ended, as the server logged it: its
+// sign-in authorized, or refused with a FATAL error.
+func (server *postgres) triesBy(t *testing.T, login string) []time.Time {
+	t.Helper()
+	var tries []time.Time
+	for line := range strings.SplitSeq(server.serverLog(t), "\n") {
+		match := tryPrefix.FindStringSubmatch(line)
+		if match == nil || match[2] != login || (match[3] != "FATAL" && !strings.Contains(line, "connection authorized")) {
+			continue
+		}
+		at, err := time.Parse("2006-01-02 15:04:05.000", match[1])
+		if err != nil {
+			t.Fatalf("a time in the server's log read as %q", match[1])
+		}
+		tries = append(tries, at.UTC())
+	}
+	return tries
+}
+
+// waitForTry waits, by the deadline, for the login's first try at or after the moment given, and
+// returns when the server logged it. The log's times are to the millisecond.
+func (server *postgres) waitForTry(t *testing.T, login string, since, deadline time.Time) time.Time {
+	t.Helper()
+	for {
+		for _, tried := range server.triesBy(t, login) {
+			if !tried.Before(since.Truncate(time.Millisecond)) {
+				return tried
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server logged no try by %s from %v to %v:\n%s", login, since.Format(time.RFC3339Nano),
+				deadline.Format(time.RFC3339Nano), server.serverLog(t))
+		}
+		pause(t, 100*time.Millisecond)
+	}
 }
 
 // quoteLiteral writes a string as an SQL literal.

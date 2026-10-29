@@ -138,20 +138,25 @@ func TestLease(t *testing.T) {
 			lock := created.lockRow(t)
 			sent := server.waitForUpdatesSent(t, created.login, locked, 2, taken.transactionStart.Add(2*renewEvery+2*timingMargin))
 			lock.release(t)
+			// When the renewal landed is read from the database's own record, not from when a
+			// poll saw it: on a loaded machine one psql call can outlast the deadline.
 			deadline := taken.transactionStart.Add(leaseLength)
-			for {
-				landed := false
+			var landed time.Time
+			for landed.IsZero() {
 				for _, change := range created.updates(t)[1:] {
-					landed = landed || !change.transactionStart.Before(sent[1].Truncate(time.Millisecond))
+					if !change.transactionStart.Before(sent[1].Truncate(time.Millisecond)) {
+						landed = change.recorded
+						break
+					}
 				}
-				if landed {
-					break
+				if landed.IsZero() {
+					if time.Now().After(deadline.Add(timingMargin)) {
+						t.Fatalf("no renewal sent after the one kept waiting landed by %v", deadline.Format(time.RFC3339Nano))
+					}
+					pause(t, 100*time.Millisecond)
 				}
-				if time.Now().After(deadline) {
-					t.Fatalf("no renewal sent after the one kept waiting landed by %v", deadline.Format(time.RFC3339Nano))
-				}
-				pause(t, 100*time.Millisecond)
 			}
+			expectWithin(t, "the renewal sent after the one kept waiting", landed, sent[1].Truncate(time.Millisecond), deadline.Add(timingMargin))
 			expectHeld(t, lease, taken.transactionStart.Add(leaseLength+timingMargin))
 		})
 	})
