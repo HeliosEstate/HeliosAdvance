@@ -434,6 +434,11 @@ func TestTake(t *testing.T) {
 			{"a member of a role with no rights", "CREATE ROLE {login}_extra NOLOGIN; GRANT {login}_extra TO {login}"},
 			{"a member of a SUPERUSER role that cannot log in", "CREATE ROLE {login}_admin SUPERUSER NOLOGIN; GRANT {login}_admin TO {login}"},
 			{"able to grant hadv_server to another role", "GRANT hadv_server TO {login} WITH ADMIN OPTION"},
+			// A default role makes the session run as hadv_server from the sign-in on; the rights
+			// counted are still the login's own, read through each way a right can come.
+			{"SUPERUSER, the login's default role hadv_server", "ALTER ROLE {login} SUPERUSER; ALTER ROLE {login} SET role = hadv_server"},
+			{"a member of pg_read_all_data, the login's default role hadv_server", "GRANT pg_read_all_data TO {login}; ALTER ROLE {login} SET role = hadv_server"},
+			{"INSERT on hadv.servers, the login's default role hadv_server", "GRANT INSERT ON hadv.servers TO {login}; ALTER ROLE {login} SET role = hadv_server"},
 			{"the owner of a table in public", "CREATE TABLE public.{login}_owned (value integer); ALTER TABLE public.{login}_owned OWNER TO {login}"},
 			{"the owner of the database", "ALTER DATABASE {database} OWNER TO {login}"},
 			{"CREATE on the database", "GRANT CREATE ON DATABASE {database} TO {login}"},
@@ -495,6 +500,13 @@ func TestTake(t *testing.T) {
 		t.Run("a login made as schema.sql says, holding PostgreSQL's defaults alone: taken", func(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
+			lease, err := take(t, created.file())
+			expectTaken(t, lease, err, created)
+		})
+		t.Run("a login made as schema.sql says, its default role hadv_server: taken", func(t *testing.T) {
+			t.Parallel()
+			created := sharedServer(t).newBoard(t)
+			created.server.sql(t, created.database, created.fill("ALTER ROLE {login} SET role = hadv_server"))
 			lease, err := take(t, created.file())
 			expectTaken(t, lease, err, created)
 		})
