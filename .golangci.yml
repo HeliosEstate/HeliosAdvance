@@ -167,6 +167,10 @@ linters:
             # other packages, such as pgxpool, are not allowed.
             - github.com/jackc/pgx/v5$
             - github.com/jackc/pgx/v5/pgconn$
+            # For the one type pgx gives a message longer than the reply bound,
+            # ExceededMaxBodyLenErr, so a too-long reply reads as a failed connection by its type,
+            # not by text an update of pgx could change (the developer's "yes", 2026-10-29).
+            - github.com/jackc/pgx/v5/pgproto3$
             # Its own path, so its black-box tests in package database_test can import it.
             - github.com/heliosestate/heliosadvance/internal/database
         hadv-service:

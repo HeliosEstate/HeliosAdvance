@@ -58,7 +58,8 @@
 //   - If a message from the database is longer than ReplyMostBytes, then the database package
 //     shall treat the connection as failed, ErrUnreachable at a take, without reading the rest.
 //   - The database package shall import nothing outside the Go standard library,
-//     github.com/jackc/pgx/v5 and github.com/jackc/pgx/v5/pgconn. [read]
+//     github.com/jackc/pgx/v5, github.com/jackc/pgx/v5/pgconn and
+//     github.com/jackc/pgx/v5/pgproto3. [read]
 package database
 
 import (
