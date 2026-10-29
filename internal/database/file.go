@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 )
@@ -33,7 +34,8 @@ var fileFields = []string{fieldServerID, fieldHost, fieldPort, fieldDatabase, fi
 const groupOrOthersRead = 0o044
 
 func readConnectionFile(path string) (ConnectionFile, error) {
-	info, err := os.Stat(path)
+	cleaned := filepath.Clean(path)
+	info, err := os.Stat(cleaned)
 	if errors.Is(err, os.ErrNotExist) {
 		return ConnectionFile{}, ErrFileMissing
 	}
@@ -44,10 +46,11 @@ func readConnectionFile(path string) (ConnectionFile, error) {
 	if runtime.GOOS == "linux" && info.Mode().Perm()&groupOrOthersRead != 0 {
 		return ConnectionFile{}, ErrFileReadableByOthers
 	}
-	contents, err := readLimited(path)
+	contents, err := readLimited(cleaned)
 	if err != nil {
 		return ConnectionFile{}, err
 	}
+	defer clear(contents)
 	values, err := splitObject(contents)
 	if err != nil {
 		return ConnectionFile{}, err
@@ -55,24 +58,29 @@ func readConnectionFile(path string) (ConnectionFile, error) {
 	return parseValues(values)
 }
 
-// readLimited reads the file through a limit one byte past the most allowed, so a longer file is
-// told from one of exactly the most.
+// readLimited reads the file into a buffer one byte longer than the most allowed, so a longer file
+// is told from one of exactly the most.
 func readLimited(path string) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, ErrFileUnreadable
 	}
-	contents, err := io.ReadAll(io.LimitReader(file, ConnectionFileMostBytes+1))
-	if closeErr := file.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
+	contents := make([]byte, ConnectionFileMostBytes+1)
+	count, readErr := io.ReadFull(file, contents)
+	closeErr := file.Close()
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
+		clear(contents)
 		return nil, ErrFileUnreadable
 	}
-	if len(contents) > ConnectionFileMostBytes {
+	if closeErr != nil {
+		clear(contents)
+		return nil, ErrFileUnreadable
+	}
+	if count == len(contents) {
+		clear(contents)
 		return nil, ErrFileTooLarge
 	}
-	return contents, nil
+	return contents[:count], nil
 }
 
 // splitObject reads the one JSON object and returns each field's raw value by name. The names are

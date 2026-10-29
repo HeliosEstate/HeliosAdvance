@@ -46,14 +46,16 @@ func (server *ServerDatabase) settings() (*pgx.ConnConfig, error) {
 		return nil, errLocalSettings
 	}
 	path := serviceFile.Name()
-	defer func() { _ = os.Remove(path) }()
 	_, writeErr := serviceFile.WriteString("[]\n")
-	if closeErr := serviceFile.Close(); writeErr != nil || closeErr != nil {
-		return nil, errLocalSettings
+	closeErr := serviceFile.Close()
+	var config *pgx.ConnConfig
+	var parseErr error
+	if writeErr == nil && closeErr == nil {
+		// Forward slashes: the library's connection string drops a backslash.
+		config, parseErr = pgx.ParseConfig(fixedSettings + " servicefile='" + filepath.ToSlash(path) + "'")
 	}
-	// Forward slashes: the library's connection string drops a backslash.
-	config, err := pgx.ParseConfig(fixedSettings + " servicefile='" + filepath.ToSlash(path) + "'")
-	if err != nil {
+	removeErr := os.Remove(path)
+	if writeErr != nil || closeErr != nil || parseErr != nil || removeErr != nil {
 		return nil, errLocalSettings
 	}
 	file := state.file
@@ -67,7 +69,9 @@ func (server *ServerDatabase) settings() (*pgx.ConnConfig, error) {
 	config.ConnectTimeout = TrySeconds * time.Second
 	config.MaxProtocolMessageBodyLen = ReplyMostBytes - 4
 	config.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
-	config.DefaultQueryExecMode = pgx.QueryExecModeExec
+	// One message per statement, with nothing prepared or cached: the engine runs a handful of
+	// statements, and their values are an integer and a UUID the engine made.
+	config.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM([]byte(file.CACertificate))
@@ -98,6 +102,14 @@ func (raw *socket) Write(buffer []byte) (int, error) {
 		raw.failed.Store(true)
 	}
 	return count, err
+}
+
+// abandon ends the socket's reads and writes at once, by a deadline in the past. A socket whose
+// deadline cannot be set is failing.
+func (raw *socket) abandon() {
+	if err := raw.SetDeadline(time.Unix(1, 0)); err != nil {
+		raw.failed.Store(true)
+	}
 }
 
 func (raw *socket) Close() error {
@@ -149,22 +161,17 @@ func (server *ServerDatabase) dial(made *attempt) pgconn.DialFunc {
 		}
 		wrapped := &socket{Conn: raw}
 		made.socket.Store(wrapped)
-		if deadline, ok := ctx.Deadline(); ok {
-			_ = wrapped.SetDeadline(deadline)
-		}
-		stop := context.AfterFunc(ctx, func() { _ = wrapped.SetDeadline(time.Unix(1, 0)) })
+		// A context that ends mid-handshake closes the socket, which fails the handshake's read.
+		stop := context.AfterFunc(ctx, func() { wrapped.abandon() })
 		defer stop()
 
 		secured, err := secure(ctx, wrapped, file.Host, roots)
 		if err != nil {
-			_ = wrapped.Close()
-			return nil, err
+			return nil, errors.Join(err, wrapped.Close())
 		}
 		if !stop() {
-			_ = wrapped.Close()
-			return nil, ErrUnreachable
+			return nil, errors.Join(ErrUnreachable, wrapped.Close())
 		}
-		_ = wrapped.SetDeadline(time.Time{})
 		return secured, nil
 	}
 }
@@ -218,8 +225,9 @@ func classify(callerContext, tryContext context.Context, made *attempt, err erro
 	if tryContext.Err() != nil {
 		return ErrUnreachable
 	}
-	if errors.Is(err, ErrSchemaVersion) {
-		return err
+	var badVersion *SchemaVersionError
+	if errors.As(err, &badVersion) {
+		return badVersion
 	}
 	var refusal *pgconn.PgError
 	if errors.As(err, &refusal) {

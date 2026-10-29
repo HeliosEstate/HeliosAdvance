@@ -18,10 +18,10 @@ var (
 )
 
 // startLease hands the taken connection to a goroutine that owns it until the lease is lost or
-// ended. The Lease has a context of its own: a stop cancels the program's, and the program ends
-// the lease itself.
-func startLease(server *ServerDatabase, connection *pgx.Conn, holder string, sent time.Time) *Lease {
-	ctx, cancel := context.WithCancel(context.Background())
+// ended. The Lease has a context of its own, keeping the caller's values but not its end: a stop
+// cancels the program's, and the program ends the lease itself.
+func startLease(callerContext context.Context, server *ServerDatabase, connection *pgx.Conn, holder string, sent time.Time) *Lease {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(callerContext))
 	lease := &Lease{state: leaseState{server: server, holder: holder, connection: connection,
 		lostSignal: make(chan struct{}), cancel: cancel, stopped: make(chan struct{})}}
 	go lease.run(ctx, sent)
@@ -42,7 +42,7 @@ func (lease *Lease) run(ctx context.Context, lastSent time.Time) {
 		case <-ctx.Done():
 			return
 		case <-expiry.C:
-			lease.lose()
+			lease.lose(ctx)
 			return
 		case <-ticker.C:
 			sent, found := lease.renew(ctx, lastSent.Add(LeaseSeconds*time.Second))
@@ -50,13 +50,13 @@ func (lease *Lease) run(ctx context.Context, lastSent time.Time) {
 			case ctx.Err() != nil:
 				return
 			case found == notOwn:
-				lease.lose()
+				lease.lose(ctx)
 				return
 			case found == renewed:
 				lastSent = sent
 				expiry.Reset(time.Until(lastSent.Add(LeaseSeconds * time.Second)))
 			case !time.Now().Before(lastSent.Add(LeaseSeconds * time.Second)):
-				lease.lose()
+				lease.lose(ctx)
 				return
 			}
 		}
@@ -104,11 +104,11 @@ func (lease *Lease) renew(ctx context.Context, end time.Time) (time.Time, renewa
 
 // lose closes the channel Lost returns first, so the program is told at once, then the
 // connection.
-func (lease *Lease) lose() {
+func (lease *Lease) lose(ctx context.Context) {
 	state := &lease.state
 	close(state.lostSignal)
 	if state.connection != nil {
-		closeQuietly(state.connection)
+		closeConnection(ctx, state.connection)
 		state.connection = nil
 	}
 }
@@ -132,7 +132,7 @@ func (lease *Lease) end() {
 		}
 		state.connection = connection
 	}
-	_, _ = state.connection.Exec(endContext, endSQL, state.server.state.file.ServerID, state.holder)
-	_ = state.connection.Close(endContext)
+	state.connection.Exec(endContext, endSQL, state.server.state.file.ServerID, state.holder)
+	state.connection.Close(endContext)
 	state.connection = nil
 }

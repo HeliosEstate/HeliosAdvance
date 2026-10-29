@@ -16,14 +16,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
 	"runtime"
 	"strconv"
-	"strings"
-	"sync"
 	"syscall"
 
-	"github.com/heliosestate/heliosadvance/internal/listener"
+	"github.com/heliosestate/heliosadvance/internal/database"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
 )
 
@@ -54,6 +51,17 @@ func run(arguments []string, logOutput io.Writer) int {
 		return exitFailed
 	}
 
+	if options.databasePath == "" {
+		log("start_failed", "no connection file: the command line names none, with -database")
+		return exitFailed
+	}
+	// The error is the database package's, which names the refusal and holds nothing of the file.
+	connectionFile, err := database.ReadConnectionFile(options.databasePath)
+	if err != nil {
+		log("start_failed", err.Error())
+		return exitFailed
+	}
+
 	// Read before anything listens, so that a refused key opens no socket. The error is the ssh
 	// package's, which names the refusal and holds nothing of the file.
 	var hostKey *ssh.HostKey
@@ -65,43 +73,7 @@ func run(arguments []string, logOutput io.Writer) int {
 		}
 	}
 
-	// Registered before anything listens: a stop sent as soon as the started line is read must
-	// not take the default action and kill the process without closing connections.
-	stopContext, release := signal.NotifyContext(context.Background(), stopSignals()...)
-	defer release()
-
-	count := listener.NewCount()
-	telnetListener, telnetAddresses, err := newTelnetListener(stopContext, options.telnetPort, count)
-	if err != nil {
-		log("start_failed", "telnet listeners: "+err.Error())
-		return exitFailed
-	}
-	listeners := []*listener.Listener{telnetListener}
-	addresses := urls("telnet", telnetAddresses)
-
-	if hostKey != nil {
-		sshListener, sshAddresses, err := newSSHListener(stopContext, options.sshPort, hostKey, count)
-		if err != nil {
-			telnetListener.Stop()
-			log("start_failed", "ssh listeners: "+err.Error())
-			return exitFailed
-		}
-		listeners = append(listeners, sshListener)
-		addresses = append(addresses, urls("ssh", sshAddresses)...)
-	}
-
-	for _, kindListener := range listeners {
-		kindListener.Start()
-	}
-	log("started", strings.Join(addresses, ","))
-
-	<-stopContext.Done()
-	var stopping sync.WaitGroup
-	for _, kindListener := range listeners {
-		stopping.Go(kindListener.Stop)
-	}
-	stopping.Wait()
-	return 0
+	return serve(log, database.NewServerDatabase(connectionFile), options, hostKey)
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and
@@ -123,12 +95,13 @@ func newLocalLog(output io.Writer) func(key, value string) {
 	}
 }
 
-// commandLine is what the sysop asked for: the ports as decimal strings, and the host key file
-// that turns SSH on.
+// commandLine is what the sysop asked for: the ports as decimal strings, the connection file that
+// names the database, and the host key file that turns SSH on.
 type commandLine struct {
-	telnetPort  string
-	sshPort     string
-	hostKeyPath string
+	telnetPort   string
+	sshPort      string
+	hostKeyPath  string
+	databasePath string
 }
 
 // portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
@@ -154,6 +127,13 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 	flags.Func("ssh-port", "port to listen on for SSH", func(value string) error {
 		sshPortGiven = true
 		return portFlag(&options.sshPort)(value)
+	})
+	flags.Func("database", "connection file, which names the database", func(value string) error {
+		if value == "" {
+			return errors.New("the connection file's path is empty")
+		}
+		options.databasePath = value
+		return nil
 	})
 	flags.Func("ssh-host-key", "host key file, which turns SSH on", func(value string) error {
 		if value == "" {

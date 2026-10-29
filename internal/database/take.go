@@ -43,33 +43,33 @@ func takeLease(callerContext context.Context, server *ServerDatabase) (*Lease, e
 		}
 		return nil, classify(callerContext, tryContext, made, err, true)
 	}
-	lease, err := server.takeOver(tryContext, connection)
+	holder, sent, err := server.takeOver(tryContext, connection)
 	if err != nil {
-		closeQuietly(connection)
-		return nil, classify(callerContext, tryContext, nil, err, false)
+		closeErr := closeConnection(callerContext, connection)
+		return nil, classify(callerContext, tryContext, nil, errors.Join(err, closeErr), false)
 	}
-	return lease, nil
+	return startLease(callerContext, server, connection, holder, sent), nil
 }
 
 // takeOver makes the checks on the signed-in connection, in order, then the take. The errors it
 // returns that are the package's own pass through classify unchanged.
-func (server *ServerDatabase) takeOver(ctx context.Context, connection *pgx.Conn) (*Lease, error) {
+func (server *ServerDatabase) takeOver(ctx context.Context, connection *pgx.Conn) (string, time.Time, error) {
 	var tooPowerful bool
 	if err := connection.QueryRow(ctx, tooPowerfulQuery).Scan(&tooPowerful); err != nil {
-		return nil, err
+		return "", time.Time{}, err
 	}
 	if tooPowerful {
-		return nil, ErrTooPowerful
+		return "", time.Time{}, ErrTooPowerful
 	}
 	var readOnly string
 	if err := connection.QueryRow(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
-		return nil, err
+		return "", time.Time{}, err
 	}
 	if readOnly != "off" {
-		return nil, ErrReadOnly
+		return "", time.Time{}, ErrReadOnly
 	}
 	if err := checkSchemaVersion(ctx, connection); err != nil {
-		return nil, err
+		return "", time.Time{}, err
 	}
 
 	holder := uuid.NewV4().String()
@@ -78,20 +78,20 @@ func (server *ServerDatabase) takeOver(ctx context.Context, connection *pgx.Conn
 	sent := time.Now()
 	tag, err := connection.Exec(ctx, takeSQL, server.state.file.ServerID, holder, previous)
 	if err != nil {
-		return nil, err
+		return "", time.Time{}, err
 	}
 	if tag.RowsAffected() == 0 {
 		var present bool
 		if err := connection.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM hadv.servers WHERE id = $1)",
 			server.state.file.ServerID).Scan(&present); err != nil {
-			return nil, err
+			return "", time.Time{}, err
 		}
 		if !present {
-			return nil, ErrNoServerRow
+			return "", time.Time{}, ErrNoServerRow
 		}
-		return nil, ErrLeaseHeld
+		return "", time.Time{}, ErrLeaseHeld
 	}
-	return startLease(server, connection, holder, sent), nil
+	return holder, sent, nil
 }
 
 // checkSchemaVersion reads the version from the one row whose column is a not-null integer; the
@@ -137,10 +137,10 @@ func missingTable(err error) error {
 	return err
 }
 
-// closeQuietly closes a connection the engine is done with, waiting at most a second for the
-// database to take the goodbye.
-func closeQuietly(connection *pgx.Conn) {
-	ctx, release := context.WithTimeout(context.Background(), time.Second)
+// closeConnection closes a connection the engine is done with, waiting at most a second for the
+// database to take the goodbye, whatever has ended the context it is closed on behalf of.
+func closeConnection(ctx context.Context, connection *pgx.Conn) error {
+	closeContext, release := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer release()
-	_ = connection.Close(ctx)
+	return connection.Close(closeContext)
 }
