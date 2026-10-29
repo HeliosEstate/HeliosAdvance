@@ -77,7 +77,11 @@ const (
 	SchemaVersionMadeFor = 1
 	// LeaseSeconds is how long after the database's time a take or a renewal ends the lease.
 	LeaseSeconds = 30
-	// RenewSeconds is how often a held lease is renewed, so two renewals can fail before it ends.
+	// LossSeconds is how long after it sent its last take or renewal that succeeded the Lease
+	// counts the lease lost: short of LeaseSeconds, so the program has closed its listeners and
+	// callers before the database's lease ends and another run can take it.
+	LossSeconds = 25
+	// RenewSeconds is how often a held lease is renewed, so two renewals can fail before a loss.
 	RenewSeconds = 10
 	// TrySeconds is how long one take or one renewal waits on the database before it gives up,
 	// so none hangs past the lease.
@@ -262,9 +266,10 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //   - If the database refuses the sign-in, then Take shall return ErrSignInRefused.
 //   - If the login holds any role attribute but LOGIN and INHERIT (SUPERUSER, CREATEROLE,
 //     CREATEDB, REPLICATION and BYPASSRLS among them), is a member of any role but hadv_server,
-//     owns anything in the database, or holds, itself or through PUBLIC, a right on the database
-//     or on any schema or object in it that schema.sql does not grant hadv_server, then Take
-//     shall return ErrTooPowerful. Connecting to the database; USAGE on a language, on a data
+//     may grant hadv_server to another role, owns anything in the database, or holds, itself or
+//     through PUBLIC, a right on the database or on any schema or object in it that schema.sql
+//     does not grant hadv_server; or if hadv_server holds any role attribute but INHERIT; then
+//     Take shall return ErrTooPowerful. Connecting to the database; USAGE on a language, on a data
 //     type and on the schema public, which PostgreSQL gives every login by default; and the
 //     rights PostgreSQL gives every login by default on its own catalogs, are not counted; a right
 //     granted beyond those defaults on a catalog object, such as EXECUTE on pg_read_file, is.
@@ -296,7 +301,7 @@ func (server *ServerDatabase) Take(ctx context.Context) (*Lease, error) {
 //   - If a renewal fails for any reason but finding the row's lease holder is not its own, then
 //     the Lease shall try again at the next renewal, over a new connection when its connection
 //     failed.
-//   - When LeaseSeconds have passed since it sent its last take or renewal that succeeded, the
+//   - When LossSeconds have passed since it sent its last take or renewal that succeeded, the
 //     Lease shall close the channel Lost returns.
 //   - When a renewal finds the row's lease holder is not its own, the Lease shall close the channel
 //     Lost returns at once.
