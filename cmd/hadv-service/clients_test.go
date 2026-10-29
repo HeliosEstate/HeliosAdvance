@@ -374,7 +374,7 @@ func TestNothingKept(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
 			directory := t.TempDir()
-			command := exec.CommandContext(t.Context(), programPath, portOption, "0")
+			command := exec.CommandContext(t.Context(), programPath, databaseOption, sharedRowFile(t), portOption, "0")
 			command.Dir = directory
 			program := startCommand(t, command)
 			call := dial(t, program.listening(t)[0])

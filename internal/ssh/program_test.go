@@ -28,8 +28,10 @@ const startLimit = 30 * time.Second
 
 // TestMain builds the program the page's rows run from outside, under the race detector when
 // the tests run under it. A build that fails fails every such row with its reason, rather than
-// stopping before any runs; the contract's rows need no program.
+// stopping before any runs; the contract's rows need no program. It also prepares the database
+// the program needs before it listens.
 func TestMain(tests *testing.M) {
+	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-ssh-test-")
 	if err != nil {
 		buildFailure = err
@@ -53,6 +55,7 @@ func TestMain(tests *testing.M) {
 	if directory != "" {
 		_ = os.RemoveAll(directory)
 	}
+	removeOracle()
 	os.Exit(code)
 }
 
@@ -101,7 +104,7 @@ func runProgram(t *testing.T, options ...string) *engine {
 	if buildFailure != nil {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
-	command := exec.CommandContext(t.Context(), programPath, options...)
+	command := exec.CommandContext(t.Context(), programPath, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
 	command.WaitDelay = 5 * time.Second
 	if raceBuild {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
