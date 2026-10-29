@@ -108,6 +108,7 @@ func (lease *Lease) lose(ctx context.Context) {
 	state := &lease.state
 	close(state.lostSignal)
 	if state.connection != nil {
+		//nolint:errcheck // the lease is already lost, and a failed close has no one to tell
 		closeConnection(ctx, state.connection)
 		state.connection = nil
 	}
@@ -132,7 +133,9 @@ func (lease *Lease) end() {
 		}
 		state.connection = connection
 	}
+	//nolint:errcheck // EndLease returns nothing, and an end that fails leaves the lease to run out
 	state.connection.Exec(endContext, endSQL, state.server.state.file.ServerID, state.holder)
+	//nolint:errcheck // the connection is given up whether or not the close succeeds
 	state.connection.Close(endContext)
 	state.connection = nil
 }
