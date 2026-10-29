@@ -29,9 +29,50 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - A time limit is proved with a window: it opens at a moment provably before the engine's own
   clock started, such as before the dial or the call, and closes at the limit plus the margin
   measured on every runner. Each timed row logs how far into its window the event came.
+- A lower bound is read from when the caller's write began, an upper bound from when it
+  returned: a write can return well after the engine has read it.
+- How far a window may reach is set by its nearest fault: the broken copy, actually planted, that
+  would land closest to the limit. A window stays under half the gap to it. The Listener's tests
+  close a window at `margin` (750 ms) where that fault is near, such as a limit 900 ms too long;
+  at `wideMargin` (1.5 s) where it is 3 seconds or more away; and at `windowEnd` where the fault's
+  own clock started before the window opened.
+- A margin is measured at the load CI itself runs. A row that fails only under a load made up for
+  the measurement is named, and its margin is not widened for it.
+- A wait whose line claims no time, such as for the bytes a row needs before its next step, is
+  bounded by `progressLimit` (5 seconds) as a hang bound, never as a verdict on time.
 - A test waits on the clock only where the clock is what the line is about; otherwise it waits
   on an event. `time.Sleep` is refused by the linter.
-- Every test and subtest runs in parallel, each with its own sockets and its own Listener.
+- Every test and subtest runs in parallel, each with its own sockets and its own Listener, except
+  a test that must run alone (below).
+
+## Waits and hangs
+
+- Every wait a test makes has a bound: each read and write, each Start and Stop, each result a
+  goroutine hands back. A fault in the engine then fails its row by name; it never runs the
+  package into Go's test timeout, where every other row's verdict is lost with it.
+- A goroutine a row starts hands its result back over a channel, and only the row's own goroutine
+  reports. A goroutine that reports after its subtest has ended panics the whole package.
+- A cleanup that waits on the engine, such as a Stop, is registered so that it runs after the
+  row has let go of anything it holds back, such as a held Open; otherwise a fault that fails
+  the row first leaves the cleanup waiting for good.
+
+## Ports and tests that run alone
+
+- A test that checks the engine does not listen on a port, and skips a port the machine already
+  holds, runs alone, not in parallel: under a fault every parallel row's engine holds that port
+  too, and the check would skip it or see the fault only by chance. It carries
+  `//nolint:paralleltest` with its reason, on the test's line and on each row's.
+- A row that frees a port for the engine to take tries a fresh port only when the engine names
+  that freed address as in use, since a parallel test can take it in the gap; any other first
+  line is judged as before.
+
+## Reading a run
+
+- `check.sh` runs `go test` without `-v`, so a passing row's `t.Logf`, such as a timed row's place
+  in its window or a skipped port, never shows in CI's log. Run with `-v` to read them.
+- A branch that changes a locked test without a signed QA commit is refused at the first gates,
+  so no test runs on it. A probe that needs changed tests carries them as data under `testdata`
+  and copies them into a scratch worktree on the runner.
 
 ## Runners
 
