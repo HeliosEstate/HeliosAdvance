@@ -244,13 +244,16 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     and names its host.
 //   - Take shall sign in as the ConnectionFile's login, to its database, only by SCRAM-SHA-256
 //     with channel binding.
-//   - Take shall make the checks in the order of the lines below, and return the first failure.
+//   - Take shall make the checks in the order of the lines below, and return the first failure;
+//     until it has signed in, the first failure is the one the connection meets first.
 //   - If the database does not answer within TrySeconds, refuses the connection, or the
 //     connection fails after it is made, then Take shall return ErrUnreachable.
 //   - If the database answers that it is starting up, shutting down or recovering, then Take
 //     shall return ErrNotReady.
 //   - If the database answers that it has no connection free, then Take shall return
 //     ErrNoConnectionFree.
+//   - If the database will not use TLS 1.2 or 1.3, then Take shall return ErrRefused without
+//     sending the password.
 //   - If the database's certificate fails its check, or cannot be used for channel binding, then
 //     Take shall return ErrCertificate without sending the password.
 //   - If the database asks for any other way of signing in, then Take shall return
@@ -260,9 +263,10 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     CREATEDB, REPLICATION and BYPASSRLS among them), is a member of any role but hadv_server,
 //     owns anything in the database, or holds, itself or through PUBLIC, a right on the database
 //     or on any schema or object in it that schema.sql does not grant hadv_server, then Take
-//     shall return ErrTooPowerful. Connecting to the database, and the rights PostgreSQL gives
-//     every login by default on its own catalogs, are not counted; a right granted beyond those
-//     defaults on a catalog object, such as EXECUTE on pg_read_file, is.
+//     shall return ErrTooPowerful. Connecting to the database; USAGE on a language, on a data
+//     type and on the schema public, which PostgreSQL gives every login by default; and the
+//     rights PostgreSQL gives every login by default on its own catalogs, are not counted; a right
+//     granted beyond those defaults on a catalog object, such as EXECUTE on pg_read_file, is.
 //   - If the database answers that it is read-only, then Take shall return ErrReadOnly.
 //   - If hadv.schema_version is missing, holds no row, holds anything but one integer, or holds a
 //     version other than SchemaVersionMadeFor and the next, then Take shall return a
