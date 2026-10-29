@@ -244,7 +244,8 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //     and names its host.
 //   - Take shall sign in as the ConnectionFile's login, to its database, only by SCRAM-SHA-256
 //     with channel binding.
-//   - Take shall make the checks in the order of the lines below, and return the first failure.
+//   - Take shall make the checks in the order of the lines below, and return the first failure;
+//     until it has signed in, the first failure is the one the connection meets first.
 //   - If the database does not answer within TrySeconds, refuses the connection, or the
 //     connection fails after it is made, then Take shall return ErrUnreachable.
 //   - If the database answers that it is starting up, shutting down or recovering, then Take
