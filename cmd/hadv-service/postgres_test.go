@@ -528,11 +528,11 @@ func (server *postgres) triesBy(t *testing.T, login string) []time.Time {
 		if match == nil || match[2] != login || (match[3] != "FATAL" && !strings.Contains(line, "connection authorized")) {
 			continue
 		}
-		at, err := time.Parse("2006-01-02 15:04:05.000", match[1])
+		logged, err := time.Parse("2006-01-02 15:04:05.000", match[1])
 		if err != nil {
 			t.Fatalf("a time in the server's log read as %q", match[1])
 		}
-		tries = append(tries, at.UTC())
+		tries = append(tries, logged.UTC())
 	}
 	return tries
 }
