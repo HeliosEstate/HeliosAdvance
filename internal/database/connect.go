@@ -35,7 +35,7 @@ const fixedSettings = "host=localhost port=5432 user=u dbname=d password=p sslmo
 	"connect_timeout=10 target_session_attrs=any channel_binding=require require_auth=scram-sha-256 " +
 	"min_protocol_version=3.0 max_protocol_version=3.0 service=''"
 
-// settings returns the parsed settings, made at the first call.
+// settings parses once, at the first Take, since parsing writes and removes a file.
 func (server *ServerDatabase) settings() (*pgx.ConnConfig, error) {
 	state := &server.state
 	if state.config != nil {
@@ -66,7 +66,7 @@ func (server *ServerDatabase) settings() (*pgx.ConnConfig, error) {
 	config.KerberosSrvName, config.KerberosSpn, config.OAuthTokenProvider = "", "", nil
 	config.MinProtocolVersion, config.MaxProtocolVersion = "3.0", "3.0"
 	config.ChannelBinding, config.RequireAuth = "require", "scram-sha-256"
-	config.ConnectTimeout = TrySeconds * time.Second
+	config.ConnectTimeout = 0
 	config.MaxProtocolMessageBodyLen = ReplyMostBytes - 4
 	config.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
 	// One message per statement, with nothing prepared or cached: the engine runs a handful of
@@ -117,8 +117,8 @@ func (raw *socket) Close() error {
 	return raw.Conn.Close()
 }
 
-// attempt is one connection's record of its socket, which the dial function makes and the
-// classification of an error reads.
+// attempt carries the socket the dial function made to the classification of an error, which
+// cannot see it through the library.
 type attempt struct {
 	socket atomic.Pointer[socket]
 }
@@ -128,12 +128,12 @@ func (made *attempt) socketFailed() bool {
 	return raw != nil && raw.failed.Load()
 }
 
-// sslRequest is PostgreSQL's request to turn the connection into TLS, from its protocol
-// documentation: a length of 8 and the code 80877103.
+// sslRequest is what PostgreSQL's protocol needs sent, and answered with S, before any TLS: the
+// library's own TLS is off, so the package sends it, a length of 8 and the code 80877103.
 var sslRequest = []byte{0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f}
 
-// bindable is the signature algorithms tls-server-end-point defines a hash for and the library
-// can compute (RFC 5929).
+// bindable is the signature algorithms the library can hash for channel binding, so a
+// certificate outside them is refused before anything is sent (RFC 5929).
 var bindable = map[x509.SignatureAlgorithm]bool{
 	x509.MD5WithRSA: true, x509.SHA1WithRSA: true, x509.ECDSAWithSHA1: true,
 	x509.SHA256WithRSA: true, x509.SHA256WithRSAPSS: true, x509.ECDSAWithSHA256: true,
@@ -202,7 +202,8 @@ func secure(ctx context.Context, wrapped *socket, host string, roots *x509.CertP
 	return secured, nil
 }
 
-// connect makes one signed-in connection from a copy of the settings.
+// connect copies the settings for each connection, since the dial function is each connection's
+// own and the library keeps what it is given.
 func (server *ServerDatabase) connect(ctx context.Context) (*pgx.Conn, *attempt, error) {
 	config, err := server.settings()
 	if err != nil {

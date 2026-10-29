@@ -70,7 +70,7 @@ SELECT
     OR EXISTS (SELECT 1 FROM pg_shdepend d
         WHERE d.deptype = 'o' AND d.refclassid = 'pg_authid'::regclass
           AND d.refobjid IN (SELECT oid FROM me UNION SELECT oid FROM server)
-          AND d.dbid IN (0, (SELECT oid FROM pg_database WHERE datname = current_database())))
+          AND d.dbid = (SELECT oid FROM pg_database WHERE datname = current_database()))
     OR EXISTS (SELECT 1 FROM held h WHERE (
         -- schema.sql's four grants to hadv_server.
         (h.grantee = (SELECT oid FROM server) AND NOT h.is_grantable AND (

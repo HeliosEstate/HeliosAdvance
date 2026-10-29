@@ -16,7 +16,8 @@ import (
 	"strconv"
 )
 
-// The seven fields the format names.
+// The field names are compared exactly: "Host" and "host " are fields the format does not name,
+// not spellings of one it does.
 const (
 	fieldServerID    = "server_id"
 	fieldHost        = "host"
@@ -30,7 +31,8 @@ const (
 var fileFields = []string{fieldServerID, fieldHost, fieldPort, fieldDatabase, fieldLogin, fieldPassword,
 	fieldCertificate}
 
-// groupOrOthersRead is the mode bits that let a group or others read a file.
+// groupOrOthersRead is any of the bits that let someone but the owner read a file that holds a
+// password.
 const groupOrOthersRead = 0o044
 
 func readConnectionFile(path string) (ConnectionFile, error) {

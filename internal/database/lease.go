@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The renewal and the end write the lease end from the database's own time, and only while the
-// row's holder is this Lease's own.
+// Both write only while the row's holder is this Lease's own, so a run that lost the lease cannot
+// take it back by renewing or by ending it.
 var (
 	renewSQL = "UPDATE hadv.servers SET lease_until = " + leaseEndSQL + " WHERE id = $1 AND lease_holder = $2::text::uuid"
 	endSQL   = "UPDATE hadv.servers SET lease_until = now() WHERE id = $1 AND lease_holder = $2::text::uuid"

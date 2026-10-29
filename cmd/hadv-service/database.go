@@ -113,7 +113,8 @@ func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey
 	return listeners, addresses, nil
 }
 
-// startAll starts every listener.
+// startAll is apart from serve so that serve, which holds the stop context, does not call a
+// Listener's Start, which takes none.
 func startAll(listeners []*listener.Listener) {
 	for _, kindListener := range listeners {
 		kindListener.Start()

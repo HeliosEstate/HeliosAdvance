@@ -15,7 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// leaseEndSQL is the new lease end, LeaseSeconds after the database's own time.
+// leaseEndSQL takes its time from the database, so a run whose clock is wrong cannot hold a lease
+// too long.
 var leaseEndSQL = "now() + interval '" + strconv.Itoa(LeaseSeconds) + " seconds'"
 
 // takeSQL writes the new holder only while the lease has ended or the holder is the one last
@@ -23,7 +24,7 @@ var leaseEndSQL = "now() + interval '" + strconv.Itoa(LeaseSeconds) + " seconds'
 var takeSQL = "UPDATE hadv.servers SET lease_holder = $2::text::uuid, lease_until = " + leaseEndSQL +
 	" WHERE id = $1 AND (lease_until <= now() OR lease_holder = $3::text::uuid)"
 
-// The SQLSTATE codes of a missing schema or table.
+// A missing schema or table reads as a missing version, since either way no version is there.
 const (
 	undefinedTable = "42P01"
 	invalidSchema  = "3F000"
@@ -46,7 +47,7 @@ func takeLease(callerContext context.Context, server *ServerDatabase) (*Lease, e
 	holder, sent, err := server.takeOver(tryContext, connection)
 	if err != nil {
 		closeErr := closeConnection(callerContext, connection)
-		return nil, classify(callerContext, tryContext, nil, errors.Join(err, closeErr), false)
+		return nil, classify(callerContext, tryContext, made, errors.Join(err, closeErr), false)
 	}
 	return startLease(callerContext, server, connection, holder, sent), nil
 }

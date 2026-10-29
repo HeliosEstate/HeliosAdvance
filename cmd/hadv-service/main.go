@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command hadv-service is the Helios Advance engine as a sysop runs it: it opens the loopback
-// listening sockets, makes each kind's Listener from that kind's sockets, and closes everything
-// when told to stop. It exists so the sysop has one program to start, and one local log, standard
-// error, to read.
+// Command hadv-service is the Helios Advance engine as a sysop runs it: it reads the
+// connection file, takes its server's lease, and only while it holds the lease opens the loopback
+// listening sockets, closing everything when the lease is lost or it is told to stop. It exists so
+// the sysop has one program to start, and one local log, standard error, to read.
 package main
 
 import (
