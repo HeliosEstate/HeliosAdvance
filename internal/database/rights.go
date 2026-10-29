@@ -4,9 +4,11 @@
 package database
 
 // tooPowerfulQuery is true when the login, run as itself, holds more than a server's login is
-// granted. Each source below is an ACL in the database, read with aclexplode; a NULL ACL is read
-// as PostgreSQL's default for the object's owner. A source gives its kind's catalog, the object,
-// its schema, its name, a column's name, the ACL, and the ACL the object started with.
+// granted, or when hadv_server, whose powers every login shares, holds an attribute but INHERIT.
+//
+// Each source below is an ACL in the database, read with aclexplode; a NULL ACL is read as
+// PostgreSQL's default for the object's owner. A source gives its kind's catalog, the object, its
+// schema, its name, a column's name, the ACL, and the ACL the object started with.
 //
 // Schemas, relations and functions are named, not cast with regclass, so a missing hadv table
 // cannot fail this query before the schema version is read.
@@ -63,6 +65,10 @@ held AS (
 SELECT
     EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user
         AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls))
+    OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hadv_server'
+        AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls))
+    OR EXISTS (SELECT 1 FROM pg_auth_members m
+        WHERE m.roleid = (SELECT oid FROM server) AND m.member = (SELECT oid FROM me) AND m.admin_option)
     OR EXISTS (SELECT 1 FROM pg_roles r
         WHERE r.rolname NOT IN (current_user, 'hadv_server') AND pg_has_role(current_user, r.oid, 'MEMBER'))
     OR EXISTS (SELECT 1 FROM pg_database d WHERE d.datname = current_database()

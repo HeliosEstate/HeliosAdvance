@@ -223,9 +223,9 @@ func classify(callerContext, tryContext context.Context, made *attempt, err erro
 	if callerContext.Err() != nil {
 		return fmt.Errorf("database: take: %w", callerContext.Err())
 	}
-	if tryContext.Err() != nil {
-		return ErrUnreachable
-	}
+	// What the database answered stands even when the try's time has run out by now: the close
+	// before this call can take a second. A query cut off by the deadline is a context error, so
+	// it is none of these.
 	var badVersion *SchemaVersionError
 	if errors.As(err, &badVersion) {
 		return badVersion
@@ -234,8 +234,15 @@ func classify(callerContext, tryContext context.Context, made *attempt, err erro
 	if errors.As(err, &refusal) {
 		return bySQLState(refusal.Code)
 	}
-	for _, own := range []error{ErrUnreachable, ErrCertificate, ErrRefused, ErrTooPowerful, ErrReadOnly,
-		ErrNoServerRow, ErrLeaseHeld} {
+	for _, answered := range []error{ErrTooPowerful, ErrReadOnly, ErrNoServerRow, ErrLeaseHeld} {
+		if errors.Is(err, answered) {
+			return answered
+		}
+	}
+	if tryContext.Err() != nil {
+		return ErrUnreachable
+	}
+	for _, own := range []error{ErrUnreachable, ErrCertificate, ErrRefused} {
 		if errors.Is(err, own) {
 			return own
 		}

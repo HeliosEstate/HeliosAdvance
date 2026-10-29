@@ -24,10 +24,12 @@ var leaseEndSQL = "now() + interval '" + strconv.Itoa(LeaseSeconds) + " seconds'
 var takeSQL = "UPDATE hadv.servers SET lease_holder = $2::text::uuid, lease_until = " + leaseEndSQL +
 	" WHERE id = $1 AND (lease_until <= now() OR lease_holder = $3::text::uuid)"
 
-// A missing schema or table reads as a missing version, since either way no version is there.
+// A missing schema, table or version column reads as a missing version, since in each no version
+// is there.
 const (
-	undefinedTable = "42P01"
-	invalidSchema  = "3F000"
+	undefinedTable  = "42P01"
+	invalidSchema   = "3F000"
+	undefinedColumn = "42703"
 )
 
 func takeLease(callerContext context.Context, server *ServerDatabase) (*Lease, error) {
@@ -129,10 +131,12 @@ func checkSchemaVersion(ctx context.Context, connection *pgx.Conn) error {
 	return nil
 }
 
-// missingTable reads a missing schema or table as a missing version; any other error stays.
+// missingTable reads a missing schema, table or column as a missing version; any other error
+// stays.
 func missingTable(err error) error {
 	var refusal *pgconn.PgError
-	if errors.As(err, &refusal) && (refusal.Code == undefinedTable || refusal.Code == invalidSchema) {
+	if errors.As(err, &refusal) &&
+		(refusal.Code == undefinedTable || refusal.Code == invalidSchema || refusal.Code == undefinedColumn) {
 		return &SchemaVersionError{Missing: true}
 	}
 	return err

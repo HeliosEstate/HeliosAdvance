@@ -70,7 +70,12 @@ func serve(log func(key, value string), server *database.ServerDatabase,
 		select {
 		case <-stopContext.Done():
 			stopAll(listeners)
-			lease.EndLease()
+			// A select takes either ready case at random, and a lost lease has nothing to end.
+			select {
+			case <-lease.Lost():
+			default:
+				lease.EndLease()
+			}
 			return 0
 		case <-lease.Lost():
 			stopAll(listeners)

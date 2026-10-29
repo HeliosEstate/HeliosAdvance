@@ -28,14 +28,17 @@ func startLease(callerContext context.Context, server *ServerDatabase, connectio
 	return lease
 }
 
-// run renews every RenewSeconds and watches the clock from the last send that succeeded. The
-// clock is the engine's monotonic one, so a change of the wall clock cannot extend a lease.
+// run renews every RenewSeconds and counts the lease lost LossSeconds after the last send that
+// succeeded: short of the LeaseSeconds the database was told, so the listeners are closed before
+// another run can take the lease. The clock is the engine's monotonic one, so a change of the
+// wall clock cannot extend a lease.
 func (lease *Lease) run(ctx context.Context, lastSent time.Time) {
 	state := &lease.state
 	defer close(state.stopped)
 	ticker := time.NewTicker(RenewSeconds * time.Second)
 	defer ticker.Stop()
-	expiry := time.NewTimer(time.Until(lastSent.Add(LeaseSeconds * time.Second)))
+	lossAt := lossTime(lastSent)
+	expiry := time.NewTimer(time.Until(lossAt))
 	defer expiry.Stop()
 	for {
 		select {
@@ -45,7 +48,7 @@ func (lease *Lease) run(ctx context.Context, lastSent time.Time) {
 			lease.lose(ctx)
 			return
 		case <-ticker.C:
-			sent, found := lease.renew(ctx, lastSent.Add(LeaseSeconds*time.Second))
+			sent, found := lease.renew(ctx, lossAt)
 			switch {
 			case ctx.Err() != nil:
 				return
@@ -53,14 +56,18 @@ func (lease *Lease) run(ctx context.Context, lastSent time.Time) {
 				lease.lose(ctx)
 				return
 			case found == renewed:
-				lastSent = sent
-				expiry.Reset(time.Until(lastSent.Add(LeaseSeconds * time.Second)))
-			case !time.Now().Before(lastSent.Add(LeaseSeconds * time.Second)):
+				lossAt = lossTime(sent)
+				expiry.Reset(time.Until(lossAt))
+			case !time.Now().Before(lossAt):
 				lease.lose(ctx)
 				return
 			}
 		}
 	}
+}
+
+func lossTime(sent time.Time) time.Time {
+	return sent.Add(LossSeconds * time.Second)
 }
 
 type renewal int
@@ -71,13 +78,13 @@ const (
 	notOwn
 )
 
-// renew makes one renewal, waiting on the database until TrySeconds on or the lease's end,
+// renew makes one renewal, waiting on the database until TrySeconds on or the loss time,
 // whichever comes first, and connects anew when the connection is closed.
-func (lease *Lease) renew(ctx context.Context, end time.Time) (time.Time, renewal) {
+func (lease *Lease) renew(ctx context.Context, lossAt time.Time) (time.Time, renewal) {
 	state := &lease.state
 	deadline := time.Now().Add(TrySeconds * time.Second)
-	if end.Before(deadline) {
-		deadline = end
+	if lossAt.Before(deadline) {
+		deadline = lossAt
 	}
 	attemptContext, release := context.WithDeadline(ctx, deadline)
 	defer release()
@@ -115,14 +122,21 @@ func (lease *Lease) lose(ctx context.Context) {
 }
 
 // end stops the goroutine, then sets the lease end to the database's time over the Lease's
-// connection, or a new one when it has none, all within EndWaitMilliseconds, and closes the
-// connection. Lost stays open: a stop is not a loss.
+// connection, or a new one when it has none, within EndWaitMilliseconds, and closes the
+// connection. Lost stays open: a stop is not a loss. The wait starts once the goroutine has
+// stopped, since a goroutine closing a lost lease's connection takes up to a second of its own,
+// and a lost lease needs no end.
 func (lease *Lease) end() {
 	state := &lease.state
-	endContext, release := context.WithTimeout(context.Background(), EndWaitMilliseconds*time.Millisecond)
-	defer release()
 	state.cancel()
 	<-state.stopped
+	select {
+	case <-state.lostSignal:
+		return
+	default:
+	}
+	endContext, release := context.WithTimeout(context.Background(), EndWaitMilliseconds*time.Millisecond)
+	defer release()
 	if state.connection != nil && state.connection.IsClosed() {
 		state.connection = nil
 	}
