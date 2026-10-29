@@ -25,6 +25,7 @@ import (
 const (
 	tryLimit       = 10 * time.Second
 	leaseLength    = 30 * time.Second
+	lossAfter      = 25 * time.Second
 	renewEvery     = 10 * time.Second
 	endWait        = time.Second
 	replyMostBytes = 1048576
@@ -417,7 +418,7 @@ func TestTake(t *testing.T) {
 		})
 	})
 
-	t.Run("If the login holds any role attribute but LOGIN and INHERIT (SUPERUSER, CREATEROLE, CREATEDB, REPLICATION and BYPASSRLS among them), is a member of any role but hadv_server, owns anything in the database, or holds, itself or through PUBLIC, a right on the database or on any schema or object in it that schema.sql does not grant hadv_server, then Take shall return ErrTooPowerful. Connecting to the database; USAGE on a language, on a data type and on the schema public, which PostgreSQL gives every login by default; and the rights PostgreSQL gives every login by default on its own catalogs, are not counted; a right granted beyond those defaults on a catalog object, such as EXECUTE on pg_read_file, is.", func(t *testing.T) {
+	t.Run("If the login holds any role attribute but LOGIN and INHERIT (SUPERUSER, CREATEROLE, CREATEDB, REPLICATION and BYPASSRLS among them), is a member of any role but hadv_server, may grant hadv_server to another role, owns anything in the database, or holds, itself or through PUBLIC, a right on the database or on any schema or object in it that schema.sql does not grant hadv_server; or if hadv_server holds any role attribute but INHERIT; then Take shall return ErrTooPowerful. Connecting to the database; USAGE on a language, on a data type and on the schema public, which PostgreSQL gives every login by default; and the rights PostgreSQL gives every login by default on its own catalogs, are not counted; a right granted beyond those defaults on a catalog object, such as EXECUTE on pg_read_file, is.", func(t *testing.T) {
 		t.Parallel()
 		// Each change is made as the superuser in the board's database, its names filled in.
 		cases := []struct {
@@ -432,6 +433,7 @@ func TestTake(t *testing.T) {
 			{"a member of pg_read_all_data", "GRANT pg_read_all_data TO {login}"},
 			{"a member of a role with no rights", "CREATE ROLE {login}_extra NOLOGIN; GRANT {login}_extra TO {login}"},
 			{"a member of a SUPERUSER role that cannot log in", "CREATE ROLE {login}_admin SUPERUSER NOLOGIN; GRANT {login}_admin TO {login}"},
+			{"able to grant hadv_server to another role", "GRANT hadv_server TO {login} WITH ADMIN OPTION"},
 			{"the owner of a table in public", "CREATE TABLE public.{login}_owned (value integer); ALTER TABLE public.{login}_owned OWNER TO {login}"},
 			{"the owner of the database", "ALTER DATABASE {database} OWNER TO {login}"},
 			{"CREATE on the database", "GRANT CREATE ON DATABASE {database} TO {login}"},
@@ -475,6 +477,21 @@ func TestTake(t *testing.T) {
 			lease, err := take(t, created.file())
 			expectTakeError(t, lease, err, database.ErrTooPowerful, created.password)
 		})
+		// hadv_server is one role for the whole server, so each attribute is given and taken back
+		// in turn, on a server of this row's own, with a new board for each; the log names the
+		// attribute a failure comes under.
+		t.Run("hadv_server holding SUPERUSER, CREATEROLE, CREATEDB, REPLICATION, BYPASSRLS or LOGIN, each in turn: ErrTooPowerful", func(t *testing.T) {
+			t.Parallel()
+			server := startPostgres(t, serverOptions{})
+			for _, attribute := range []string{"SUPERUSER", "CREATEROLE", "CREATEDB", "REPLICATION", "BYPASSRLS", "LOGIN"} {
+				t.Logf("hadv_server given %s", attribute)
+				created := server.newBoard(t)
+				server.sql(t, superuser, "ALTER ROLE hadv_server "+attribute)
+				lease, err := take(t, created.file())
+				expectTakeError(t, lease, err, database.ErrTooPowerful, created.password)
+				server.sql(t, superuser, "ALTER ROLE hadv_server NO"+attribute)
+			}
+		})
 		t.Run("a login made as schema.sql says, holding PostgreSQL's defaults alone: taken", func(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
@@ -514,6 +531,7 @@ func TestTake(t *testing.T) {
 			"the version NULL":               "ALTER TABLE hadv.schema_version ALTER COLUMN version DROP NOT NULL; UPDATE hadv.schema_version SET version = NULL",
 			"two rows":                       "DROP INDEX hadv.schema_version_one_row; INSERT INTO hadv.schema_version VALUES (1)",
 			"the version a text holding abc": "ALTER TABLE hadv.schema_version ALTER COLUMN version TYPE text; UPDATE hadv.schema_version SET version = 'abc'",
+			"the version column dropped":     "ALTER TABLE hadv.schema_version DROP COLUMN version",
 		}
 		for name, change := range missing {
 			t.Run(name+": a *SchemaVersionError, Missing", func(t *testing.T) {

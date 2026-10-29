@@ -29,6 +29,7 @@ const (
 	tryLimit      = 10 * time.Second
 	renewEvery    = 10 * time.Second
 	leaseLength   = 30 * time.Second
+	lossAfter     = 25 * time.Second
 	endLeaseWait  = time.Second
 	waitLineLimit = 30 * time.Second
 	holderPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
@@ -586,19 +587,19 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If 30 seconds pass after it sent its last take or renewal that succeeded, or a renewal finds the lease holder is not its own, then the engine shall close every open connection and every listener, write one `lease_lost` line, and try to take the lease again every 10 seconds.", func(t *testing.T) {
+	t.Run("If 25 seconds pass after it sent its last take or renewal that succeeded, or a renewal finds the lease holder is not its own, then the engine shall close every open connection and every listener, write one `lease_lost` line, and try to take the lease again every 10 seconds.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the row locked after a renewal: lease_lost 30 s after it, the caller's connection and every listener closed; the row freed: started again", func(t *testing.T) {
+		t.Run("the row locked after a renewal: lease_lost 25 s after it, the caller's connection and every listener closed; the row freed: started again", func(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			program := startOnBoard(t, created)
 			addresses := program.listening(t)
 			renewed := created.waitForUpdates(t, 2, time.Now().Add(renewEvery+2*leaseMargin))[1].transactionStart
 			lock := created.lockRow(t)
-			pause(t, time.Until(renewed.Add(leaseLength-5*time.Second)))
+			pause(t, time.Until(renewed.Add(lossAfter-5*time.Second)))
 			call := waitingCaller(t, addresses[0])
-			_, lost := program.expectLine(t, 1, "lease_lost", renewed.Add(leaseLength+2*leaseMargin))
-			expectLeaseWithin(t, "lease_lost", lost, renewed.Add(leaseLength-leaseMargin), renewed.Add(leaseLength+leaseMargin))
+			_, lost := program.expectLine(t, 1, "lease_lost", renewed.Add(lossAfter+2*leaseMargin))
+			expectLeaseWithin(t, "lease_lost", lost, renewed.Add(lossAfter-leaseMargin), renewed.Add(lossAfter+leaseMargin))
 			call.expectEnd(t, lost.Add(-leaseMargin), lost.Add(margin))
 			for _, address := range addresses {
 				expectRefused(t, address)

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The lease once taken: its renewals, read from the tests' record of every update to the row;
-// its loss, after 30 seconds without a renewal or at once when another run's holder is found;
+// its loss, 25 seconds after it sent its last take or renewal that succeeded, or at once when
+// another run's holder is found;
 // what it does once lost; and ending it. Each row waits on the clock, since the clock is what
 // these lines are about.
 package database_test
@@ -139,12 +140,15 @@ func TestLease(t *testing.T) {
 			sent := server.waitForUpdatesSent(t, created.login, locked, 2, taken.transactionStart.Add(2*renewEvery+2*timingMargin))
 			lock.release(t)
 			// When the renewal landed is read from the database's own record, not from when a
-			// poll saw it: on a loaded machine one psql call can outlast the deadline.
-			deadline := taken.transactionStart.Add(leaseLength)
+			// poll saw it: on a loaded machine one psql call can outlast the deadline. A
+			// statement's transaction starts a little before the database logs the statement, so
+			// a renewal is told from the one kept waiting by starting a second after that one's
+			// log line, not by starting after its own.
+			deadline := taken.transactionStart.Add(lossAfter)
 			var landed time.Time
 			for landed.IsZero() {
 				for _, change := range created.updates(t)[1:] {
-					if !change.transactionStart.Before(sent[1].Truncate(time.Millisecond)) {
+					if change.transactionStart.After(sent[0].Add(time.Second)) {
 						landed = change.recorded
 						break
 					}
@@ -161,24 +165,24 @@ func TestLease(t *testing.T) {
 		})
 	})
 
-	t.Run("When LeaseSeconds have passed since it sent its last take or renewal that succeeded, the Lease shall close the channel Lost returns.", func(t *testing.T) {
+	t.Run("When LossSeconds have passed since it sent its last take or renewal that succeeded, the Lease shall close the channel Lost returns.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the row locked straight after the take: lost 30 s after the take", func(t *testing.T) {
+		t.Run("the row locked straight after the take: lost 25 s after the take", func(t *testing.T) {
 			t.Parallel()
 			created, lease, taken := takeBoard(t, sharedServer(t))
 			created.lockRow(t)
-			lost := waitForLost(t, lease, taken.transactionStart.Add(leaseLength+2*timingMargin))
-			expectWithin(t, "the loss", lost, taken.transactionStart.Add(leaseLength-timingMargin), taken.transactionStart.Add(leaseLength+timingMargin))
+			lost := waitForLost(t, lease, taken.transactionStart.Add(lossAfter+2*timingMargin))
+			expectWithin(t, "the loss", lost, taken.transactionStart.Add(lossAfter-timingMargin), taken.transactionStart.Add(lossAfter+timingMargin))
 		})
-		t.Run("the server stopped straight after the first renewal: lost 30 s after that renewal", func(t *testing.T) {
+		t.Run("the server stopped straight after the first renewal: lost 25 s after that renewal", func(t *testing.T) {
 			t.Parallel()
 			server := startPostgres(t, serverOptions{})
 			created, lease, taken := takeBoard(t, server)
 			changes := created.waitForUpdates(t, 2, taken.transactionStart.Add(renewEvery+timingMargin+time.Second))
 			server.control(t, "stop", "-m", "fast", "-w", "-t", "60")
 			renewed := changes[1].transactionStart
-			lost := waitForLost(t, lease, renewed.Add(leaseLength+2*timingMargin))
-			expectWithin(t, "the loss", lost, renewed.Add(leaseLength-timingMargin), renewed.Add(leaseLength+timingMargin))
+			lost := waitForLost(t, lease, renewed.Add(lossAfter+2*timingMargin))
+			expectWithin(t, "the loss", lost, renewed.Add(lossAfter-timingMargin), renewed.Add(lossAfter+timingMargin))
 		})
 	})
 
@@ -210,7 +214,7 @@ func TestLease(t *testing.T) {
 			server := startPostgres(t, serverOptions{})
 			created, lease, taken := takeBoard(t, server)
 			server.control(t, "stop", "-m", "fast", "-w", "-t", "60")
-			lost := waitForLost(t, lease, taken.transactionStart.Add(leaseLength+2*timingMargin))
+			lost := waitForLost(t, lease, taken.transactionStart.Add(lossAfter+2*timingMargin))
 			server.control(t, "start", "-w", "-t", "60", "-l", server.logPath)
 			through := time.Now().Add(renewEvery + timingMargin)
 			expectNoUpdateAfter(t, created, 1, through)
@@ -290,7 +294,7 @@ func TestLease(t *testing.T) {
 			lease, err := takeWith(t, made)
 			first := expectTaken(t, lease, err, created)
 			lock := created.lockRow(t)
-			waitForLost(t, lease, time.Now().Add(leaseLength+2*timingMargin))
+			waitForLost(t, lease, time.Now().Add(lossAfter+2*timingMargin))
 			lock.release(t)
 			created.setRow(t, first.holder, "now() + interval '1 hour'")
 			other, err := take(t, created.file())

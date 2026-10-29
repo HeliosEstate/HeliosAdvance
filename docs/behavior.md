@@ -295,7 +295,7 @@ starting and on the local log.
   has ended or its lease holder is this run's own.
 - While it holds its server's lease, the engine shall renew it every 10 seconds, writing a lease
   end 30 seconds after the database's current time, only while the row's lease holder is its own.
-- If 30 seconds pass after it sent its last take or renewal that succeeded, or a renewal finds the
+- If 25 seconds pass after it sent its last take or renewal that succeeded, or a renewal finds the
   lease holder is not its own, then the engine shall close every open connection and every
   listener, write one `lease_lost` line, and try to take the lease again every 10 seconds.
 - When it receives a stop signal while it holds its server's lease, the engine shall set the
