@@ -117,8 +117,9 @@ func (raw *socket) Close() error {
 	return raw.Conn.Close()
 }
 
-// attempt carries the socket the dial function made to the classification of an error, which
-// cannot see it through the library.
+// attempt carries the socket the connection was made on to the classification of an error, which
+// cannot see it through the library. Only the first socket is kept: the library dials again for a
+// cancel request after a failed read, and that fresh socket would hide the failure.
 type attempt struct {
 	socket atomic.Pointer[socket]
 }
@@ -160,7 +161,7 @@ func (server *ServerDatabase) dial(made *attempt) pgconn.DialFunc {
 			return nil, ErrUnreachable
 		}
 		wrapped := &socket{Conn: raw}
-		made.socket.Store(wrapped)
+		made.socket.CompareAndSwap(nil, wrapped)
 		// A context that ends mid-handshake closes the socket, which fails the handshake's read.
 		stop := context.AfterFunc(ctx, func() { wrapped.abandon() })
 		defer stop()

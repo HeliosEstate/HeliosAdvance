@@ -3,7 +3,8 @@
 
 package database
 
-// tooPowerfulQuery is true when the login, run as itself, holds more than a server's login is
+// tooPowerfulQuery is true when the login itself (session_user: a default role it signs in under
+// must not hide its own rights) holds more than a server's login is
 // granted, or when hadv_server, whose powers every login shares, holds an attribute but INHERIT.
 //
 // Each source below is an ACL in the database, read with aclexplode; a NULL ACL is read as
@@ -13,7 +14,7 @@ package database
 // Schemas, relations and functions are named, not cast with regclass, so a missing hadv table
 // cannot fail this query before the schema version is read.
 const tooPowerfulQuery = `
-WITH me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
+WITH me AS (SELECT oid FROM pg_roles WHERE rolname = session_user),
 server AS (SELECT oid FROM pg_roles WHERE rolname = 'hadv_server'),
 grantees AS (SELECT oid FROM me UNION SELECT oid FROM server UNION SELECT 0::oid),
 sources AS (
@@ -63,14 +64,14 @@ held AS (
     WHERE a.grantee IN (SELECT oid FROM grantees)
 )
 SELECT
-    EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user
+    EXISTS (SELECT 1 FROM pg_roles WHERE rolname = session_user
         AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls))
     OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hadv_server'
         AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls))
     OR EXISTS (SELECT 1 FROM pg_auth_members m
         WHERE m.roleid = (SELECT oid FROM server) AND m.member = (SELECT oid FROM me) AND m.admin_option)
     OR EXISTS (SELECT 1 FROM pg_roles r
-        WHERE r.rolname NOT IN (current_user, 'hadv_server') AND pg_has_role(current_user, r.oid, 'MEMBER'))
+        WHERE r.rolname NOT IN (session_user, 'hadv_server') AND pg_has_role(session_user, r.oid, 'MEMBER'))
     OR EXISTS (SELECT 1 FROM pg_database d WHERE d.datname = current_database()
         AND d.datdba IN (SELECT oid FROM me UNION SELECT oid FROM server))
     OR EXISTS (SELECT 1 FROM pg_shdepend d
