@@ -5,29 +5,35 @@ package database
 
 import (
 	"context"
-	"errors"
+	"crypto/x509"
 	"strconv"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The contract's operations hand their work to the unexported functions below, so the contract
-// builds before the package is built and the build never needs to change the contract. Each
-// placeholder here is replaced by the issue that builds it, and fails until then, so nothing calls
-// it yet.
+// The contract's operations hand their work to the unexported functions in this package's other
+// files, so the contract builds before the package is built and the build never needs to change
+// the contract.
 
 type serverDatabaseState struct {
-	config *pgconn.Config
+	file ConnectionFile
+	// config and roots are made at the first Take and kept, since parsing writes and reads a file.
+	config *pgx.ConnConfig
+	roots  *x509.CertPool
+	// lastHolder is the lease holder last sent, whether or not the reply came back.
+	lastHolder *string
 }
 
 type leaseState struct {
+	server     *ServerDatabase
+	holder     string
 	connection *pgx.Conn
 	lostSignal chan struct{}
+	cancel     context.CancelFunc
+	stopped    chan struct{}
+	endOnce    sync.Once
 }
-
-// errNotBuilt is what a placeholder returns until its issue builds it.
-var errNotBuilt = errors.New("database: not built yet")
 
 func schemaVersionText(failure *SchemaVersionError) string {
 	if failure == nil || failure.Missing {
@@ -37,33 +43,18 @@ func schemaVersionText(failure *SchemaVersionError) string {
 		" is not one this engine accepts"
 }
 
-func readConnectionFile(_ string) (ConnectionFile, error) {
-	return ConnectionFile{}, errNotBuilt
+func newServerDatabase(file ConnectionFile) *ServerDatabase {
+	return &ServerDatabase{state: serverDatabaseState{file: file}}
 }
 
-func newServerDatabase(_ ConnectionFile) *ServerDatabase {
-	return &ServerDatabase{}
-}
-
-func (server *ServerDatabase) take(_ context.Context) (*Lease, error) {
-	if server == nil || server.state.config == nil {
-		return nil, errNotBuilt
-	}
-	return nil, errNotBuilt
+func (server *ServerDatabase) take(ctx context.Context) (*Lease, error) {
+	return takeLease(ctx, server)
 }
 
 func (lease *Lease) lost() <-chan struct{} {
-	if lease == nil || lease.state.lostSignal == nil {
-		closed := make(chan struct{})
-		close(closed)
-		return closed
-	}
 	return lease.state.lostSignal
 }
 
 func (lease *Lease) endLease() {
-	if lease == nil || lease.state.connection == nil {
-		return
-	}
-	lease.state.connection = nil
+	lease.state.endOnce.Do(lease.end)
 }
