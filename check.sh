@@ -246,8 +246,7 @@ if [ "${SKIP_GO:-}" = 1 ]; then echo "no Go in the change set; Go gates skipped"
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
   echo "Go gates checked by another job of this run; tests only"
-fi
-if [ -n "$pkgs" ] && [ "${GATES:-1}" != 0 ]; then
+elif [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
   need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
   need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"

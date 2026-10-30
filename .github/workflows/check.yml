@@ -69,9 +69,11 @@ jobs:
   # under, so Linux takes two jobs and Windows, slower, three. The Go gates run once per system,
   # before the tests in that system's shortest job without the race detector, never beside a timed
   # row (#258's probes, 2026-10-30).
-  # On a pull request, the Linux x86-64 gates job also runs check.sh's mutation mode on the
-  # changed code, so a weak test is found before the developer reviews. It stops at an hour, a
-  # limit the developer agreed on 2026-10-16.
+  # On a pull request, the row marked mutation (Linux x86-64, without the race detector, the
+  # rest) also runs check.sh's mutation mode on the changed code, so a weak test is found before
+  # the developer reviews. It stops at an hour, a limit the developer agreed on 2026-10-16.
+  # A row's except names packages from the module's root, so a package nested deeper under the
+  # same name is still tested.
   run:
     needs: changes
     if: needs.changes.outputs.skip == '0'
@@ -80,18 +82,18 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest, mode: norace, group: listener, pkgs: ./internal/listener, gates: true }
-          - { os: ubuntu-latest, mode: norace, group: rest, except: "/internal/listener$", gates: false }
+          - { os: ubuntu-latest, mode: norace, group: rest, except: "internal/listener", gates: false, mutation: true }
           - { os: ubuntu-latest, mode: race, group: listener, pkgs: ./internal/listener, gates: false }
-          - { os: ubuntu-latest, mode: race, group: rest, except: "/internal/listener$", gates: false }
+          - { os: ubuntu-latest, mode: race, group: rest, except: "internal/listener", gates: false }
           - { os: ubuntu-24.04-arm, mode: norace, group: listener, pkgs: ./internal/listener, gates: true }
-          - { os: ubuntu-24.04-arm, mode: norace, group: rest, except: "/internal/listener$", gates: false }
+          - { os: ubuntu-24.04-arm, mode: norace, group: rest, except: "internal/listener", gates: false }
           - { os: ubuntu-24.04-arm, mode: race, group: listener, pkgs: ./internal/listener, gates: false }
-          - { os: ubuntu-24.04-arm, mode: race, group: rest, except: "/internal/listener$", gates: false }
+          - { os: ubuntu-24.04-arm, mode: race, group: rest, except: "internal/listener", gates: false }
           - { os: windows-latest, mode: norace, group: listener, pkgs: ./internal/listener, gates: false }
-          - { os: windows-latest, mode: norace, group: database, except: "/internal/listener$|/cmd/|/internal/ssh$", gates: true }
+          - { os: windows-latest, mode: norace, group: database, except: "internal/listener|cmd/.*|internal/ssh", gates: true }
           - { os: windows-latest, mode: norace, group: program, pkgs: "./cmd/... ./internal/ssh", gates: false }
           - { os: windows-latest, mode: race, group: listener, pkgs: ./internal/listener, gates: false }
-          - { os: windows-latest, mode: race, group: database, except: "/internal/listener$|/cmd/|/internal/ssh$", gates: false }
+          - { os: windows-latest, mode: race, group: database, except: "internal/listener|cmd/.*|internal/ssh", gates: false }
           - { os: windows-latest, mode: race, group: program, pkgs: "./cmd/... ./internal/ssh", gates: false }
     name: run (${{ matrix.os }}, ${{ matrix.mode }}, ${{ matrix.group }})
     runs-on: ${{ matrix.os }}
@@ -114,16 +116,17 @@ jobs:
       # job that runs the gates installs them, and only the job that runs mutation testing installs
       # its tool.
       - name: Install gates
-        if: matrix.gates || (github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.mode == 'norace' && matrix.group == 'rest')
+        if: matrix.gates || (github.event_name == 'pull_request' && matrix.mutation)
         run: |
           source .github/tool-versions
-          bin="$(go env GOPATH)/bin"
-          [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
-          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$bin" "$GOLANGCI_LINT"
-          golangci-lint --version
-          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
-          go install github.com/google/go-licenses/v2@"$GO_LICENSES"
-          if [ "${{ matrix.gates }}" != true ]; then go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"; fi
+          if [ "${{ matrix.gates }}" = true ]; then
+            bin="$(go env GOPATH)/bin"
+            [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
+            curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$bin" "$GOLANGCI_LINT"
+            golangci-lint --version
+            go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
+            go install github.com/google/go-licenses/v2@"$GO_LICENSES"
+          else go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"; fi
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # Plink, an outside Telnet client that Part 4's Telnet rows drive as an oracle, is on no
       # runner's image; only the program's rows drive it. Linux takes it from Ubuntu's signed
@@ -177,16 +180,27 @@ jobs:
           BASE: origin/${{ github.base_ref || 'development' }}
         run: |
           PKGS=$ONLY
-          if [ -n "$EXCEPT" ]; then PKGS=$(go list ./... | grep -vE "$EXCEPT" | tr '\n' ' '); fi
+          if [ -n "$EXCEPT" ]; then mod=$(go list -m); PKGS=$(go list ./... | grep -vE "^${mod//./\\.}/($EXCEPT)\$" | tr '\n' ' '); fi
           [ -n "$PKGS" ] || { echo "::error::this job has no package to test"; exit 1; }
           echo "testing: $PKGS"
           export PKGS
           [ -n "$PGDIR" ] && export PATH="$PGDIR:$PATH"
           bash check.sh
+      # The gates ran in this system's gates job, so the mutation run skips them.
+      - name: Mutation testing
+        if: github.event_name == 'pull_request' && matrix.mutation
+        timeout-minutes: 60
+        env:
+          PGDIR: ${{ steps.postgres.outputs.bin }}
+          BASE: origin/${{ github.base_ref }}
+          GATES: "0"
+        run: |
+          export PATH="$PGDIR:$PATH"
+          bash check.sh --mutation
       # Nothing a test run makes outlives it (#258): each test program's own folder is gone, and on
       # Linux nothing still runs from one (there a running program does not stop its folder's
-      # removal). The runner starts empty, so anything found is this job's. The folder is where Go
-      # puts temporary files, read the way Go reads it.
+      # removal). The runner starts empty, so anything found is this job's, the mutation run's
+      # included. The folder is where Go puts temporary files, read the way Go reads it.
       - name: Nothing left behind
         if: success() || failure()
         run: |
@@ -195,15 +209,6 @@ jobs:
           left=$(ls -d "${tmp%/}"/hadv-test-run-* 2>/dev/null || true)
           [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || true)"
           [ -z "$left" ] || { echo "$left"; echo "::error::a test run left these behind"; exit 1; }
-      - name: Mutation testing
-        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.mode == 'norace' && matrix.group == 'rest'
-        timeout-minutes: 60
-        env:
-          PGDIR: ${{ steps.postgres.outputs.bin }}
-          BASE: origin/${{ github.base_ref }}
-        run: |
-          export PATH="$PGDIR:$PATH"
-          bash check.sh --mutation
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is a
       # report too; QA's broken copies are the gate on test strength (the developer, 2026-10-22).
       # It is read from the Linux jobs without the race detector, each table its job's packages.

@@ -1,7 +1,7 @@
 # Mutation testing, nightly, on what changed in the last day: a report of what the approved
 # tests miss, for QA to read (a report, not a gate: the developer, 2026-10-22). Each pull
 # request also runs it on its own changes, stopped at an hour (check.yml); this nightly run
-# covers what merged in a day, with the race detector, and its five hours allow for each fault
+# covers what merged in a day, and its five hours allow for each fault
 # running its package's tests, the Listener's five minutes among them; a red run here means the
 # tool could not report.
 name: mutation
