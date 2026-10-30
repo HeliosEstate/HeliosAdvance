@@ -970,18 +970,51 @@ func pause(t *testing.T, length time.Duration) {
 }
 
 // expectWithin checks a moment came inside its window and logs how far into it. Under the race
-// detector the timing verdict is off and the moment is only logged (the developer, 2026-10-26).
+// detector a moment too late is only logged, since that detector slows the engine by an amount
+// nobody controls; a moment too soon is still a fault (the developer, 2026-10-30).
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
 	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
-	if moment.Before(notBefore) || moment.After(notAfter) {
+	if moment.Before(notBefore) {
+		t.Errorf("%s came at %v, outside its window %v to %v", what, moment.Format(time.RFC3339Nano),
+			notBefore.Format(time.RFC3339Nano), notAfter.Format(time.RFC3339Nano))
+		return
+	}
+	if moment.After(notAfter) {
 		if raceBuild {
-			t.Logf("under the race detector, timing is not judged: %s was outside its window", what)
+			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
 			return
 		}
 		t.Errorf("%s came at %v, outside its window %v to %v", what, moment.Format(time.RFC3339Nano),
 			notBefore.Format(time.RFC3339Nano), notAfter.Format(time.RFC3339Nano))
 	}
+}
+
+// expectEngineWithin checks a moment came inside a window anchored on an earlier event of the
+// engine's own, such as the renewal before it. Under the race detector that earlier event may
+// itself have come late while the engine's ticker brings the next one on time, so a short gap
+// there is right: neither bound is judged, and the moment is only logged.
+func expectEngineWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
+	t.Helper()
+	if raceBuild {
+		t.Logf("under the race detector, timing is not judged: %s came %v into its window of %v, which opens from an earlier event of the engine's",
+			what, moment.Sub(notBefore), notAfter.Sub(notBefore))
+		return
+	}
+	expectWithin(t, what, moment, notBefore, notAfter)
+}
+
+// raceStretch is how much longer a wait may take under the race detector, which slows the engine
+// and the test by an amount nobody controls: generous, since a stretched wait still fails a
+// hang, and no upper bound on time is judged there.
+const raceStretch = 4
+
+// patient stretches a wait under the race detector; without it the wait is unchanged.
+func patient(wait time.Duration) time.Duration {
+	if raceBuild {
+		return raceStretch * wait
+	}
+	return wait
 }
 
 var errNotUsed = errors.New("")

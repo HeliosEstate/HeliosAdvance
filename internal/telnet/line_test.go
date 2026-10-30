@@ -86,15 +86,15 @@ func lineAfter(t *testing.T, answer, after []byte) (connected, *telnet.Line) {
 func lineOn(t *testing.T, pair connected, answer, after []byte) (connected, *telnet.Line) {
 	t.Helper()
 	call := openOn(t.Context(), pair.server)
-	expectOpening(t, pair.client, time.Now().Add(margin))
+	expectOpening(t, pair.client, time.Now().Add(patient(margin)))
 	write(t, pair.client, join(answer, after))
-	got := call.result(t, time.Now().Add(margin))
+	got := call.result(t, time.Now().Add(patient(margin)))
 	if got.err != nil || got.outcome != telnet.Answered {
 		t.Fatalf("setting up: Open returned (%v, %v), want Answered", got.outcome, got.err)
 	}
 	replies, _ := freshReading().readAll(answer)
 	if len(replies) > 0 {
-		readExactly(t, pair.client, len(replies), time.Now().Add(margin))
+		readExactly(t, pair.client, len(replies), time.Now().Add(patient(margin)))
 	}
 	return pair, got.line
 }
@@ -113,7 +113,7 @@ func expectQuiet(t *testing.T, client net.Conn) {
 // expectReceived checks the caller receives exactly these bytes next.
 func expectReceived(t *testing.T, client net.Conn, want []byte) {
 	t.Helper()
-	got := readExactly(t, client, len(want), time.Now().Add(margin))
+	got := readExactly(t, client, len(want), time.Now().Add(patient(margin)))
 	if !bytes.Equal(got, want) {
 		t.Fatalf("the caller received\n% x\nwant\n% x", got, want)
 	}
@@ -134,7 +134,7 @@ func recvLater(t *testing.T, line *telnet.Line) <-chan recvResult {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		value, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
+		value, err := line.RecvChar(t.Context(), time.Now().Add(patient(5*time.Second)))
 		done <- recvResult{value: value, err: err}
 	}()
 	t.Cleanup(func() { <-finished })
@@ -144,7 +144,7 @@ func recvLater(t *testing.T, line *telnet.Line) <-chan recvResult {
 // recv calls RecvChar with a deadline a margin away.
 func recv(t *testing.T, line *telnet.Line) (byte, error) {
 	t.Helper()
-	return line.RecvChar(t.Context(), time.Now().Add(2*margin))
+	return line.RecvChar(t.Context(), time.Now().Add(patient(2*margin)))
 }
 
 // expectData reads the given data bytes with RecvChar, one call each.
@@ -163,7 +163,7 @@ func expectData(t *testing.T, line *telnet.Line, want []byte) {
 // the row rather than waiting for good.
 func sendAll(t *testing.T, line *telnet.Line, data []byte) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), patient(5*time.Second))
 	defer cancel()
 	for index, value := range data {
 		if err := line.SendChar(ctx, value); err != nil {
@@ -315,7 +315,7 @@ func TestOpen(t *testing.T) {
 			write(t, pair.client, sweep())
 			want := join(opening, expectedReplies(sweep()))
 			expectReceived(t, pair.client, want)
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if got.err != nil || got.outcome != telnet.Answered || got.line == nil {
 				t.Fatalf("Open returned (%v, %v, %v), want a Line and Answered", got.line, got.outcome, got.err)
 			}
@@ -325,7 +325,7 @@ func TestOpen(t *testing.T) {
 			pair := connect(t)
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
-			got := call.result(t, call.called.Add(negotiationLimit+margin))
+			got := call.result(t, call.called.Add(negotiationLimit+patient(margin)))
 			if got.err != nil || got.outcome != telnet.TimedOut || got.line == nil {
 				t.Fatalf("Open returned (%v, %v, %v), want a Line and TimedOut", got.line, got.outcome, got.err)
 			}
@@ -337,7 +337,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			write(t, pair.client, request(doVerb, echo))
 			_ = pair.client.CloseWrite()
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if !errors.Is(got.err, telnet.ErrCallerClosed) {
 				t.Fatalf("Open returned %v, want ErrCallerClosed", got.err)
 			}
@@ -348,7 +348,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			reset(t, pair.client)
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if !errors.Is(got.err, telnet.ErrConnectionFailed) {
 				t.Fatalf("Open returned %v, want ErrConnectionFailed", got.err)
 			}
@@ -361,7 +361,7 @@ func TestOpen(t *testing.T) {
 			expectReceived(t, pair.client, opening)
 			cancel()
 			cancelledAt := time.Now()
-			got := call.result(t, cancelledAt.Add(margin))
+			got := call.result(t, cancelledAt.Add(patient(margin)))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Open returned %v, want ErrDeadlineEnded and context.Canceled", got.err)
 			}
@@ -371,7 +371,7 @@ func TestOpen(t *testing.T) {
 			pair := connect(t)
 			deadline := time.Now().Add(time.Second)
 			call := openOn(withDeadline(t, deadline), pair.server)
-			got := call.result(t, deadline.Add(margin))
+			got := call.result(t, deadline.Add(patient(margin)))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Open returned %v, want ErrDeadlineEnded and context.DeadlineExceeded", got.err)
 			}
@@ -384,9 +384,9 @@ func TestOpen(t *testing.T) {
 			defer cancel()
 			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast, stop: cancel}
 			call := openOn(ctx, held)
-			expectOpening(t, pair.client, call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(patient(margin)))
 			write(t, pair.client, request(doVerb, telnetTypeOption))
-			got := call.result(t, call.called.Add(negotiationLimit+holdPast+margin))
+			got := call.result(t, call.called.Add(negotiationLimit+holdPast+patient(margin)))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Open returned (%v, %v), want ErrDeadlineEnded and context.Canceled", got.outcome, got.err)
 			}
@@ -398,9 +398,9 @@ func TestOpen(t *testing.T) {
 			deadline := time.Now().Add(time.Second)
 			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), until: deadline.Add(holdPast)}
 			call := openOn(endsLate(t, deadline), held)
-			expectOpening(t, pair.client, call.called.Add(margin))
+			expectOpening(t, pair.client, call.called.Add(patient(margin)))
 			_ = pair.client.CloseWrite()
-			got := call.result(t, deadline.Add(holdPast+margin))
+			got := call.result(t, deadline.Add(holdPast+patient(margin)))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Open returned (%v, %v), want ErrDeadlineEnded and context.DeadlineExceeded", got.outcome, got.err)
 			}
@@ -409,7 +409,7 @@ func TestOpen(t *testing.T) {
 		t.Run("the context ended before the call: ErrDeadlineEnded, nothing written", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			got := openOn(cancelled(t), pair.server).result(t, time.Now().Add(margin))
+			got := openOn(cancelled(t), pair.server).result(t, time.Now().Add(patient(margin)))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Open returned %v, want ErrDeadlineEnded", got.err)
 			}
@@ -427,7 +427,7 @@ func TestOpen(t *testing.T) {
 					write(t, pair.client, sent)
 				}
 				_ = pair.client.CloseWrite()
-				got := call.result(t, time.Now().Add(margin))
+				got := call.result(t, time.Now().Add(patient(margin)))
 				if !errors.Is(got.err, telnet.ErrCallerClosed) || !errors.Is(got.err, io.EOF) {
 					t.Fatalf("Open returned %v, want ErrCallerClosed matching io.EOF", got.err)
 				}
@@ -442,14 +442,14 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, echo), request(doVerb, telnetTypeOption), command(abortOutput), command(interruptProcess), []byte("z")))
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
 			expectQuiet(t, pair.client)
 			sendAll(t, got.line, []byte("q"))
 			flush(t, got.line)
-			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 2, time.Now().Add(margin))
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 2, time.Now().Add(patient(margin)))
 			expectReceived(t, pair.client, []byte("q"))
 			expectQuiet(t, pair.client)
 		})
@@ -459,7 +459,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, echo), request(doVerb, telnetTypeOption), request(doVerb, windowSizeOption), []byte("z")))
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
@@ -475,7 +475,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z', err: os.ErrDeadlineExceeded})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, telnetTypeOption), []byte("z")))
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			done := recvLater(t, got.line)
 			expectReceived(t, pair.client, request(wont, telnetTypeOption))
 			write(t, pair.client, []byte("k"))
@@ -489,7 +489,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z'})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join(request(doVerb, telnetTypeOption), []byte("z")))
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if !errors.Is(got.err, telnet.ErrCallerClosed) || got.line != nil {
 				t.Fatalf("Open returned (%v, %v), want a nil Line and ErrCallerClosed", got.line, got.err)
 			}
@@ -504,7 +504,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join([]byte("xy"), answers, []byte("alice")))
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if got.err != nil || got.outcome != telnet.Answered {
 				t.Fatalf("Open returned (%v, %v), want Answered", got.outcome, got.err)
 			}
@@ -535,7 +535,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join([]byte("early"), request(doVerb, echo), []byte("text")))
-			got := call.result(t, call.called.Add(negotiationLimit+margin))
+			got := call.result(t, call.called.Add(negotiationLimit+patient(margin)))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
@@ -548,7 +548,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, []byte{iac, doVerb})
-			got := call.result(t, call.called.Add(negotiationLimit+margin))
+			got := call.result(t, call.called.Add(negotiationLimit+patient(margin)))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
@@ -563,7 +563,7 @@ func TestOpen(t *testing.T) {
 		t.Run("the context ended before the call", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			if got := openOn(cancelled(t), pair.server).result(t, time.Now().Add(margin)); !errors.Is(got.err, telnet.ErrDeadlineEnded) || got.line != nil {
+			if got := openOn(cancelled(t), pair.server).result(t, time.Now().Add(patient(margin))); !errors.Is(got.err, telnet.ErrDeadlineEnded) || got.line != nil {
 				t.Fatalf("Open returned (%v, %v), want a nil Line and ErrDeadlineEnded", got.line, got.err)
 			}
 		})
@@ -572,7 +572,7 @@ func TestOpen(t *testing.T) {
 			pair := connect(t)
 			call := openOn(t.Context(), pair.server)
 			_ = pair.client.CloseWrite()
-			if got := call.result(t, time.Now().Add(margin)); !errors.Is(got.err, telnet.ErrCallerClosed) || got.line != nil {
+			if got := call.result(t, time.Now().Add(patient(margin))); !errors.Is(got.err, telnet.ErrCallerClosed) || got.line != nil {
 				t.Fatalf("Open returned (%v, %v), want a nil Line and ErrCallerClosed", got.line, got.err)
 			}
 		})
@@ -582,7 +582,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			reset(t, pair.client)
-			if got := call.result(t, time.Now().Add(margin)); !errors.Is(got.err, telnet.ErrConnectionFailed) || got.line != nil {
+			if got := call.result(t, time.Now().Add(patient(margin))); !errors.Is(got.err, telnet.ErrConnectionFailed) || got.line != nil {
 				t.Fatalf("Open returned (%v, %v), want a nil Line and ErrConnectionFailed", got.line, got.err)
 			}
 		})
@@ -834,7 +834,7 @@ func TestLine(t *testing.T) {
 			for name, call := range map[string]func() error{
 				"SendChar": func() error { return line.SendChar(t.Context(), 'x') },
 				"Flush":    func() error { return line.Flush(t.Context()) },
-				"RecvChar": func() error { _, err := line.RecvChar(t.Context(), time.Now().Add(margin)); return err },
+				"RecvChar": func() error { _, err := line.RecvChar(t.Context(), time.Now().Add(patient(margin))); return err },
 			} {
 				if err := call(); !errors.Is(err, telnet.ErrConnectionFailed) {
 					t.Fatalf("%s after the failed write returned %v, want ErrConnectionFailed", name, err)
@@ -974,7 +974,7 @@ func TestLine(t *testing.T) {
 			want := []byte(strings.Repeat(aytAnswerBytes, 1000))
 			received := make(chan []byte, 1)
 			go func() {
-				_ = pair.client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_ = pair.client.SetReadDeadline(time.Now().Add(patient(5 * time.Second)))
 				replies := make([]byte, len(want))
 				got, err := io.ReadFull(pair.client, replies)
 				if err != nil {
@@ -995,7 +995,7 @@ func TestLine(t *testing.T) {
 			// rather than leaving it waiting.
 			received := make(chan []byte, 1)
 			go func() {
-				_ = pair.client.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_ = pair.client.SetReadDeadline(time.Now().Add(patient(5 * time.Second)))
 				replies := make([]byte, 3000)
 				got, err := io.ReadFull(pair.client, replies)
 				if err != nil {
@@ -1017,15 +1017,15 @@ func TestLine(t *testing.T) {
 			pair := connect(t)
 			recorded := &recordingConn{urgentConn: pair.server}
 			call := openOn(t.Context(), recorded)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(patient(margin)))
 			write(t, pair.client, join(answers, request(doVerb, telnetTypeOption), command(abortOutput), request(doVerb, 25), []byte("x")))
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if got.err != nil || got.outcome != telnet.Answered {
 				t.Fatalf("setting up: Open returned (%v, %v), want Answered", got.outcome, got.err)
 			}
 			expectData(t, got.line, []byte("x"))
 			flush(t, got.line)
-			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(margin))
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(patient(margin)))
 			expectReceived(t, pair.client, request(wont, 25))
 			urgent := 0
 			for _, record := range recorded.written() {
@@ -1046,17 +1046,17 @@ func TestLine(t *testing.T) {
 			// and the Synch before Strip takes x.
 			pair, line := answeredLine(t, join(request(doVerb, telnetTypeOption), command(abortOutput), []byte("x")))
 			expectData(t, line, []byte("x"))
-			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(margin))
+			expectSynchs(t, pair.client, request(wont, telnetTypeOption), 1, time.Now().Add(patient(margin)))
 		})
 		t.Run("AO, then RecvChar waiting for the caller: the Synch goes before it waits", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, command(abortOutput))
 			done := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
+				_, err := line.RecvChar(t.Context(), time.Now().Add(patient(5*time.Second)))
 				done <- err
 			}()
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(patient(margin)))
 			write(t, pair.client, []byte("k"))
 			if err := <-done; err != nil {
 				t.Fatalf("RecvChar returned %v", err)
@@ -1140,7 +1140,7 @@ func TestLine(t *testing.T) {
 		t.Run("cancelled before the call, with a byte waiting: context.Canceled, the byte kept", func(t *testing.T) {
 			t.Parallel()
 			_, line := answeredLine(t, []byte("a"))
-			if value, err := line.RecvChar(cancelled(t), time.Now().Add(margin)); !errors.Is(err, context.Canceled) || value != 0 {
+			if value, err := line.RecvChar(cancelled(t), time.Now().Add(patient(margin))); !errors.Is(err, context.Canceled) || value != 0 {
 				t.Fatalf("RecvChar returned %#02x and %v, want no byte and context.Canceled", value, err)
 			}
 			expectData(t, line, []byte("a"))
@@ -1151,7 +1151,7 @@ func TestLine(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(ctx, time.Now().Add(10*time.Second))
+				_, err := line.RecvChar(ctx, time.Now().Add(patient(10*time.Second)))
 				done <- err
 			}()
 			expectStillWaiting(t, done)
@@ -1166,7 +1166,7 @@ func TestLine(t *testing.T) {
 			t.Parallel()
 			_, line := answeredLine(t, nil)
 			deadline := time.Now().Add(500 * time.Millisecond)
-			if _, err := line.RecvChar(endsLate(t, deadline), deadline.Add(5*time.Second)); !errors.Is(err, context.DeadlineExceeded) {
+			if _, err := line.RecvChar(endsLate(t, deadline), deadline.Add(patient(5*time.Second))); !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want context.DeadlineExceeded", err)
 			}
 			expectWithin(t, "RecvChar's return", time.Now(), deadline, deadline.Add(margin))
@@ -1187,7 +1187,7 @@ func TestLine(t *testing.T) {
 			pair, line := answeredLine(t, nil)
 			done := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(t.Context(), time.Now().Add(5*time.Second))
+				_, err := line.RecvChar(t.Context(), time.Now().Add(patient(5*time.Second)))
 				done <- err
 			}()
 			expectStillWaiting(t, done)
@@ -1220,7 +1220,7 @@ func TestLine(t *testing.T) {
 			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z'})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, answers)
-			got := call.result(t, time.Now().Add(margin))
+			got := call.result(t, time.Now().Add(patient(margin)))
 			if got.err != nil {
 				t.Fatalf("Open returned %v", got.err)
 			}
@@ -1251,7 +1251,7 @@ func TestLine(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := openOn(t.Context(), pair.server)
-			got := call.result(t, call.called.Add(negotiationLimit+margin))
+			got := call.result(t, call.called.Add(negotiationLimit+patient(margin)))
 			write(t, pair.client, join(request(doVerb, echo), []byte("x")))
 			expectData(t, got.line, []byte("x"))
 			if !got.line.Echoes() {
@@ -1270,7 +1270,7 @@ func TestLine(t *testing.T) {
 		t.Run("a caller silent through negotiation", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			got := openOn(t.Context(), pair.server).result(t, time.Now().Add(negotiationLimit+margin))
+			got := openOn(t.Context(), pair.server).result(t, time.Now().Add(negotiationLimit+patient(margin)))
 			if got.err != nil || got.outcome != telnet.TimedOut || got.line == nil {
 				t.Fatalf("Open returned (%v, %v, %v), want a Line and TimedOut", got.line, got.outcome, got.err)
 			}
@@ -1365,7 +1365,7 @@ func expectNothingMore(t *testing.T, pair connected, line *telnet.Line, queuedBe
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		stream, err := readToEnd(pair.client, time.Now().Add(60*time.Second))
+		stream, err := readToEnd(pair.client, time.Now().Add(patient(60*time.Second)))
 		results <- streamResult{stream: stream, err: err}
 	}()
 	t.Cleanup(func() { <-finished })
@@ -1375,7 +1375,7 @@ func expectNothingMore(t *testing.T, pair connected, line *telnet.Line, queuedBe
 	if err := line.Flush(t.Context()); !errors.Is(err, telnet.ErrConnectionFailed) {
 		t.Fatalf("Flush after the failed write returned %v, want ErrConnectionFailed", err)
 	}
-	if _, err := line.RecvChar(t.Context(), time.Now().Add(margin)); !errors.Is(err, telnet.ErrConnectionFailed) {
+	if _, err := line.RecvChar(t.Context(), time.Now().Add(patient(margin))); !errors.Is(err, telnet.ErrConnectionFailed) {
 		t.Fatalf("RecvChar after the failed write returned %v, want ErrConnectionFailed", err)
 	}
 	_ = pair.server.CloseWrite()

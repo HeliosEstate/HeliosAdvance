@@ -56,6 +56,19 @@ const margin = 750 * time.Millisecond
 // early is how far before its deadline a runner's clock may wake a wait.
 const early = 20 * time.Millisecond
 
+// raceStretch is how much longer a wait may take under the race detector, which slows the engine
+// and the test by an amount nobody controls: generous, since a stretched wait still fails a
+// hang, and no upper bound on time is judged there.
+const raceStretch = 4
+
+// patient stretches a wait under the race detector; without it the wait is unchanged.
+func patient(wait time.Duration) time.Duration {
+	if raceBuild {
+		return raceStretch * wait
+	}
+	return wait
+}
+
 var (
 	// opening is the eight requests Part 4's line gives, in order.
 	opening = []byte{iac, will, echo, iac, will, sga, iac, will, binary, iac, doVerb, binary,
@@ -75,7 +88,7 @@ type caller struct {
 // dial connects a caller, closed when the test ends.
 func dial(t *testing.T, address string) caller {
 	t.Helper()
-	opened, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(t.Context(), "tcp", address)
+	opened, err := (&net.Dialer{Timeout: patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("dialing the engine at %s: %v", address, err)
 	}
@@ -90,7 +103,7 @@ func dial(t *testing.T, address string) caller {
 // send writes the caller's bytes.
 func (call caller) send(t *testing.T, data []byte) {
 	t.Helper()
-	_ = call.connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = call.connection.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -100,7 +113,7 @@ func (call caller) send(t *testing.T, data []byte) {
 func expectServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, opening, call.connected.Add(margin))
+	call.readExactly(t, opening, call.connected.Add(patient(margin)))
 	return call
 }
 
@@ -109,7 +122,7 @@ func expectServed(t *testing.T, address string) caller {
 func served(t *testing.T, address string) bool {
 	t.Helper()
 	call := dial(t, address)
-	_ = call.connection.SetReadDeadline(call.connected.Add(margin))
+	_ = call.connection.SetReadDeadline(call.connected.Add(patient(margin)))
 	received := make([]byte, len(opening))
 	got, err := io.ReadFull(call.connection, received)
 	switch {
@@ -198,7 +211,11 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
 	if moment.After(notAfter) {
-		t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
+		if raceBuild {
+			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
+		} else {
+			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
+		}
 	}
 	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }

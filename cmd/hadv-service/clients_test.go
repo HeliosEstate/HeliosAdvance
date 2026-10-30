@@ -167,7 +167,7 @@ func startRelay(t *testing.T, address string) *relay {
 			return
 		}
 		defer func() { _ = client.Close() }()
-		engine, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(context.Background(), "tcp", address)
+		engine, err := (&net.Dialer{Timeout: patient(5 * time.Second)}).DialContext(context.Background(), "tcp", address)
 		if err != nil {
 			return
 		}
@@ -194,7 +194,7 @@ func (link *relay) copy(destination, source net.Conn, record *[]byte) {
 			link.mutex.Lock()
 			*record = append(*record, chunk[:got]...)
 			link.mutex.Unlock()
-			_ = destination.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_ = destination.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
 			if _, writeErr := destination.Write(chunk[:got]); writeErr != nil {
 				return
 			}
@@ -220,7 +220,7 @@ type clientRun struct {
 // reads its output to its end.
 func runClient(t *testing.T, command *exec.Cmd) clientRun {
 	t.Helper()
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = patient(5 * time.Second)
 	input, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -255,11 +255,11 @@ func runClient(t *testing.T, command *exec.Cmd) clientRun {
 		defer mutex.Unlock()
 		return bytes.Contains(result.stdout, []byte(text))
 	}
-	for deadline := time.Now().Add(15 * time.Second); !shown("What is your name? ") && time.Now().Before(deadline); {
+	for deadline := time.Now().Add(patient(15 * time.Second)); !shown("What is your name? ") && time.Now().Before(deadline); {
 		pause(t, 20*time.Millisecond)
 	}
 	_, _ = io.WriteString(input, "Bob\n")
-	timer := time.NewTimer(15 * time.Second)
+	timer := time.NewTimer(patient(15 * time.Second))
 	defer timer.Stop()
 	select {
 	case <-ended:
@@ -384,14 +384,14 @@ func TestNothingKept(t *testing.T) {
 				[]byte{iac, subnegotiationBegin, windowSizeOption, 0, 80, 0, 24, iac, subnegotiationEnd})
 			agreed := []byte{iac, doVerb, echo, iac, doVerb, sga, iac, doVerb, binary, iac, will, binary,
 				iac, will, telnetTypeOption, iac, will, windowSizeOption, iac, will, environOption, iac, will, speedOption}
-			call.readExactly(t, opening, call.connected.Add(margin))
+			call.readExactly(t, opening, call.connected.Add(patient(margin)))
 			call.send(t, join(agreed, reports))
-			call.readExactly(t, join(terminalTypeSend, environSend, speedSend, asked), time.Now().Add(margin))
+			call.readExactly(t, join(terminalTypeSend, environSend, speedSend, asked), time.Now().Add(patient(margin)))
 			call.send(t, join([]byte("a"), reports, []byte("b\r")))
-			call.readExactly(t, []byte("ab\r\nHello ab\r\n"), time.Now().Add(margin))
-			call.expectEnd(t, time.Now(), time.Now().Add(margin))
+			call.readExactly(t, []byte("ab\r\nHello ab\r\n"), time.Now().Add(patient(margin)))
+			call.expectEnd(t, time.Now(), time.Now().Add(patient(margin)))
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(patient(margin)))
 			if strings.Contains(program.text(), canary) {
 				t.Fatalf("the local log holds what a caller sent inside a subnegotiation:\n%s", program.text())
 			}
