@@ -44,7 +44,10 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            - github.com/heliosestate/heliosadvance
+            # The engine's own module, every package under it, and no other module whose path only
+            # begins the same way: the units' arrows are judged by their own rules. Its root holds
+            # no package, so it has no line.
+            - github.com/heliosestate/heliosadvance/
             # The SSH unit's handshake and channel, and only that package of the module: complete
             # and kept by the Go team, and watched by govulncheck and Dependabot here, where writing
             # our own would put thousands of lines of cryptographic protocol at the trust boundary.
@@ -55,7 +58,8 @@ linters:
             # Kept by the Go team, already in go.sum through the SSH library, and watched by
             # govulncheck, Dependabot and the licence gate; the alternative, a non-blocking switch
             # on Go's overlapped socket and a 10 ms retry, rests on behaviour Microsoft does not
-            # document (developer, 2026-10-27).
+            # document (developer, 2026-10-27). Also the test support's Windows files, which list
+            # and end a dead test run's programs, calls the syscall package lacks (2026-10-30).
             - golang.org/x/sys/windows$
             # The database unit's connection, sign-in and queries, and only these three packages of
             # the module: the standard library has no PostgreSQL driver, and our own would put
@@ -76,17 +80,43 @@ linters:
               desc: unsafe switches off Go's memory safety; an exception is the developer's decision, by name
             - pkg: C
               desc: cgo brings C's memory safety into the engine; an exception is the developer's decision, by name
+        # A package no unit rule below covers may import the standard library alone, so a new unit
+        # cannot reach another before its own rule, and its row in docs/architecture.md, exist.
+        # A new unit's rule is a new line in this list too.
+        unruled:
+          files:
+            - $all
+            - "!**/internal/telnet/**"
+            - "!**/internal/session/**"
+            - "!**/internal/textio/**"
+            - "!**/internal/timeup/**"
+            - "!**/internal/ssh/**"
+            - "!**/internal/listener/**"
+            - "!**/internal/database/**"
+            - "!**/cmd/hadv-service/**"
+            - "!**/tools/**"
+            - "!**/internal/testrun/*_windows.go"
+          list-mode: strict
+          allow:
+            - $gostd
         # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
-        # A new arrow is a new line here, in the same PR, with its reason.
+        # A new arrow is a new line here, in the same PR, with its reason. Each of the engine's
+        # own packages is named exactly, ending in $, so a later package whose path only begins
+        # the same way, or a unit's own sub-package, is a new arrow and needs its own line. check.sh
+        # refuses an engine path in an allow list that does not end in $, but the dependencies
+        # rule's one module-wide entry: it catches a slip or a merge, not a disguise, which review
+        # of this file catches. Outside modules' entries end in $ too, by hand: no check reads them.
         telnet:
           files: ["**/internal/telnet/**", "!**/internal/telnet/urgent_windows.go"]
           list-mode: strict
           allow:
             - $gostd
             # The rule for a call's end and the wake, written once (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package telnet_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/telnet$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         # The Telnet unit's Windows urgent write, the one file that may import the module's
         # windows package (docs/architecture.md, the developer's of 2026-10-27).
         telnet-windows-urgent:
@@ -96,7 +126,8 @@ linters:
             - $gostd
             - golang.org/x/sys/windows$
         # The tools under tools/ import the standard library only, so the module-wide allow list,
-        # which names golang.org/x/sys/windows for the Telnet unit's one file, reaches no tool
+        # which names golang.org/x/sys/windows for the Telnet unit's one file and the test
+        # support's Windows files, reaches no tool
         # (developer, 2026-10-27).
         tools:
           files: ["**/tools/**"]
@@ -109,23 +140,23 @@ linters:
           allow:
             - $gostd
             # Its own path, so its black-box tests in package session_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/session
+            - github.com/heliosestate/heliosadvance/internal/session$
         textio:
           files: ["**/internal/textio/**"]
           list-mode: strict
           allow:
             - $gostd
             # The rule for a call's end, written once (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package textio_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/textio
+            - github.com/heliosestate/heliosadvance/internal/textio$
         timeup:
           files: ["**/internal/timeup/**"]
           list-mode: strict
           allow:
             - $gostd
             # Its own path, so its black-box tests in package timeup_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
         ssh:
           files: ["**/internal/ssh/**"]
           list-mode: strict
@@ -135,9 +166,11 @@ linters:
             # packages, such as ssh/agent, are not allowed.
             - golang.org/x/crypto/ssh$
             # The rule for a call's end and the wake, written once (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package ssh_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/ssh
+            - github.com/heliosestate/heliosadvance/internal/ssh$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         listener:
           files: ["**/internal/listener/**", "!$test"]
           list-mode: strict
@@ -145,8 +178,8 @@ linters:
             - $gostd
             # It hands every kind's call to the Session through Text I/O, and names no kind of
             # connection (docs/architecture.md, Part 3's shape).
-            - github.com/heliosestate/heliosadvance/internal/textio
-            - github.com/heliosestate/heliosadvance/internal/session
+            - github.com/heliosestate/heliosadvance/internal/textio$
+            - github.com/heliosestate/heliosadvance/internal/session$
         # The Listener's tests drive it with a real kind of connection, Telnet's, never a fake;
         # its approved rows for the Session and Text I/O run over a real Telnet Line. Its code
         # still names no kind (developer, 2026-10-25).
@@ -155,11 +188,13 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            - github.com/heliosestate/heliosadvance/internal/textio
-            - github.com/heliosestate/heliosadvance/internal/session
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/textio$
+            - github.com/heliosestate/heliosadvance/internal/session$
+            - github.com/heliosestate/heliosadvance/internal/telnet$
             # Its own path, so its black-box tests in package listener_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/listener
+            - github.com/heliosestate/heliosadvance/internal/listener$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         database:
           files: ["**/internal/database/**"]
           list-mode: strict
@@ -174,7 +209,9 @@ linters:
             # not by text an update of pgx could change (the developer's "yes", 2026-10-29).
             - github.com/jackc/pgx/v5/pgproto3$
             # Its own path, so its black-box tests in package database_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/database
+            - github.com/heliosestate/heliosadvance/internal/database$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         hadv-service:
           files: ["**/cmd/hadv-service/**"]
           list-mode: strict
@@ -182,12 +219,22 @@ linters:
             - $gostd
             # It starts and stops the Listener, and pairs each kind's sockets with its way in
             # (docs/architecture.md, Part 3's shape); Text I/O and the Session are the Listener's.
-            - github.com/heliosestate/heliosadvance/internal/listener
-            - github.com/heliosestate/heliosadvance/internal/telnet
-            - github.com/heliosestate/heliosadvance/internal/ssh
+            - github.com/heliosestate/heliosadvance/internal/listener$
+            - github.com/heliosestate/heliosadvance/internal/telnet$
+            - github.com/heliosestate/heliosadvance/internal/ssh$
             # It reads the connection file and takes the lease before it listens, and closes the
             # listeners when the lease is lost (database Part 1).
-            - github.com/heliosestate/heliosadvance/internal/database
+            - github.com/heliosestate/heliosadvance/internal/database$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
+        # The test support's Windows files, which find and end a dead run's programs (the
+        # developer, 2026-10-30); its other files are the catch-all rule's, the standard library.
+        testrun-windows:
+          files: ["**/internal/testrun/*_windows.go"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - golang.org/x/sys/windows$
     forbidigo:
       analyze-types: true
       forbid:
@@ -232,6 +279,9 @@ linters:
         - name: exported
         - name: unused-parameter
   exclusions:
+    # A file that says it was generated is linted like any other: none of the engine's is, and
+    # the default would skip every linter, the import rules included, for one comment line.
+    generated: disable
     rules:
       # A contract.go is a unit's whole surface, declared at the owner and locked; the
       # small-interface rule applies to consumers, which declare the slice they call.
@@ -255,8 +305,9 @@ linters:
       # there is one no session could fix.
       - path: _test\.go
         linters: [dupl]
-      # The sleep ban is for tests; production code may sleep on a context.
-      - path-except: _test\.go
+      # The sleep ban is for tests, the test support's code included; production code may sleep
+      # on a context.
+      - path-except: _test\.go|^internal/testrun/
         linters: [forbidigo]
         text: time\.Sleep
       - path: _test\.go
@@ -272,8 +323,15 @@ linters:
       - path: _test\.go
         linters: [gosec]
         text: G(204|304|703)
+      # The test support stops a dead run's servers and reads its owner and process files.
+      - path: ^internal/testrun/
+        linters: [gosec]
+        text: G(204|304)
 
 formatters:
   enable:
     - gofmt
     - goimports
+  exclusions:
+    # As for the linters: a file that says it was generated is formatted like any other.
+    generated: disable
