@@ -398,6 +398,8 @@ func windowEnd(t *testing.T, from, fault time.Time) time.Time {
 // only a place that never comes back fails.
 func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	t.Helper()
+	// Its window runs from the call to the deadline, so a margin can be read from any run.
+	called := time.Now()
 	giveUp := deadline
 	if raceBuild {
 		// From whichever is later, the deadline or now: a test that reached here late has no time
@@ -410,6 +412,7 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	}
 	for {
 		if isServed, _, arrived := served(t, address); isServed {
+			t.Logf("a caller's service came %v into its window of %v", arrived.Sub(called), deadline.Sub(called))
 			if arrived.After(deadline) {
 				if raceBuild {
 					t.Logf("under the race detector, timing is not judged: no caller was served until %v past the deadline", arrived.Sub(deadline))
@@ -417,7 +420,6 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 				}
 				t.Fatalf("no caller was served until %v past the deadline", arrived.Sub(deadline))
 			}
-			t.Logf("a caller was served %v before the deadline", deadline.Sub(arrived))
 			return
 		}
 		if time.Now().After(giveUp) {
@@ -504,6 +506,7 @@ func (stream *recording) arrivedAt(t *testing.T, offset int) time.Time {
 // race detector, which slows the engine by an amount nobody controls, only too soon fails.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
+	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
@@ -514,7 +517,6 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
 		}
 	}
-	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
 
 // engineClosed watches Linux's table of IPv4 TCP sockets for the engine's end of a connection,

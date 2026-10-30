@@ -81,6 +81,7 @@ func expectReturn(t *testing.T, got negotiated, outcome telnet.Outcome, errs []e
 // it came, so the runners' margins show in the test log.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
+	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
@@ -91,7 +92,6 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
 		}
 	}
-	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
 
 // expectNothingWritten checks the client receives no byte, once the test has closed the server

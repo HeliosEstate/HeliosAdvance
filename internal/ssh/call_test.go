@@ -926,6 +926,8 @@ func closingCaller(t *testing.T, program *engine) {
 // itself came late, so only a place that is never freed fails, as a hang would.
 func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	t.Helper()
+	// Its window runs from the call to the deadline, so a margin can be read from any run.
+	called := time.Now()
 	giveUp := deadline
 	if raceBuild {
 		giveUp = time.Now()
@@ -937,7 +939,9 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	for {
 		client := dialRaw(t, address)
 		if version, err := client.readVersion(time.Now().Add(patient(margin))); err == nil && string(version) == versionLine {
-			if served := time.Now(); raceBuild && served.After(deadline) {
+			served := time.Now()
+			t.Logf("a caller's service came %v into its window of %v", served.Sub(called), deadline.Sub(called))
+			if raceBuild && served.After(deadline) {
 				t.Logf("under the race detector, timing is not judged: a caller was served %v past the deadline", served.Sub(deadline))
 			}
 			return

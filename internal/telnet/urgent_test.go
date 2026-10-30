@@ -211,6 +211,7 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			if !errors.Is(err, row.wantErr) {
 				t.Fatalf("WriteUrgent returned (%d, %v), want error %v", count, err, row.wantErr)
 			}
+			t.Logf("WriteUrgent's return came %v into its window of %v", took-row.atLeast, row.below-row.atLeast)
 			if took < row.atLeast {
 				t.Fatalf("WriteUrgent took %v, want at least %v and less than %v", took, row.atLeast, row.below)
 			}

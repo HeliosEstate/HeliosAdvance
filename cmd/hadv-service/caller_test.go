@@ -207,6 +207,7 @@ func pause(t *testing.T, length time.Duration) {
 // expectWithin checks a moment falls in its window and logs how far into it it came.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
+	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
@@ -217,7 +218,6 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
 		}
 	}
-	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
 
 // isReset tells a connection reset or abort, as Linux and Windows report it.
