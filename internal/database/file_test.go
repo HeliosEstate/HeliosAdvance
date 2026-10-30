@@ -265,6 +265,7 @@ func TestConnectionFile(t *testing.T) {
 			{"port a string", fieldPort, func(*testing.T) string { return `"5432"` }},
 			{"port 5432.5", fieldPort, func(*testing.T) string { return "5432.5" }},
 			{"ca_certificate not PEM", fieldCertificate, func(*testing.T) string { return strconv.Quote(canary) }},
+			{"ca_certificate white space alone, no block", fieldCertificate, func(*testing.T) string { return strconv.Quote(" \n\t\n") }},
 			{"ca_certificate a PRIVATE KEY block", fieldCertificate, func(*testing.T) string {
 				return strconv.Quote("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n")
 			}},

@@ -237,6 +237,20 @@ func TestLease(t *testing.T) {
 			}
 			expectExactEnd(t, last, 0)
 		})
+		// Halfway between the renewal that fails over the ended connection and the next, which
+		// would connect anew, so the end finds the Lease with no connection.
+		t.Run("its connection ended by the server and the renewal after it failed: the lease end is the database's time, the holder kept", func(t *testing.T) {
+			t.Parallel()
+			created, lease, taken := takeBoard(t, sharedServer(t))
+			created.server.sql(t, superuser, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = "+quoteLiteral(created.login))
+			pause(t, time.Until(taken.transactionStart.Add(renewEvery*3/2)))
+			lease.EndLease()
+			changes := created.updates(t)
+			if len(changes) != 2 || changes[1].newHolder != taken.newHolder {
+				t.Fatalf("want the take and the end, keeping the holder %s: %+v", taken.newHolder, changes)
+			}
+			expectExactEnd(t, changes[1], 0)
+		})
 		t.Run("another run's holder written first: the row left as that run wrote it", func(t *testing.T) {
 			t.Parallel()
 			created, lease, _ := takeBoard(t, sharedServer(t))

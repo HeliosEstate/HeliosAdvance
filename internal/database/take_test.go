@@ -249,6 +249,12 @@ func TestTake(t *testing.T) {
 			expectTakeError(t, lease, err, database.ErrUnreachable, "password-"+canary)
 			expectWithin(t, "Take's return", returned, called.Add(tryLimit), called.Add(tryLimit+timingMargin))
 		})
+		t.Run("a fake that makes TLS, reads the startup and closes the connection: ErrUnreachable", func(t *testing.T) {
+			t.Parallel()
+			server := startFake(t, false, func(*testing.T, *fakeConnection) {})
+			lease, err := take(t, server.file())
+			expectTakeError(t, lease, err, database.ErrUnreachable, "password-"+canary)
+		})
 		t.Run("the server stopped: ErrUnreachable", func(t *testing.T) {
 			t.Parallel()
 			server := startPostgres(t, serverOptions{})
@@ -673,6 +679,13 @@ func TestTake(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			created.server.sql(t, superuser, "REVOKE CONNECT ON DATABASE "+created.database+" FROM PUBLIC")
+			lease, err := take(t, created.file())
+			expectTakeError(t, lease, err, database.ErrRefused, created.password)
+		})
+		t.Run("the right to read hadv.schema_version taken away: ErrRefused, not a *SchemaVersionError", func(t *testing.T) {
+			t.Parallel()
+			created := sharedServer(t).newBoard(t)
+			created.sqlAsOwner(t, "REVOKE SELECT ON hadv.schema_version FROM hadv_server")
 			lease, err := take(t, created.file())
 			expectTakeError(t, lease, err, database.ErrRefused, created.password)
 		})

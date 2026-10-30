@@ -63,6 +63,35 @@ func TestPackage(t *testing.T) {
 			lease, err := take(t, server.file())
 			expectTakeError(t, lease, err, database.ErrSignInRefused, "password-"+canary)
 		})
+		// A message's length may be read as its body, its length field (the body and 4) or the
+		// whole (the body and 5); these two rows are past or inside the bound by every reading.
+		t.Run("a refusal whose body is 1 MiB and 1 byte, sent whole, past the bound however a message is counted: ErrUnreachable at once", func(t *testing.T) {
+			t.Parallel()
+			sent := make(chan time.Time, 1)
+			server := startFake(t, false, func(t *testing.T, connection *fakeConnection) {
+				t.Helper()
+				padding := replyMostBytes + 1 - len(errorBody("28P01", ""))
+				sent <- time.Now()
+				connection.send(t, 'E', errorBody("28P01", strings.Repeat("x", padding)))
+				connection.awaitEnd(time.Now().Add(tryLimit))
+			})
+			lease, err := take(t, server.file())
+			returned := time.Now()
+			expectTakeError(t, lease, err, database.ErrUnreachable, "password-"+canary)
+			sentAt := <-sent
+			expectWithin(t, "Take's return", returned, sentAt, sentAt.Add(timingMargin))
+		})
+		t.Run("a refusal of exactly 1 MiB with its type and length, inside the bound however a message is counted: read, ErrSignInRefused", func(t *testing.T) {
+			t.Parallel()
+			server := startFake(t, false, func(t *testing.T, connection *fakeConnection) {
+				t.Helper()
+				padding := replyMostBytes - 5 - len(errorBody("28P01", ""))
+				connection.send(t, 'E', errorBody("28P01", strings.Repeat("x", padding)))
+				connection.awaitEnd(time.Now().Add(tryLimit))
+			})
+			lease, err := take(t, server.file())
+			expectTakeError(t, lease, err, database.ErrSignInRefused, "password-"+canary)
+		})
 	})
 
 	t.Run("No error the database package returns shall hold, in its text, the connection file's password or any text the database sent.", func(t *testing.T) {
