@@ -63,6 +63,13 @@ func (call negotiating) result(t *testing.T, deadline time.Time) negotiated {
 	}
 }
 
+// patientResult waits for Negotiate to return as result does, the time from the call to the
+// deadline stretched under the race detector: a row that only gives up there judges no time.
+func (call negotiating) patientResult(t *testing.T, deadline time.Time) negotiated {
+	t.Helper()
+	return call.result(t, call.called.Add(testrun.Patient(deadline.Sub(call.called))))
+}
+
 // expectReturn checks what Negotiate returned and that it came within its window.
 func expectReturn(t *testing.T, got negotiated, outcome telnet.Outcome, errs []error, notBefore, notAfter time.Time) {
 	t.Helper()
@@ -551,7 +558,14 @@ func TestNegotiate(t *testing.T) {
 			before := time.Now()
 			call := negotiate(withDeadline(t, before.Add(3500*time.Millisecond)), pair.server)
 			limit := call.called.Add(negotiationLimit)
-			expectReturn(t, call.result(t, limit.Add(testrun.Patient(margin))), telnet.TimedOut, nil, limit, before.Add(3500*time.Millisecond))
+			got := call.result(t, limit.Add(testrun.Patient(margin)))
+			// Which ends first, the 3 seconds or the context 500 ms after them, is two timers'
+			// race; under the race detector either may be late, so either outcome is only logged.
+			if testrun.Race && errors.Is(got.err, telnet.ErrDeadlineEnded) {
+				t.Logf("under the race detector, the outcome is not judged: Negotiate returned %v, %v after the call", got.err, got.returned.Sub(call.called))
+				return
+			}
+			expectReturn(t, got, telnet.TimedOut, nil, limit, before.Add(3500*time.Millisecond))
 		})
 	})
 	t.Run("If NegotiationSeconds have passed when a read or a write ends, Receive has not returned true, and the context has ended, then Negotiate shall return ErrDeadlineEnded.", func(t *testing.T) {
@@ -920,7 +934,7 @@ func TestNegotiate(t *testing.T) {
 			deadline := time.Now().Add(2 * time.Second)
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			write(t, pair.client, answers)
-			call.result(t, deadline)
+			call.patientResult(t, deadline)
 			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("answered: a write to a caller that does not read waits until the context's deadline", func(t *testing.T) {
@@ -930,15 +944,17 @@ func TestNegotiate(t *testing.T) {
 			deadline := time.Now().Add(2 * time.Second)
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			write(t, pair.client, answers)
-			call.result(t, deadline)
+			call.patientResult(t, deadline)
 			expectWriteDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("timed out at 3 seconds: a read waits until the deadline at 5", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			deadline := time.Now().Add(5 * time.Second)
+			// Stretched under the race detector: a 3 seconds that ends late would otherwise meet
+			// the context's deadline and turn TimedOut into ErrDeadlineEnded.
+			deadline := time.Now().Add(testrun.Patient(5 * time.Second))
 			call := negotiate(withDeadline(t, deadline), pair.server)
-			got := call.result(t, deadline)
+			got := call.patientResult(t, deadline)
 			if got.outcome != telnet.TimedOut {
 				t.Fatalf("Negotiate returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
@@ -953,7 +969,7 @@ func TestNegotiate(t *testing.T) {
 			call := negotiate(ctx, pair.server)
 			wait(t.Context(), call.called.Add(500*time.Millisecond))
 			cancel()
-			call.result(t, deadline)
+			call.patientResult(t, deadline)
 			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("the caller closed: a write to it waits until the context's deadline", func(t *testing.T) {
@@ -964,7 +980,7 @@ func TestNegotiate(t *testing.T) {
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			expectOpening(t, pair.client, call.called.Add(testrun.Patient(margin)))
 			_ = pair.client.CloseWrite()
-			got := call.result(t, deadline)
+			got := call.patientResult(t, deadline)
 			if !errors.Is(got.err, telnet.ErrCallerClosed) {
 				t.Fatalf("Negotiate returned %v, want ErrCallerClosed", got.err)
 			}

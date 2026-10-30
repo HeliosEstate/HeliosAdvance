@@ -255,7 +255,8 @@ func isReset(err error) bool {
 // served dials and reports whether the engine served the caller (sent the opening) or closed it
 // at once, writing nothing, and when the opening or the close arrived. Anything else fails the
 // test. The caller sends nothing. A close that comes only after negotiation's 3 seconds is the
-// nearest fault, so the wait is wideMargin.
+// nearest fault, so the wait is wideMargin, stretched under the race detector: there it is 6
+// seconds, so such a close counts as at once, and only a run without it tells the two apart.
 func served(t *testing.T, address string) (bool, caller, time.Time) {
 	t.Helper()
 	call := dial(t, address)
