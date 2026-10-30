@@ -95,14 +95,10 @@ func prepareOracle() error {
 	return err
 }
 
-// removeOracle stops the shared server and removes it and the template.
-func removeOracle() {
+// stopOracle stops the shared server; its folder and the template's go with the run's own.
+func stopOracle() {
 	if shared != nil {
 		_, _ = shared.pgctl("stop", "-m", "immediate", "-w", "-t", "60")
-		_ = os.RemoveAll(shared.directory)
-	}
-	if templateDirectory != "" {
-		_ = os.RemoveAll(templateDirectory)
 	}
 }
 

@@ -75,10 +75,6 @@ func TestMain(tests *testing.M) {
 	code := tests.Run()
 	if shared != nil {
 		_, _ = shared.pgctl("stop", "-m", "immediate", "-w", "-t", "60")
-		_ = os.RemoveAll(shared.directory)
-	}
-	if templateDirectory != "" {
-		_ = os.RemoveAll(templateDirectory)
 	}
 	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
 	// the next run takes what is left.

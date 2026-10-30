@@ -76,10 +76,7 @@ func TestMain(tests *testing.M) {
 		}
 	}
 	code := tests.Run()
-	if directory != "" {
-		_ = os.RemoveAll(directory)
-	}
-	removeOracle()
+	stopOracle()
 	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
 	// the next run takes what is left.
 	if err := testrun.Leave(runFolder); err != nil {
