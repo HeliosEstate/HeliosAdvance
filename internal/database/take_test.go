@@ -122,6 +122,69 @@ func expectNoSignIn(t *testing.T, server *postgres, login string) {
 	}
 }
 
+// showLogIfFailed is deferred by a refusal row so that its failure tells a refusal the server
+// logged but the engine reported as a dead connection from one the server never sent: Windows CI
+// met that once, with no log to read. Every line since the row started is shown, other rows'
+// among them, because a connection that dies before it sends its login logs under no login. A
+// defer, not a cleanup, since the wait needs the row's context, which ends before cleanups run.
+// The login is read late because a row's change may replace it.
+func showLogIfFailed(t *testing.T, server *postgres, login *string, since time.Time) {
+	t.Helper()
+	if !t.Failed() {
+		return
+	}
+	shown, ended := server.logSince(since, *login)
+	for deadline := time.Now().Add(logWait); !ended && time.Now().Before(deadline); {
+		pause(t, 100*time.Millisecond)
+		shown, ended = server.logSince(since, *login)
+	}
+	if !ended {
+		shown += fmt.Sprintf("\n(by %v the log shows no refusal or end for %s)", logWait, *login)
+	}
+	t.Logf("the server's log since the row started:\n%s", shown)
+}
+
+// logWait bounds the wait for the login's refusal or end to reach the log: the engine may give up
+// on a server process that a loaded runner has not yet let log it. Only a failed row waits.
+const logWait = 10 * time.Second
+
+// logSince returns the server's log from its first entry at or after the moment given, to the
+// millisecond as the log keeps time, and whether an entry of the login's since then is a FATAL or
+// a disconnection: a refused connection ends at its FATAL, with no disconnection entry, and one
+// that signed in at its disconnection. A log with no entry at all, such as one that could not be
+// read, is returned whole.
+func (server *postgres) logSince(since time.Time, login string) (string, bool) {
+	text := strings.TrimSuffix(readText(server.logPath), "\n")
+	lines := strings.Split(text, "\n")
+	from := since.UTC().Truncate(time.Millisecond)
+	start, entries, ended := -1, false, false
+	for index, line := range lines {
+		match := logPrefix.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		entries = true
+		if start < 0 {
+			logged, err := time.Parse("2006-01-02 15:04:05.000", match[1])
+			if err != nil || logged.Before(from) {
+				continue
+			}
+			start = index
+		}
+		message := line[len(match[0]):]
+		if match[2] == login && (strings.HasPrefix(message, "FATAL:") || strings.HasPrefix(message, "LOG:  disconnection:")) {
+			ended = true
+		}
+	}
+	switch {
+	case !entries:
+		return text, false
+	case start < 0:
+		return "(no entry since " + from.Format("15:04:05.000") + " UTC)", false
+	}
+	return strings.Join(lines[start:], "\n"), ended
+}
+
 // expectExactEnd checks an update wrote a lease end LeaseSeconds after the database's time: at
 // least its transaction's start plus 30 s, and at most the moment it was recorded plus 30 s.
 func expectExactEnd(t *testing.T, change update, after time.Duration) {
@@ -407,6 +470,9 @@ func TestTake(t *testing.T) {
 				t.Parallel()
 				created := sharedServer(t).newBoard(t)
 				contents := created.file()
+				started := time.Now()
+				// Called from a closure so that the printout names this line, not the runtime's.
+				defer func() { showLogIfFailed(t, created.server, &contents.Login, started) }()
 				change(t, created, &contents)
 				lease, err := take(t, contents)
 				expectTakeError(t, lease, err, database.ErrSignInRefused, created.password)
