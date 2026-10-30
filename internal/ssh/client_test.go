@@ -26,6 +26,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // Message numbers, RFC 4250 section 4.1, and those of the ping@openssh.com extension.
@@ -135,7 +137,7 @@ type rawClient struct {
 // dialRaw connects and sends the client's version line; it reads nothing.
 func dialRaw(t *testing.T, address string) *rawClient {
 	t.Helper()
-	dialer := net.Dialer{Timeout: patient(10 * time.Second)}
+	dialer := net.Dialer{Timeout: testrun.Patient(10 * time.Second)}
 	connection, err := dialer.DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("dialing %s: %v", address, err)
@@ -150,7 +152,7 @@ func dialRaw(t *testing.T, address string) *rawClient {
 
 func (client *rawClient) write(data []byte) {
 	client.t.Helper()
-	if err := client.connection.SetWriteDeadline(time.Now().Add(patient(5 * time.Second))); err != nil {
+	if err := client.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second))); err != nil {
 		client.t.Fatalf("setting the write deadline: %v", err)
 	}
 	if _, err := client.connection.Write(data); err != nil {
@@ -664,7 +666,7 @@ func (client *rawClient) next(deadline time.Time) ([]byte, error) {
 // handshake runs version, key exchange, NEWKEYS and the ssh-userauth service.
 func (client *rawClient) handshake(exchange keyExchange, strict bool) {
 	client.t.Helper()
-	deadline := time.Now().Add(patient(10 * time.Second))
+	deadline := time.Now().Add(testrun.Patient(10 * time.Second))
 	client.sendVersion()
 	client.readServerKexInit(deadline)
 	client.sendKexInit(defaultOffer(exchange.name, strict))
@@ -682,7 +684,7 @@ func (client *rawClient) handshake(exchange keyExchange, strict bool) {
 func (client *rawClient) signIn(user string) {
 	client.t.Helper()
 	client.sendPacket(message(messageUserauthRequest).text(user).text("ssh-connection").text("none").data)
-	payload, err := client.next(time.Now().Add(patient(10 * time.Second)))
+	payload, err := client.next(time.Now().Add(testrun.Patient(10 * time.Second)))
 	if err != nil || payload[0] != messageUserauthSuccess {
 		client.t.Fatalf("signing in with none as %q: %v, %v", user, payload, err)
 	}
@@ -695,7 +697,7 @@ func (client *rawClient) openChannel(kind string, number uint32, extra []byte) [
 	out := message(messageChannelOpen).text(kind).uint32Value(number).uint32Value(clientWindow).uint32Value(clientMaxPacket)
 	out.data = append(out.data, extra...)
 	client.sendPacket(out.data)
-	payload, err := client.next(time.Now().Add(patient(10 * time.Second)))
+	payload, err := client.next(time.Now().Add(testrun.Patient(10 * time.Second)))
 	if err != nil {
 		client.t.Fatalf("opening a %s channel: %v", kind, err)
 	}
@@ -718,7 +720,7 @@ func (client *rawClient) request(kind string, wantReply bool, extra []byte) []by
 	if !wantReply {
 		return nil
 	}
-	payload, err := client.next(time.Now().Add(patient(10 * time.Second)))
+	payload, err := client.next(time.Now().Add(testrun.Patient(10 * time.Second)))
 	if err != nil {
 		client.t.Fatalf("the %s request's reply: %v", kind, err)
 	}

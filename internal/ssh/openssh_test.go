@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // openSSHCall is one run of the OpenSSH client, the oracle for the call, against the program.
@@ -85,10 +87,10 @@ func runOpenSSH(t *testing.T, program *engine, call openSSHCall) openSSHResult {
 	}
 	arguments = append(arguments, user+"@"+host)
 	arguments = append(arguments, call.command...)
-	ctx, cancel := context.WithTimeout(t.Context(), patient(30*time.Second))
+	ctx, cancel := context.WithTimeout(t.Context(), testrun.Patient(30*time.Second))
 	defer cancel()
 	command := exec.CommandContext(ctx, "ssh", arguments...)
-	command.WaitDelay = patient(5 * time.Second)
+	command.WaitDelay = testrun.Patient(5 * time.Second)
 	input, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -153,14 +155,14 @@ func runOpenSSHForwarding(t *testing.T, program *engine, local string) forwardin
 	var result forwardingResult
 	call := openSSHCall{options: []string{"-L", local + ":127.0.0.1:9"}, waitFor: prompt, typed: typedBob}
 	call.afterPrompt = func() {
-		dialer := net.Dialer{Timeout: patient(5 * time.Second)}
+		dialer := net.Dialer{Timeout: testrun.Patient(5 * time.Second)}
 		forwarded, err := dialer.DialContext(t.Context(), "tcp4", "127.0.0.1:"+local)
 		if err != nil {
 			result.forwardedEnd = err
 			return
 		}
 		defer func() { _ = forwarded.Close() }()
-		_ = forwarded.SetReadDeadline(time.Now().Add(patient(5 * time.Second)))
+		_ = forwarded.SetReadDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
 		buffer := make([]byte, 64)
 		result.forwardedBytes, result.forwardedEnd = forwarded.Read(buffer)
 	}

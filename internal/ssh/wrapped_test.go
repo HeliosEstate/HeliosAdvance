@@ -12,6 +12,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // endedContext is one way a context has ended before a call, and the error it ended with.
@@ -51,8 +53,8 @@ func waitedError(t *testing.T, call string, returned <-chan error) error {
 	select {
 	case err := <-returned:
 		return err
-	case <-time.After(patient(10 * time.Second)):
-		t.Fatalf("%s had not returned %v after its context was cancelled", call, patient(10*time.Second))
+	case <-time.After(testrun.Patient(10 * time.Second)):
+		t.Fatalf("%s had not returned %v after its context was cancelled", call, testrun.Patient(10*time.Second))
 		return nil
 	}
 }
@@ -88,7 +90,7 @@ func TestChannelWrapsTheContextsError(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			returned := make(chan error, 1)
 			go func() { returned <- call.channel.Flush(ctx) }()
-			call.client.readData(16, time.Now().Add(patient(5*time.Second)))
+			call.client.readData(16, time.Now().Add(testrun.Patient(5*time.Second)))
 			cancel()
 			expectWrapped(t, "Flush", waitedError(t, "Flush", returned), context.Canceled)
 		})

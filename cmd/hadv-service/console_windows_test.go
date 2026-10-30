@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // processAttributes puts each program in a process group of its own, so that a console break
@@ -66,7 +68,7 @@ func prepareBreak(t *testing.T) func(*testing.T, *run) (time.Time, time.Time) {
 		// A sender that does not end with its input is killed, so a stuck one cannot hang the run.
 		select {
 		case <-exited:
-		case <-time.After(patient(30 * time.Second)):
+		case <-time.After(testrun.Patient(30 * time.Second)):
 			_ = sender.Process.Kill()
 			<-exited
 		}

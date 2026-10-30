@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 var (
@@ -24,7 +26,7 @@ var (
 )
 
 // startLimit is how long the program may take to name its listeners.
-var startLimit = patient(30 * time.Second)
+var startLimit = testrun.Patient(30 * time.Second)
 
 // TestMain builds the program the page's rows run from outside, under the race detector when
 // the tests run under it. A build that fails fails every such row with its reason, rather than
@@ -42,7 +44,7 @@ func TestMain(tests *testing.M) {
 		}
 		programPath = filepath.Join(directory, name)
 		arguments := []string{"build", "-o", programPath}
-		if raceBuild {
+		if testrun.Race {
 			arguments = append(arguments, "-race")
 		}
 		arguments = append(arguments, "../../cmd/hadv-service")
@@ -105,8 +107,8 @@ func runProgram(t *testing.T, options ...string) *engine {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command := exec.CommandContext(t.Context(), programPath, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
-	command.WaitDelay = patient(5 * time.Second)
-	if raceBuild {
+	command.WaitDelay = testrun.Patient(5 * time.Second)
+	if testrun.Race {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
 	}
 	stderr, err := command.StderrPipe()

@@ -38,6 +38,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The superuser the tests set a server up as, and the one address every server listens at.
@@ -981,7 +983,7 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 		return
 	}
 	if moment.After(notAfter) {
-		if raceBuild {
+		if testrun.Race {
 			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
 			return
 		}
@@ -996,25 +998,12 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 // there is right: neither bound is judged, and the moment is only logged.
 func expectEngineWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
-	if raceBuild {
+	if testrun.Race {
 		t.Logf("under the race detector, timing is not judged: %s came %v into its window of %v, which opens from an earlier event of the engine's",
 			what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 		return
 	}
 	expectWithin(t, what, moment, notBefore, notAfter)
-}
-
-// raceStretch is how much longer a wait may take under the race detector, which slows the engine
-// and the test by an amount nobody controls: generous, since a stretched wait still fails a
-// hang, and no upper bound on time is judged there.
-const raceStretch = 4
-
-// patient stretches a wait under the race detector; without it the wait is unchanged.
-func patient(wait time.Duration) time.Duration {
-	if raceBuild {
-		return raceStretch * wait
-	}
-	return wait
 }
 
 var errNotUsed = errors.New("")

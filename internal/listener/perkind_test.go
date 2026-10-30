@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // lingerFor is how long a lingering Open or Close goes on after its context ends: far longer
@@ -321,7 +323,7 @@ func throughTelnet(finish func(t *testing.T, call caller, stream *recording)) pa
 		t.Helper()
 		call := dial(t, address)
 		stream := call.record(call.connected.Add(nameLimit + progressLimit))
-		got := stream.waitFor(t, len(opening), call.connected.Add(patient(wideMargin)))
+		got := stream.waitFor(t, len(opening), call.connected.Add(testrun.Patient(wideMargin)))
 		if len(got) == 0 {
 			<-stream.done
 			if errors.Is(stream.end, io.EOF) || isReset(stream.end) {
@@ -578,7 +580,7 @@ func TestListenerPerKind(t *testing.T) {
 			}
 			expectFreedOnce(t, probe.addresses[0])
 			if !time.Now().Before(kept.Add(ceilingLimit - early)) {
-				if raceBuild {
+				if testrun.Race {
 					t.Logf("under the race detector, timing is not judged: the probes ended %v after the kept places could reach their own ceiling", time.Since(kept.Add(ceilingLimit-early)))
 				} else {
 					t.Fatalf("test fault: the probes ended %v after the kept places could reach their own ceiling", time.Since(kept.Add(ceilingLimit-early)))
