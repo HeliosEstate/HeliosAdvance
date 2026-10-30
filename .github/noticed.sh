@@ -14,7 +14,13 @@
 # list gets a comment with the new wording instead. An untagged item finds its issue by its key,
 # or opens one, and gets its tag. An issue this body opened whose item has left the list gets
 # one comment and stays as it is: only the developer closes a noticed issue, so deleting a line
-# never makes its item go away.
+# never makes its item go away; if it comes back, it says so.
+#
+# Two limits, his decision of 2026-10-30. A tag is the session's word that a line is that issue's
+# item, so a tag copied onto an unrelated line attaches that line to the tagged issue: a session
+# keeps a line's tag when it rewords that line, and never copies a tag. And an edit saved in the
+# moment between this script's last look at the body and its writing the tags back is overwritten;
+# closing that would take a lock on the body, which nothing here offers.
 #
 # Usage: noticed.sh SOURCE < body, where SOURCE is pr-<number> or issue-<number>. Without
 # GH_TOKEN, or with DRY_RUN=1, it prints the items and what it would do.
@@ -83,6 +89,8 @@ add_marker() {
   if printf '%s' "$text" | grep -qF "$left"; then
     text=$(printf '%s\n' "$text" | grep -vF "$left")
     printf '%s\n' "$text" | gh issue edit "$1" --body-file -
+    # The thread said the line had left; the developer reads it to decide, so it says it is back.
+    gh issue comment "$1" --body "Its line is back in the list in $from."
   fi
   printf '%s' "$text" | grep -qF "$marker" && return
   printf '%s\n%s\n' "$text" "$marker" | gh issue edit "$1" --body-file -
@@ -94,13 +102,17 @@ declare -A tags=() listed=()
 while IFS=$'\t' read -r -u 3 last item; do
   [ -n "$item" ] || continue
   if [[ $item =~ $tagged_item ]]; then
-    text=${BASH_REMATCH[1]}; number=${BASH_REMATCH[2]}
+    # Base ten, so a tag written with a leading zero is still the issue it names.
+    text=${BASH_REMATCH[1]}; number=$((10#${BASH_REMATCH[2]}))
     if [ -n "$dry" ]; then
       printf 'item %s, tagged #%s, from %s: %s\n' "$(key "$text")" "$number" "$from" "$text"
-      listed[$number]=1
       continue
     fi
-    current=$(issue_field "$number" body)
+    # The named issue is read itself, not found in the list, which holds only the newest
+    # thousand. A tag a line before already used names that line's issue, so a second line
+    # carrying it is a new item, and the two cannot take turns rewording one issue.
+    current=""
+    [ -n "${listed[$number]:-}" ] || current=$(gh issue view "$number" --json body -q .body 2>/dev/null || true)
     if printf '%s' "$current" | grep -q 'noticed-key: '; then
       listed[$number]=1
       newkey=$(key "$text")
@@ -110,7 +122,8 @@ while IFS=$'\t' read -r -u 3 last item; do
           # Only the item, the body's first paragraph, and its key change: whatever else the
           # issue holds, such as the developer's record of a deferral, stays, and a closed issue
           # stays closed.
-          # A body with no blank line keeps every line after its first.
+          # A body with no blank line may still hold such a record, so every line after its first
+          # stays.
           rest=$(printf '%s\n' "$current" | awk 'seen || /^[ \t\r]*$/ { seen = 1; print }')
           [ -n "$rest" ] || rest=$(printf '\n'; printf '%s\n' "$current" | tail -n +2)
           { printf '%s\n' "$text"
@@ -137,12 +150,16 @@ while IFS=$'\t' read -r -u 3 last item; do
   if [ -n "$number" ]; then
     add_marker "$number"
   else
-    url=$({
+    created=$(
       printf '%s\n\n' "$item"
       printf 'Noticed in %s and not touched there. It waits on the developer'"'"'s decision: fix it (this issue becomes the work), defer it (say here where it is recorded and what brings it back, then close it), or close it as needing nothing, with the reason.\n\n' "$from"
       printf '<!-- noticed-key: %s -->\n%s\n' "$itemkey" "$marker"
-    } | gh issue create --title "$(title_for "$item")" --label noticed --body-file -)
+    )
+    url=$(printf '%s\n' "$created" | gh issue create --title "$(title_for "$item")" --label noticed --body-file -)
     number=${url##*/}
+    # The list was read before this issue existed: it joins it, so the same item listed twice
+    # finds this issue instead of opening another.
+    issues=$(printf '%s' "$issues" | jq --argjson n "$number" --arg b "$created" '. + [{number: $n, state: "OPEN", body: $b}]')
   fi
   listed[$number]=1
   tags[$last]=$number
@@ -167,16 +184,18 @@ done
 # Each newly tagged item gets "(noticed: #N)" at the end of its last line. A body edited since
 # this run began is left alone: that edit starts a run of its own, which tags it.
 [ "${#tags[@]}" -gt 0 ] || exit 0
+# Through the REST API: a body read and written there needs nothing the workflow's own token
+# lacks.
 case $source in
-  pr-*) now=$(gh pr view "${source#pr-}" --json body -q .body) ;;
-  issue-*) now=$(gh issue view "${source#issue-}" --json body -q .body) ;;
+  pr-*) endpoint="repos/$GH_REPO/pulls/${source#pr-}" ;;
+  issue-*) endpoint="repos/$GH_REPO/issues/${source#issue-}" ;;
 esac
+now=$(gh api "$endpoint" --jq '.body // ""')
 [ "$now" = "$body" ] || { echo "the body changed during this run; its own run tags it"; exit 0; }
 spec=$(for line in "${!tags[@]}"; do printf '%s %s\n' "$line" "${tags[$line]}"; done)
 tagged=$(printf '%s\n' "$body" | awk -v spec="$spec" '
   BEGIN { n = split(spec, rows, "\n"); for (i = 1; i <= n; i++) { split(rows[i], f, " "); tag[f[1]] = f[2] } }
   { line = $0; if (NR in tag) { sub(/\r$/, "", line); sub(/[ \t]*\(noticed: #[0-9]+\)[ \t]*$/, "", line); line = line " (noticed: #" tag[NR] ")" } print line }')
-case $source in
-  pr-*) printf '%s\n' "$tagged" | gh pr edit "${source#pr-}" --body-file - ;;
-  issue-*) printf '%s\n' "$tagged" | gh issue edit "${source#issue-}" --body-file - ;;
-esac
+# A body that already carries every tag is not written again.
+[ "$tagged" = "$body" ] && exit 0
+printf '%s\n' "$tagged" | jq -Rs '{body: .}' | gh api -X PATCH "$endpoint" --input - > /dev/null
