@@ -307,7 +307,7 @@ linters:
         linters: [dupl]
       # The sleep ban is for tests, the test support's code included; production code may sleep
       # on a context.
-      - path-except: _test\.go|internal/testrun/
+      - path-except: _test\.go|^internal/testrun/
         linters: [forbidigo]
         text: time\.Sleep
       - path: _test\.go
@@ -324,7 +324,7 @@ linters:
         linters: [gosec]
         text: G(204|304|703)
       # The test support stops a dead run's servers and reads its owner and process files.
-      - path: internal/testrun/
+      - path: ^internal/testrun/
         linters: [gosec]
         text: G(204|304)
 
