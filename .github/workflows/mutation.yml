@@ -1,8 +1,9 @@
 # Mutation testing, nightly, on what changed in the last day: a report of what the approved
 # tests miss, for QA to read (a report, not a gate: the developer, 2026-10-22). Each pull
 # request also runs it on its own changes, stopped at an hour (check.yml); this nightly run
-# covers what merged in a day, with the race detector, and its five hours allow for oracle
-# tests at twenty-five seconds a run; a red run here means the tool could not report.
+# covers what merged in a day, with the race detector, and its five hours allow for each fault
+# running its package's tests, the Listener's five minutes among them; a red run here means the
+# tool could not report.
 name: mutation
 
 on:
@@ -43,27 +44,19 @@ jobs:
       # runner's image; it comes from Ubuntu's signed archive, as in check.yml.
       - name: Install Plink
         run: sudo apt-get update -q && sudo apt-get install -y -q putty-tools && plink -V
-      # The same cache as check.yml's, for the same reason: Docker Hub's 429.
-      - name: Restore the oracle images
-        id: oracle-images
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/oracle-images
-          key: oracle-images-${{ runner.arch }}-${{ hashFiles('oracle/**') }}
-          restore-keys: oracle-images-${{ runner.arch }}-
-      - name: Build the oracles
-        run: bash .github/oracle-images.sh ~/oracle-images
-      - name: Save the oracle images
-        if: steps.oracle-images.outputs.cache-hit != 'true' && hashFiles('oracle/**') != ''
-        uses: actions/cache/save@v6
-        with:
-          path: ~/oracle-images
-          key: ${{ steps.oracle-images.outputs.cache-primary-key }}
+      # PostgreSQL's tools, the database tests' oracle, as in check.yml: on the image, on no PATH.
+      - name: PostgreSQL's tools
+        id: postgres
+        run: |
+          compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
+          echo "bin=$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")" >> "$GITHUB_OUTPUT"
       - name: Mutate the last day's changes
         env:
           RACE: -race
           BASE_INPUT: ${{ inputs.base }}
+          PGDIR: ${{ steps.postgres.outputs.bin }}
         run: |
+          export PATH="$PGDIR:$PATH"
           base=$(git rev-list -1 --before="24 hours ago" origin/development)
           if [ -n "$BASE_INPUT" ]; then base=$(git rev-parse --verify "$BASE_INPUT^{commit}"); fi
           if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then echo "nothing changed in the last day"; exit 0; fi
