@@ -145,23 +145,37 @@ jobs:
       # PostgreSQL, the database tests' oracle (database Part 1, HeliosAdvance #159). Each test run
       # makes its own throwaway server in a temporary folder with initdb and pg_ctl, as the
       # ordinary user, so it can stop and start it and change its sign-in rules; no system
-      # service is started (developer, 2026-10-28). Every runner's image carries PostgreSQL with
-      # its service off, each its own version (on 2026-10-28: 18 on ubuntu-latest, 16 on Linux
-      # ARM64, 17 on Windows); nothing is installed, and a runner without them fails here, not in
-      # the tests. The tools' folder is handed to the steps that run the tests alone, never put on
-      # every later step's PATH: on Windows it carries its own copies of shared libraries (OpenSSL,
-      # zlib, ICU) that could shadow another tool's (HeliosDesign #229).
+      # service is started (developer, 2026-10-28). Each system tests one supported major, so
+      # every major the engine supports is tested once (developer, 2026-10-30): 18 on Linux
+      # x86-64, 16 on Linux ARM64, 17 on Windows; 19 joins on its release (HeliosDesign #271).
+      # Each run takes the major's newest update from PostgreSQL's own packages: on Linux its apt
+      # repository; on Windows the image's copy when it is the newest the project publishes, else
+      # the project's Windows binaries. A job whose major is not its own fails here. The weekly
+      # pg-watch workflow says when an image or a major's support moves. The tools' folder is handed
+      # to the steps that run the tests alone, never put on every later step's PATH: on Windows it
+      # carries its own copies of shared libraries (OpenSSL, zlib, ICU) that could shadow another
+      # tool's (HeliosDesign #229).
       - name: PostgreSQL's tools
         if: matrix.group != 'listener'
         id: postgres
+        env:
+          PG: ${{ runner.os == 'Windows' && '17' || runner.arch == 'ARM64' && '16' || '18' }}
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
-            [ -n "$PGBIN" ] || { echo "::error::no PostgreSQL on this runner: PGBIN is not set"; exit 1; }
+            newest="$PG.$(curl -sSf https://www.postgresql.org/versions.json | jq -r --arg m "$PG" '.[] | select(.major == $m) | .latestMinor')"
             bin="$(cygpath -u "$PGBIN")"
+            if ! "$bin/pg_ctl" --version | tr -d '\r' | grep -q " $newest\$"; then
+              curl -sSfL -o "$RUNNER_TEMP/pg.zip" "https://get.enterprisedb.com/postgresql/postgresql-$newest-1-windows-x64-binaries.zip"
+              unzip -q "$RUNNER_TEMP/pg.zip" -d "$RUNNER_TEMP"
+              bin="$RUNNER_TEMP/pgsql/bin"
+            fi
           else
-            compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
-            bin="$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")"
+            sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y > /dev/null
+            sudo apt-get install -y -q "postgresql-$PG" > /dev/null
+            bin="/usr/lib/postgresql/$PG/bin"
           fi
+          "$bin/pg_ctl" --version | tr -d '\r' | grep -qE " $PG\.[0-9]+" ||
+            { echo "::error::this job tests PostgreSQL $PG, but its pg_ctl is $("$bin/pg_ctl" --version)"; exit 1; }
           PATH="$bin:$PATH" initdb --version
           PATH="$bin:$PATH" pg_ctl --version
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
