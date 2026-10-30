@@ -62,9 +62,15 @@ var (
 	oracleFailure     error
 )
 
-// TestMain makes the template cluster and the shared server before the rows run, and removes both
-// after. A failure fails every row that needs a server, with its reason: the oracle is required.
+// TestMain makes this run's own folder, taking what dead runs left, then the template cluster and
+// the shared server inside it, before the rows run, and removes them all after. A failure of the
+// oracle fails every row that needs a server, with its reason: the oracle is required.
 func TestMain(tests *testing.M) {
+	runFolder, err := testrun.Enter()
+	if err != nil {
+		// The rows can still run; only what this run or a dead one left may outlive it.
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+	}
 	oracleFailure = prepareOracle()
 	code := tests.Run()
 	if shared != nil {
@@ -73,6 +79,11 @@ func TestMain(tests *testing.M) {
 	}
 	if templateDirectory != "" {
 		_ = os.RemoveAll(templateDirectory)
+	}
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
 	}
 	os.Exit(code)
 }

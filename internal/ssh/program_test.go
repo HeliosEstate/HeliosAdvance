@@ -31,8 +31,14 @@ var startLimit = testrun.Patient(30 * time.Second)
 // TestMain builds the program the page's rows run from outside, under the race detector when
 // the tests run under it. A build that fails fails every such row with its reason, rather than
 // stopping before any runs; the contract's rows need no program. It also prepares the database
-// the program needs before it listens.
+// the program needs before it listens. First it makes this run's own folder, taking what dead
+// runs left, so that everything the run makes, the program included, lands there.
 func TestMain(tests *testing.M) {
+	runFolder, err := testrun.Enter()
+	if err != nil {
+		// The rows can still run; only what this run or a dead one left may outlive it.
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+	}
 	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-ssh-test-")
 	if err != nil {
@@ -58,6 +64,11 @@ func TestMain(tests *testing.M) {
 		_ = os.RemoveAll(directory)
 	}
 	removeOracle()
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+	}
 	os.Exit(code)
 }
 

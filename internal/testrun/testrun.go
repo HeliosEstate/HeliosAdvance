@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package testrun is what every test binary shares about its own run: whether it runs under the
-// race detector and how long a wait may take there. Only test files import it, and it is the
-// developer's, as the approved tests are: a change to how patient a test is changes every timed
-// row at once.
+// race detector and how long a wait may take there, and the run's own folder, which nothing the
+// run makes outlives. Only test files import it, and it is the developer's, as the approved tests
+// are: a change to how patient a test is changes every timed row at once.
 package testrun
 
 import "time"

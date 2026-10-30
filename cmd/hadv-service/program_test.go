@@ -46,8 +46,15 @@ var (
 
 // TestMain builds the program the rows run, under the race detector when the tests run under
 // it, and prepares the database every run needs. A build or a database that fails fails every
-// row with its reason, rather than stopping before any runs.
+// row with its reason, rather than stopping before any runs. First it makes this run's own
+// folder, taking what dead runs left, so that everything the run makes, the program included,
+// lands there.
 func TestMain(tests *testing.M) {
+	runFolder, err := testrun.Enter()
+	if err != nil {
+		// The rows can still run; only what this run or a dead one left may outlive it.
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+	}
 	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-test-")
 	if err != nil {
@@ -73,6 +80,11 @@ func TestMain(tests *testing.M) {
 		_ = os.RemoveAll(directory)
 	}
 	removeOracle()
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+	}
 	os.Exit(code)
 }
 
