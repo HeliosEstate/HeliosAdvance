@@ -122,6 +122,61 @@ func expectNoSignIn(t *testing.T, server *postgres, login string) {
 	}
 }
 
+// logOnFailure shows, if the row fails, what the server logged for the login's connections: a
+// refusal the server logged but the engine reported as a dead connection is told apart from one
+// the server never sent. Windows CI met that once, with no log to read.
+func logOnFailure(t *testing.T, server *postgres, login string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the server's log for the connections of %s:\n%s", login, server.connectionLog(login))
+		}
+	})
+}
+
+// backendID is the server process an entry of the server's log came from.
+var backendID = regexp.MustCompile(`^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} UTC \[(\d+)\] `)
+
+// connectionLog is every entry of the server's log from a server process whose entries name the
+// login, so a connection's whole story shows, from its arrival, before the login is known, to its
+// end. An entry runs from its prefix to the next, since an entry may span lines.
+func (server *postgres) connectionLog(login string) string {
+	names := regexp.MustCompile(`\b` + regexp.QuoteMeta(login) + `\b`)
+	type entry struct {
+		process string
+		text    strings.Builder
+	}
+	var entries []*entry
+	for line := range strings.SplitSeq(readText(server.logPath), "\n") {
+		if match := backendID.FindStringSubmatch(line); match != nil || len(entries) == 0 {
+			process := ""
+			if match != nil {
+				process = match[1]
+			}
+			entries = append(entries, &entry{process: process})
+		}
+		last := entries[len(entries)-1]
+		last.text.WriteString(line)
+		last.text.WriteString("\n")
+	}
+	named := map[string]bool{}
+	for _, each := range entries {
+		if each.process != "" && names.MatchString(each.text.String()) {
+			named[each.process] = true
+		}
+	}
+	var shown strings.Builder
+	for _, each := range entries {
+		if named[each.process] {
+			shown.WriteString(each.text.String())
+		}
+	}
+	if shown.Len() == 0 {
+		return "(no entry names it)"
+	}
+	return shown.String()
+}
+
 // expectExactEnd checks an update wrote a lease end LeaseSeconds after the database's time: at
 // least its transaction's start plus 30 s, and at most the moment it was recorded plus 30 s.
 func expectExactEnd(t *testing.T, change update, after time.Duration) {
@@ -408,6 +463,7 @@ func TestTake(t *testing.T) {
 				created := sharedServer(t).newBoard(t)
 				contents := created.file()
 				change(t, created, &contents)
+				logOnFailure(t, created.server, contents.Login)
 				lease, err := take(t, contents)
 				expectTakeError(t, lease, err, database.ErrSignInRefused, created.password)
 			})
