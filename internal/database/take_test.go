@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -125,78 +124,65 @@ func expectNoSignIn(t *testing.T, server *postgres, login string) {
 
 // showLogIfFailed is deferred by a refusal row so that its failure tells a refusal the server
 // logged but the engine reported as a dead connection from one the server never sent: Windows CI
-// met that once, with no log to read. A defer, not a cleanup, since the wait needs the row's
-// context, which ends before cleanups run. The login is read late because a row's change may
-// replace it.
-func showLogIfFailed(t *testing.T, server *postgres, login *string) {
+// met that once, with no log to read. Every line since the row started is shown, other rows'
+// among them, because a connection that dies before it sends its login logs under no login. A
+// defer, not a cleanup, since the wait needs the row's context, which ends before cleanups run.
+// The login is read late because a row's change may replace it.
+func showLogIfFailed(t *testing.T, server *postgres, login *string, since time.Time) {
 	t.Helper()
 	if !t.Failed() {
 		return
 	}
-	shown, ended := server.connectionLog(*login)
+	shown, ended := server.logSince(since, *login)
 	for deadline := time.Now().Add(logWait); !ended && time.Now().Before(deadline); {
 		pause(t, 100*time.Millisecond)
-		shown, ended = server.connectionLog(*login)
+		shown, ended = server.logSince(since, *login)
 	}
-	switch {
-	case shown == "":
-		shown = fmt.Sprintf("(by %v no entry has %s as its login)\n", logWait, *login)
-	case !ended:
-		shown += fmt.Sprintf("(by %v not every connection's end is logged: it may come later, or the connection ended without one)\n", logWait)
+	if !ended {
+		shown += fmt.Sprintf("\n(by %v the log shows no refusal or end for %s)", logWait, *login)
 	}
-	t.Logf("the server's log for the connections of %s:\n%s", *login, shown)
+	t.Logf("the server's log since the row started:\n%s", shown)
 }
 
-// logWait bounds the wait for a connection's end in the log: the engine may give up on a server
-// process that a loaded runner has not yet let log its refusal. Only a failed row waits.
+// logWait bounds the wait for the login's refusal or end to reach the log: the engine may give up
+// on a server process that a loaded runner has not yet let log it. Only a failed row waits.
 const logWait = 10 * time.Second
 
-// connectionLog returns the server's log for the connections that had the login, and whether each
-// has ended. A connection is cut at its "connection received", not by its process number alone,
-// since a later connection may reuse the number. That entry comes before the login is known, so
-// the login is matched in the login field of the connection's later entries, never in their
-// messages, where another login's statements may name it. A refused connection ends at its FATAL,
-// with no disconnection entry; one that signed in ends at its disconnection.
-func (server *postgres) connectionLog(login string) (string, bool) {
-	text, err := os.ReadFile(server.logPath)
-	if err != nil {
-		return "(the server's log could not be read: " + err.Error() + ")\n", true
-	}
-	type connection struct {
-		text         strings.Builder
-		named, ended bool
-	}
-	var connections []*connection
-	current := map[string]*connection{}
-	var last *connection
-	for line := range strings.SplitSeq(strings.TrimSuffix(string(text), "\n"), "\n") {
-		if match := logPrefix.FindStringSubmatch(line); match != nil {
-			message := line[len(match[0]):]
-			last = current[match[2]]
-			if last == nil || strings.HasPrefix(message, "LOG:  connection received:") {
-				last = &connection{}
-				current[match[2]] = last
-				connections = append(connections, last)
+// logSince returns the server's log from its first entry at or after the moment given, to the
+// millisecond as the log keeps time, and whether an entry of the login's since then is a FATAL or
+// a disconnection: a refused connection ends at its FATAL, with no disconnection entry, and one
+// that signed in at its disconnection. A log with no entry at all, such as one that could not be
+// read, is returned whole.
+func (server *postgres) logSince(since time.Time, login string) (string, bool) {
+	text := strings.TrimSuffix(readText(server.logPath), "\n")
+	lines := strings.Split(text, "\n")
+	from := since.UTC().Truncate(time.Millisecond)
+	start, entries, ended := -1, false, false
+	for index, line := range lines {
+		match := logPrefix.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		entries = true
+		if start < 0 {
+			logged, err := time.Parse("2006-01-02 15:04:05.000", match[1])
+			if err != nil || logged.Before(from) {
+				continue
 			}
-			last.named = last.named || match[3] == login
-			last.ended = last.ended || strings.HasPrefix(message, "FATAL:") || strings.HasPrefix(message, "LOG:  disconnection:")
+			start = index
 		}
-		// A line without a prefix continues the entry before it, which may span lines.
-		if last != nil {
-			last.text.WriteString(line)
-			last.text.WriteString("\n")
+		message := line[len(match[0]):]
+		if match[2] == login && (strings.HasPrefix(message, "FATAL:") || strings.HasPrefix(message, "LOG:  disconnection:")) {
+			ended = true
 		}
 	}
-	var shown strings.Builder
-	named, ended := 0, true
-	for _, each := range connections {
-		if each.named {
-			shown.WriteString(each.text.String())
-			named++
-			ended = ended && each.ended
-		}
+	switch {
+	case !entries:
+		return text, false
+	case start < 0:
+		return "(no entry since " + from.Format("15:04:05.000") + " UTC)", false
 	}
-	return shown.String(), named > 0 && ended
+	return strings.Join(lines[start:], "\n"), ended
 }
 
 // expectExactEnd checks an update wrote a lease end LeaseSeconds after the database's time: at
@@ -484,8 +470,9 @@ func TestTake(t *testing.T) {
 				t.Parallel()
 				created := sharedServer(t).newBoard(t)
 				contents := created.file()
+				started := time.Now()
 				// Called from a closure so that the printout names this line, not the runtime's.
-				defer func() { showLogIfFailed(t, created.server, &contents.Login) }()
+				defer func() { showLogIfFailed(t, created.server, &contents.Login, started) }()
 				change(t, created, &contents)
 				lease, err := take(t, contents)
 				expectTakeError(t, lease, err, database.ErrSignInRefused, created.password)
