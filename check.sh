@@ -230,6 +230,12 @@ loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths"
 wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
 [ "$wide" = 1 ] || fail "the import rules hold the engine's module-wide entry $wide times, not once"
 
+# 4i. The test support (internal/testrun) is for tests: no other file imports it, whatever its
+# build tags, which the linter's import rules do not see (a file built only for the race detector).
+leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/internal/testrun"' . |
+  grep -vE '_test\.go$|^\./internal/testrun/' || true)
+[ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
@@ -277,7 +283,7 @@ if [ -n "$pkgs" ]; then
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
-  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
+  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data

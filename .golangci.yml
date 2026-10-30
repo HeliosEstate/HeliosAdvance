@@ -58,7 +58,8 @@ linters:
             # Kept by the Go team, already in go.sum through the SSH library, and watched by
             # govulncheck, Dependabot and the licence gate; the alternative, a non-blocking switch
             # on Go's overlapped socket and a 10 ms retry, rests on behaviour Microsoft does not
-            # document (developer, 2026-10-27).
+            # document (developer, 2026-10-27). Also the test support's Windows files, which list
+            # and end a dead test run's programs, calls the syscall package lacks (2026-10-30).
             - golang.org/x/sys/windows$
             # The database unit's connection, sign-in and queries, and only these three packages of
             # the module: the standard library has no PostgreSQL driver, and our own would put
@@ -94,7 +95,7 @@ linters:
             - "!**/internal/database/**"
             - "!**/cmd/hadv-service/**"
             - "!**/tools/**"
-            - "!**/internal/testrun/**"
+            - "!**/internal/testrun/*_windows.go"
           list-mode: strict
           allow:
             - $gostd
@@ -114,7 +115,7 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package telnet_test can import it.
             - github.com/heliosestate/heliosadvance/internal/telnet$
-            # The test support, for its tests alone (the test-support rule below).
+            # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         # The Telnet unit's Windows urgent write, the one file that may import the module's
         # windows package (docs/architecture.md, the developer's of 2026-10-27).
@@ -125,7 +126,8 @@ linters:
             - $gostd
             - golang.org/x/sys/windows$
         # The tools under tools/ import the standard library only, so the module-wide allow list,
-        # which names golang.org/x/sys/windows for the Telnet unit's one file, reaches no tool
+        # which names golang.org/x/sys/windows for the Telnet unit's one file and the test
+        # support's Windows files, reaches no tool
         # (developer, 2026-10-27).
         tools:
           files: ["**/tools/**"]
@@ -167,7 +169,7 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package ssh_test can import it.
             - github.com/heliosestate/heliosadvance/internal/ssh$
-            # The test support, for its tests alone (the test-support rule below).
+            # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         listener:
           files: ["**/internal/listener/**", "!$test"]
@@ -191,7 +193,7 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/telnet$
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener$
-            # The test support (the test-support rule below).
+            # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         database:
           files: ["**/internal/database/**"]
@@ -208,7 +210,7 @@ linters:
             - github.com/jackc/pgx/v5/pgproto3$
             # Its own path, so its black-box tests in package database_test can import it.
             - github.com/heliosestate/heliosadvance/internal/database$
-            # The test support, for its tests alone (the test-support rule below).
+            # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         hadv-service:
           files: ["**/cmd/hadv-service/**"]
@@ -223,24 +225,12 @@ linters:
             # It reads the connection file and takes the lease before it listens, and closes the
             # listeners when the lease is lost (database Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
-            # The test support, for its tests alone (the test-support rule below).
+            # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
-        # The test support (internal/testrun: the race detector's build and a test run's own
-        # folder) is for tests: no other file may import it.
-        test-support:
-          files: ["$all", "!$test"]
-          deny:
-            - pkg: github.com/heliosestate/heliosadvance/internal/testrun
-              desc: the test support is for tests alone
-        # The test support itself: the standard library, and the module's windows package in its
-        # one Windows file, which ends a dead run's programs (the developer, 2026-10-30).
-        testrun:
-          files: ["**/internal/testrun/**", "!**/internal/testrun/kill_windows.go"]
-          list-mode: strict
-          allow:
-            - $gostd
-        testrun-windows-kill:
-          files: ["**/internal/testrun/kill_windows.go"]
+        # The test support's Windows files, which find and end a dead run's programs (the
+        # developer, 2026-10-30); its other files are the catch-all rule's, the standard library.
+        testrun-windows:
+          files: ["**/internal/testrun/*_windows.go"]
           list-mode: strict
           allow:
             - $gostd
