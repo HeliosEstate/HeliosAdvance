@@ -606,7 +606,7 @@ func (server *postgres) log(t *testing.T) string {
 
 // logPrefix is how each entry of the server's log begins: its time, its process, the login and
 // the database, as the settings' log_line_prefix writes them.
-var logPrefix = regexp.MustCompile(`^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) UTC \[\d+\] (\S*)@\S* `)
+var logPrefix = regexp.MustCompile(`^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) UTC \[(\d+)\] (\S*)@\S* `)
 
 // updatesSent returns when the server received each statement from the login that updates
 // hadv.servers, by a server started with log_statement = 'all'. An entry runs from its prefix to
@@ -632,7 +632,7 @@ func (server *postgres) updatesSent(t *testing.T, login string) []time.Time {
 			if err != nil {
 				t.Fatalf("a time in the server's log read as %q", match[1])
 			}
-			received, who = parsed.UTC(), match[2]
+			received, who = parsed.UTC(), match[3]
 		}
 		entry.WriteString(line)
 		entry.WriteString("\n")
