@@ -44,7 +44,10 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            - github.com/heliosestate/heliosadvance
+            # The engine's own module, its root and every package under it, and no other module
+            # whose path only begins the same way: the units' arrows are judged by their own rules.
+            - github.com/heliosestate/heliosadvance$
+            - github.com/heliosestate/heliosadvance/
             # The SSH unit's handshake and channel, and only that package of the module: complete
             # and kept by the Go team, and watched by govulncheck and Dependabot here, where writing
             # our own would put thousands of lines of cryptographic protocol at the trust boundary.
@@ -76,8 +79,29 @@ linters:
               desc: unsafe switches off Go's memory safety; an exception is the developer's decision, by name
             - pkg: C
               desc: cgo brings C's memory safety into the engine; an exception is the developer's decision, by name
+        # A package no unit rule below covers may import the standard library alone, so a new unit
+        # cannot reach another before its own rule, and its row in docs/architecture.md, exist.
+        # A new unit's rule is a new line in this list too.
+        unruled:
+          files:
+            - $all
+            - "!**/internal/telnet/**"
+            - "!**/internal/session/**"
+            - "!**/internal/textio/**"
+            - "!**/internal/timeup/**"
+            - "!**/internal/ssh/**"
+            - "!**/internal/listener/**"
+            - "!**/internal/database/**"
+            - "!**/cmd/hadv-service/**"
+            - "!**/tools/**"
+          list-mode: strict
+          allow:
+            - $gostd
         # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
-        # A new arrow is a new line here, in the same PR, with its reason.
+        # A new arrow is a new line here, in the same PR, with its reason. Each of the engine's
+        # own packages is named exactly, ending in $, so a later package whose path only begins
+        # the same way, or a unit's own sub-package, is a new arrow and needs its own line; check.sh
+        # refuses an entry without the $.
         telnet:
           files: ["**/internal/telnet/**", "!**/internal/telnet/urgent_windows.go"]
           list-mode: strict

@@ -211,6 +211,15 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 }')
 [ -z "$long" ] || { echo "$long"; fail "a comment line runs past 100 columns: wrap it, or shorten a nolint's reason"; }
 
+# 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
+# entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
+# only begins the same way; a merge that keeps the other side of a conflict would bring one back
+# with everything green (HeliosAdvance #160). The dependencies rule's module-wide entry ends in /.
+if [ -f .golangci.yml ]; then
+  loose=$(grep -nE '^[[:space:]]*- github\.com/heliosestate/heliosadvance/.*[^$/][[:space:]]*$' .golangci.yml || true)
+  [ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's packages without a closing \$"; }
+fi
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
