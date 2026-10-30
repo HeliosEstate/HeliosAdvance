@@ -2,7 +2,9 @@
 # The only definition of green. Every gate tolerates an empty repository and says so; a gate that
 # cannot run fails and says so.
 # Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER,
-#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test)
+#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
+#   PKGS (CI, the packages one job tests; default all), GATES=0 (CI, a job whose Go gates another
+#   job of the same run checks)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -242,7 +244,9 @@ leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/inter
 # than check.yml.
 if [ "${SKIP_GO:-}" = 1 ]; then echo "no Go in the change set; Go gates skipped"; echo green; exit 0; fi
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
-if [ -n "$pkgs" ]; then
+if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
+  echo "Go gates checked by another job of this run; tests only"
+elif [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
   need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
   need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
@@ -272,12 +276,16 @@ if [ -n "$pkgs" ]; then
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
   CGO_ENABLED=0 GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
+  govulncheck ./...
+fi
+if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
   # Windows, and CI sets the same pattern for its Windows runner.
   [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
-  go test ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
-  govulncheck ./...
+  # One package at a time, on every machine: the timed rows' margins are measured that way, and
+  # every failure from load on record came with every package at once (HeliosDesign #258).
+  go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
     # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
