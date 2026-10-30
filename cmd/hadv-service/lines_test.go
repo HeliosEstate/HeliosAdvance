@@ -236,7 +236,7 @@ func TestProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall write no line to the local log other than `started` and `start_failed`.", func(t *testing.T) {
+	t.Run("The engine shall write no line to the local log other than `started`, `start_failed`, `waiting` and `lease_lost`.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a whole call, a silent caller and a stop leave the started line alone", func(t *testing.T) {
 			t.Parallel()
@@ -344,12 +344,12 @@ func TestLinuxRoot(t *testing.T) {
 	t.Run("If the engine is started as root on Linux, then the engine shall write one `start_failed` line to the local log saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, options := range [][]string{nil, {portOption, "0"}} {
-			t.Run(fmt.Sprintf("as root with the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
+			t.Run(fmt.Sprintf("as root with a connection file and the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
 				t.Parallel()
 				if buildFailure != nil {
 					t.Fatalf("the program did not build: %v", buildFailure)
 				}
-				reason := startCommand(t, rootCommand(t, options...)).expectRefusal(t)
+				reason := startCommand(t, rootCommand(t, append([]string{databaseOption, sharedRowFile(t)}, options...)...)).expectRefusal(t)
 				if !strings.Contains(strings.ToLower(reason), "root") {
 					t.Fatalf("the start_failed reason %q does not say the engine was started as root", reason)
 				}
@@ -392,7 +392,7 @@ func TestLinuxLowPort(t *testing.T) {
 	t.Parallel()
 	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with no option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("with a connection file and no other option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			if os.Geteuid() == 0 {
 				t.Fatalf("this row needs an ordinary user, not root")

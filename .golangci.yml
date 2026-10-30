@@ -57,6 +57,15 @@ linters:
             # on Go's overlapped socket and a 10 ms retry, rests on behaviour Microsoft does not
             # document (developer, 2026-10-27).
             - golang.org/x/sys/windows$
+            # The database unit's connection, sign-in and queries, and only these three packages of
+            # the module: the standard library has no PostgreSQL driver, and our own would put
+            # PostgreSQL's wire protocol, SCRAM and TLS at a trust boundary. MIT; it refuses every
+            # way of signing in but the one named and requires channel binding, which lib/pq does
+            # not; watched by govulncheck, Dependabot and the licence gate (database Part 1).
+            # pgproto3 for one type, the error a reply longer than the bound gives (2026-10-29).
+            - github.com/jackc/pgx/v5$
+            - github.com/jackc/pgx/v5/pgconn$
+            - github.com/jackc/pgx/v5/pgproto3$
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -151,6 +160,21 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/telnet
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener
+        database:
+          files: ["**/internal/database/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # The connection, sign-in and queries are the library's (docs/architecture.md); its
+            # other packages, such as pgxpool, are not allowed.
+            - github.com/jackc/pgx/v5$
+            - github.com/jackc/pgx/v5/pgconn$
+            # For the one type pgx gives a message longer than the reply bound,
+            # ExceededMaxBodyLenErr, so a too-long reply reads as a failed connection by its type,
+            # not by text an update of pgx could change (the developer's "yes", 2026-10-29).
+            - github.com/jackc/pgx/v5/pgproto3$
+            # Its own path, so its black-box tests in package database_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/database
         hadv-service:
           files: ["**/cmd/hadv-service/**"]
           list-mode: strict
@@ -161,6 +185,9 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/listener
             - github.com/heliosestate/heliosadvance/internal/telnet
             - github.com/heliosestate/heliosadvance/internal/ssh
+            # It reads the connection file and takes the lease before it listens, and closes the
+            # listeners when the lease is lost (database Part 1).
+            - github.com/heliosestate/heliosadvance/internal/database
     forbidigo:
       analyze-types: true
       forbid:

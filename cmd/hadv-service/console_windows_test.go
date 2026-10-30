@@ -101,8 +101,8 @@ func nextLine(t *testing.T, lines chan string, limit time.Duration) string {
 // that wrongly listened at 22 or 992 would hold it in their engines too, and the row would skip
 // the very fault it is there to see.
 func TestWindowsDefaultPort(t *testing.T) { //nolint:paralleltest // it must run alone
-	t.Run("When it starts with no command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("with no option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) { //nolint:paralleltest // it must run alone
+	t.Run("When it starts with a connection file and no other command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("with a connection file and no other option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			// Port 23 is one port for every user of the machine: one held by anything else is
 			// a fault of the machine the test runs on, named as one.
 			for _, address := range []string{"127.0.0.1:23", "[::1]:23"} {

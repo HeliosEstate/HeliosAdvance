@@ -13,15 +13,16 @@ The engine, the board's server program.
 
 The engine's first layer accepts a Telnet caller, answers the caller's option requests, writes a
 greeting and hangs up. Part 2 replaces how it ends a call, and Part 4 what it sends at accept and
-which options it takes.
+which options it takes. The database's Part 1 makes it take its server's lease before it listens,
+and adds two lines to the local log.
 
 #### Greeting a caller
 
 What the engine sends at accept, and which option requests it takes or refuses, are Part 4's
 lines.
 
-- When it starts with no command-line option, the engine shall listen for Telnet callers on port
-  23, and for no SSH or Telnet over TLS caller.
+- When it starts with a connection file and no other command-line option, the engine shall listen
+  for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.
 - The engine shall send at most one reply to each option request.
 - If, during negotiation, the caller sends anything that is not an option request, AYT, AO or IP,
   then the engine shall discard it without reply.
@@ -67,7 +68,8 @@ What the engine writes after negotiation, and when it gives up on a call, are Pa
 - If a command-line option is malformed, or the engine fails to listen at both addresses for
   Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one
   `start_failed` line to the local log saying why, and exit with a non-zero code.
-- The engine shall write no line to the local log other than `started` and `start_failed`.
+- The engine shall write no line to the local log other than `started`, `start_failed`,
+  `waiting` and `lease_lost`.
 - The engine shall write each line of the local log as one key and its value, `key=value`.
 - The engine shall not write anything a caller sent to the local log.
 
@@ -230,3 +232,71 @@ call ends at the end of file. Part 7 changes one of Part 3's lines, on the conne
   asked for a shell and the greeting and name prompt are written, the engine shall close the
   connection when it reaches the end of file, writing nothing more but the channel close SSH
   requires in reply.
+
+## database
+
+The board's database, PostgreSQL: the single source of truth every server shares, and where the
+servers meet.
+
+### Part 1: Connecting and the lease
+
+The engine connects to its database, signs in, checks the schema version and its server's row,
+and holds its server's lease while it listens. Where the database is and how to sign in come from
+a connection file named on the command line. Part 1 changes two of hadv-service Part 1's lines, on
+starting and on the local log.
+
+#### The connection file
+
+- If it starts without a connection file on the command line, then the engine shall write one
+  `start_failed` line saying so, and exit with a non-zero code.
+- If the connection file is missing, unreadable, over 64 KiB, not in the connection file's
+  format, or missing a field or holding one the format does not name, then the engine shall write
+  one `start_failed` line saying which, and exit with a non-zero code.
+- If, on Linux, the connection file's mode lets its group or others read it, then the engine
+  shall write one `start_failed` line saying so, and exit with a non-zero code.
+- The engine shall take where it connects, its login and its password from the connection file
+  alone.
+- The engine shall not write the connection file's password to the local log.
+
+#### Signing in
+
+- The engine shall connect to the database only over TLS, and sign in only by SCRAM-SHA-256 with
+  channel binding, under the login the connection file names.
+- If the database's certificate does not chain to the certificate authority in the connection
+  file or does not name the file's host, the database asks for any other way of signing in, or it
+  refuses the sign-in, then the engine shall write one `start_failed` line saying which, and exit
+  with a non-zero code.
+- If its login holds any right on the database beyond those each part grants a server's login,
+  or the power to take one, then the engine shall write one `start_failed` line saying so, and
+  exit with a non-zero code.
+- If the database refuses for any other reason, then the engine shall write one `start_failed`
+  line saying so, and exit with a non-zero code.
+
+#### The schema version and the server's row
+
+- If `hadv.schema_version` is missing or holds a version other than 1 or 2, then the engine shall
+  write one `start_failed` line naming the version it found, and exit with a non-zero code.
+- If `hadv.servers` holds no row for the connection file's server ID, then the engine shall write
+  one `start_failed` line saying so, and exit with a non-zero code.
+
+#### Waiting for the database
+
+- If the database does not answer, or answers that it is starting up, shutting down or
+  recovering, that it has no connection free, or that it is read-only, then the engine shall
+  write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.
+- If its server's lease has not ended and its lease holder is not this run's own, then the engine
+  shall write one `waiting` line saying so, listen nowhere, and try again every 10 seconds.
+- The engine shall listen for callers only while it holds its server's lease.
+
+#### The lease
+
+- When it takes its server's lease, the engine shall write a new random lease holder and a lease
+  end 30 seconds after the database's current time to its server's row, only if that row's lease
+  has ended or its lease holder is this run's own.
+- While it holds its server's lease, the engine shall renew it every 10 seconds, writing a lease
+  end 30 seconds after the database's current time, only while the row's lease holder is its own.
+- If 25 seconds pass after it sent its last take or renewal that succeeded, or a renewal finds the
+  lease holder is not its own, then the engine shall close every open connection and every
+  listener, write one `lease_lost` line, and try to take the lease again every 10 seconds.
+- When it receives a stop signal while it holds its server's lease, the engine shall set the
+  lease end to the database's current time before it exits, unless the database does not answer.
