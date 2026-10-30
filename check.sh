@@ -214,11 +214,17 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
-# with everything green (HeliosAdvance #160). The dependencies rule's module-wide entry ends in /.
-if [ -f .golangci.yml ]; then
-  loose=$(grep -nE '^[[:space:]]*- github\.com/heliosestate/heliosadvance/.*[^$/][[:space:]]*$' .golangci.yml || true)
-  [ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's packages without a closing \$"; }
-fi
+# with everything green (HeliosAdvance #160). Every one of the engine's paths in the file is judged,
+# however it is written (quoted, in a one-line list, on the line after a folded marker), once its
+# comments are taken off; the dependencies rule's module-wide entry, ending in /, is the one
+# exception, and there is one.
+[ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
+paths=$(sed 's/#.*//' .golangci.yml | grep -noE "github\.com/heliosestate/heliosadvance[^]\"'[:space:],]*") ||
+  fail "no path of the engine's own was found in .golangci.yml, so its import rules cannot be checked"
+loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths" || true)
+[ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's paths without a closing \$"; }
+wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
+[ "$wide" = 1 ] || fail "the import rules hold the engine's module-wide entry $wide times, not once"
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start

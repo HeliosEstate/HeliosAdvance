@@ -44,9 +44,9 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            # The engine's own module, its root and every package under it, and no other module
-            # whose path only begins the same way: the units' arrows are judged by their own rules.
-            - github.com/heliosestate/heliosadvance$
+            # The engine's own module, every package under it, and no other module whose path only
+            # begins the same way: the units' arrows are judged by their own rules. Its root holds
+            # no package, so it has no line.
             - github.com/heliosestate/heliosadvance/
             # The SSH unit's handshake and channel, and only that package of the module: complete
             # and kept by the Go team, and watched by govulncheck and Dependabot here, where writing
@@ -100,8 +100,10 @@ linters:
         # One rule per unit: its allowed imports are the Uses column of docs/architecture.md.
         # A new arrow is a new line here, in the same PR, with its reason. Each of the engine's
         # own packages is named exactly, ending in $, so a later package whose path only begins
-        # the same way, or a unit's own sub-package, is a new arrow and needs its own line; check.sh
-        # refuses an entry without the $.
+        # the same way, or a unit's own sub-package, is a new arrow and needs its own line. check.sh
+        # refuses any of the engine's paths in this file, however written, that does not end in $,
+        # but the dependencies rule's one module-wide entry. Outside modules' entries end in $ too,
+        # by hand: no check reads them.
         telnet:
           files: ["**/internal/telnet/**", "!**/internal/telnet/urgent_windows.go"]
           list-mode: strict
@@ -256,6 +258,9 @@ linters:
         - name: exported
         - name: unused-parameter
   exclusions:
+    # A file that says it was generated is linted like any other: none of the engine's is, and
+    # the default would skip every linter, the import rules included, for one comment line.
+    generated: disable
     rules:
       # A contract.go is a unit's whole surface, declared at the owner and locked; the
       # small-interface rule applies to consumers, which declare the slice they call.
