@@ -230,6 +230,12 @@ loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths"
 wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
 [ "$wide" = 1 ] || fail "the import rules hold the engine's module-wide entry $wide times, not once"
 
+# 4i. The test support (internal/testrun) is for tests: no other file imports it, whatever its
+# build tags, which the linter's import rules do not see (a file built only for the race detector).
+leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/internal/testrun"' . |
+  grep -vE '_test\.go$|^\./internal/testrun/' || true)
+[ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
@@ -277,7 +283,7 @@ if [ -n "$pkgs" ]; then
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
-  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
+  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
@@ -286,13 +292,14 @@ if [ -n "$pkgs" ]; then
     # every mutant "time out", which counts as killed, and read 100% (2026-10-21).
     # cmd/ is left out: its tests run the built program as its own process, which gremlins'
     # coverage cannot see, so every mutant there reads "Not covered". The rows and QA's broken
-    # copies prove it instead (the developer, 2026-10-22).
+    # copies prove it instead (the developer, 2026-10-22). internal/testrun/ is left out too: it is
+    # test support, proved by the rows that use it.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
     # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
     # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
     # The run stays at the repository root (.): a package path matches no diff entry (its 278).
-    mutants=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^cmd/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
+    mutants=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^(cmd|internal/testrun)/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
     echo "$mutants"
     grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$mutants" || fail "mutation testing: no result lines, so there is nothing to report"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
