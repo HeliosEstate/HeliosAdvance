@@ -35,7 +35,7 @@ const (
 
 // startLimit bounds how long the program may take to name its listeners or to exit after a
 // refusal. The page gives it no limit; this one only keeps a hung program from hanging the run.
-const startLimit = 30 * time.Second
+var startLimit = patient(30 * time.Second)
 
 var (
 	programPath  string
@@ -114,7 +114,7 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command.SysProcAttr = processAttributes()
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = patient(5 * time.Second)
 	// A program built with the race detector sleeps a second at exit by default, waiting for late
 	// reports, which would read as a slow exit; a race it finds still reaches the log and fails
 	// the row.
@@ -529,7 +529,7 @@ func heldPort(t *testing.T) (port string, ipv4, ipv6 net.Listener) {
 // expectRefused checks a dial to the address is refused: nothing listens there.
 func expectRefused(t *testing.T, address string) {
 	t.Helper()
-	connection, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(t.Context(), "tcp", address)
+	connection, err := (&net.Dialer{Timeout: patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
 	if err == nil {
 		_ = connection.Close()
 		t.Errorf("a caller reached %s, where the engine may not listen", address)

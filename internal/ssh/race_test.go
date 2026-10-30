@@ -5,4 +5,6 @@
 
 package ssh_test
 
+// raceBuild is whether the tests run under the race detector, under which no upper bound on time
+// is judged.
 const raceBuild = true

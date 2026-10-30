@@ -74,10 +74,23 @@ const wideMargin = 1500 * time.Millisecond
 // step. Only a hang should reach it: under twice the usual load such a wait has come at most
 // 1.1 seconds late (2026-10-25). It is no longer than the 5-second recordings that hold most of
 // these calls. The line's own time, where it has one, is checked apart.
-const progressLimit = 5 * time.Second
+var progressLimit = patient(5 * time.Second)
 
 // early is how far before its deadline a runner's clock may wake a wait.
 const early = 20 * time.Millisecond
+
+// raceStretch is how much longer a wait may take under the race detector, which slows the engine
+// and the test by an amount nobody controls: generous, since a stretched wait still fails a
+// hang, and no upper bound on time is judged there.
+const raceStretch = 4
+
+// patient stretches a wait under the race detector; without it the wait is unchanged.
+func patient(wait time.Duration) time.Duration {
+	if raceBuild {
+		return raceStretch * wait
+	}
+	return wait
+}
 
 var (
 	// opening is the eight requests Part 4's line gives, in order.
@@ -203,7 +216,7 @@ type sending struct {
 // send writes the caller's bytes and returns when the write began and when it returned.
 func (call caller) send(t *testing.T, data []byte) sending {
 	t.Helper()
-	_ = call.connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = call.connection.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
 	began := time.Now()
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
@@ -257,7 +270,7 @@ func isReset(err error) bool {
 func served(t *testing.T, address string) (bool, caller, time.Time) {
 	t.Helper()
 	call := dial(t, address)
-	_ = call.connection.SetReadDeadline(call.connected.Add(wideMargin))
+	_ = call.connection.SetReadDeadline(call.connected.Add(patient(wideMargin)))
 	received := make([]byte, len(opening))
 	got, err := io.ReadFull(call.connection, received)
 	arrived := time.Now()
@@ -286,18 +299,27 @@ func expectRefused(t *testing.T, address string) {
 // caller served after it says nothing of the cap, since a place may rightly have come back
 // first: the engine can accept a caller late on a loaded runner (287 ms after its dial, while
 // the cap was full, ubuntu-24.04-arm, 2026-10-26). A probe dialed at or after that moment did
-// not reach the row's case, and fails as a test fault whatever its outcome.
+// not reach the row's case, and fails as a test fault whatever its outcome. Under the race
+// detector the two faults of timing are logged instead, and a caller served too soon still fails.
 func expectRefusedUntil(t *testing.T, address string, held time.Time) {
 	t.Helper()
 	isServed, call, arrived := served(t, address)
 	switch {
 	case !call.dialed.Before(held.Add(-early)):
-		t.Fatalf("test fault: the probe was dialed %v after a place could come back, so it tells nothing of the cap", call.dialed.Sub(held.Add(-early)))
+		if raceBuild {
+			t.Logf("under the race detector, timing is not judged: the probe was dialed %v after a place could come back, so it tells nothing of the cap", call.dialed.Sub(held.Add(-early)))
+		} else {
+			t.Fatalf("test fault: the probe was dialed %v after a place could come back, so it tells nothing of the cap", call.dialed.Sub(held.Add(-early)))
+		}
 	case !isServed:
 	case arrived.Before(held.Add(-early)):
 		t.Fatalf("a caller over the cap was served, %v before a place could come back", held.Sub(arrived))
 	default:
-		t.Fatalf("cannot tell a caller over the cap from one served after a place could come back: dialed %v before, served %v after", held.Sub(call.dialed), arrived.Sub(held))
+		if raceBuild {
+			t.Logf("under the race detector, timing is not judged: cannot tell a caller over the cap from one served after a place could come back: dialed %v before, served %v after", held.Sub(call.dialed), arrived.Sub(held))
+		} else {
+			t.Fatalf("cannot tell a caller over the cap from one served after a place could come back: dialed %v before, served %v after", held.Sub(call.dialed), arrived.Sub(held))
+		}
 	}
 }
 
@@ -352,11 +374,18 @@ func sendNames(t *testing.T, callers []caller) time.Time {
 // stay clear of it. Where a step before the window ran so late that half the way is under
 // margin, the row cannot tell the two apart and fails. The step may be the test's or the
 // engine's: a broken engine that holds a call back makes it late too (a serial engine's silent
-// caller, an opening held for the caller's first byte), so the failure blames neither.
+// caller, an opening held for the caller's first byte), so the failure blames neither. Under the
+// race detector, which judges no upper bound on time, it logs instead and closes the window at
+// margin, the narrowest it gives otherwise, so that a row that dials until its window ends still
+// dials.
 func windowEnd(t *testing.T, from, fault time.Time) time.Time {
 	t.Helper()
 	half := fault.Sub(from) / 2
 	if half < margin {
+		if raceBuild {
+			t.Logf("under the race detector, timing is not judged: cannot tell the window from its nearest fault, %v apart", fault.Sub(from))
+			return from.Add(margin)
+		}
 		t.Fatalf("cannot tell the window from its nearest fault, %v apart: a step before the window ran late, in the test or in the engine", fault.Sub(from))
 	}
 	return from.Add(min(wideMargin, half))
@@ -364,19 +393,35 @@ func windowEnd(t *testing.T, from, fault time.Time) time.Time {
 
 // expectServedBy dials until a caller is served, which must happen by the deadline: a caller
 // refused before then is tried again. Served is when the opening arrived, not when the dial
-// connected: a caller's connect completes before the engine accepts it.
+// connected: a caller's connect completes before the engine accepts it. Under the race detector
+// a late caller is logged, not failed, and the dials go on for the deadline's time stretched, so
+// only a place that never comes back fails.
 func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	t.Helper()
+	giveUp := deadline
+	if raceBuild {
+		// From whichever is later, the deadline or now: a test that reached here late has no time
+		// of its own left to stretch.
+		giveUp = time.Now()
+		if deadline.After(giveUp) {
+			giveUp = deadline
+		}
+		giveUp = giveUp.Add(patient(wideMargin))
+	}
 	for {
 		if isServed, _, arrived := served(t, address); isServed {
 			if arrived.After(deadline) {
+				if raceBuild {
+					t.Logf("under the race detector, timing is not judged: no caller was served until %v past the deadline", arrived.Sub(deadline))
+					return
+				}
 				t.Fatalf("no caller was served until %v past the deadline", arrived.Sub(deadline))
 			}
 			t.Logf("a caller was served %v before the deadline", deadline.Sub(arrived))
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("every caller was refused until the deadline")
+		if time.Now().After(giveUp) {
+			t.Fatalf("every caller was refused until %v, %v past the deadline", giveUp.Format(time.RFC3339Nano), giveUp.Sub(deadline))
 		}
 		wait(t, time.Now().Add(20*time.Millisecond))
 	}
@@ -455,14 +500,19 @@ func (stream *recording) arrivedAt(t *testing.T, offset int) time.Time {
 	return stream.arrived[offset]
 }
 
-// expectWithin checks a moment falls in its window and logs how far into it it came.
+// expectWithin checks a moment falls in its window and logs how far into it it came. Under the
+// race detector, which slows the engine by an amount nobody controls, only too soon fails.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
 	if moment.After(notAfter) {
-		t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
+		if raceBuild {
+			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
+		} else {
+			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
+		}
 	}
 	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }

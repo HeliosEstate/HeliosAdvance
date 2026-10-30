@@ -67,7 +67,7 @@ func openStack(t *testing.T, answer, after []byte) stackPair {
 	}()
 	pair := stackPair{client: client, server: server}
 	pair.expectReceived(t, opening)
-	_ = client.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = client.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
 	if _, err := client.Write(join(answer, after)); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -82,7 +82,7 @@ func openStack(t *testing.T, answer, after []byte) stackPair {
 
 func (pair stackPair) send(t *testing.T, data []byte) {
 	t.Helper()
-	_ = pair.client.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = pair.client.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
 	if _, err := pair.client.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func (pair stackPair) send(t *testing.T, data []byte) {
 // expectReceived checks the caller receives exactly these bytes next.
 func (pair stackPair) expectReceived(t *testing.T, want []byte) {
 	t.Helper()
-	_ = pair.client.SetReadDeadline(time.Now().Add(2 * margin))
+	_ = pair.client.SetReadDeadline(time.Now().Add(patient(2 * margin)))
 	got := make([]byte, len(want))
 	count, err := io.ReadFull(pair.client, got)
 	if err != nil || !bytes.Equal(got, want) {
@@ -156,7 +156,7 @@ func (pair stackPair) drain(t *testing.T) []byte {
 	t.Helper()
 	received := make(chan []byte, 1)
 	go func() {
-		_ = pair.client.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = pair.client.SetReadDeadline(time.Now().Add(patient(60 * time.Second)))
 		var all []byte
 		chunk := make([]byte, 64<<10)
 		for {

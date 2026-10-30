@@ -321,7 +321,7 @@ func throughTelnet(finish func(t *testing.T, call caller, stream *recording)) pa
 		t.Helper()
 		call := dial(t, address)
 		stream := call.record(call.connected.Add(nameLimit + progressLimit))
-		got := stream.waitFor(t, len(opening), call.connected.Add(wideMargin))
+		got := stream.waitFor(t, len(opening), call.connected.Add(patient(wideMargin)))
 		if len(got) == 0 {
 			<-stream.done
 			if errors.Is(stream.end, io.EOF) || isReset(stream.end) {
@@ -578,7 +578,11 @@ func TestListenerPerKind(t *testing.T) {
 			}
 			expectFreedOnce(t, probe.addresses[0])
 			if !time.Now().Before(kept.Add(ceilingLimit - early)) {
-				t.Fatalf("test fault: the probes ended %v after the kept places could reach their own ceiling", time.Since(kept.Add(ceilingLimit-early)))
+				if raceBuild {
+					t.Logf("under the race detector, timing is not judged: the probes ended %v after the kept places could reach their own ceiling", time.Since(kept.Add(ceilingLimit-early)))
+				} else {
+					t.Fatalf("test fault: the probes ended %v after the kept places could reach their own ceiling", time.Since(kept.Add(ceilingLimit-early)))
+				}
 			}
 		})
 		t.Run("its Listener's Stop, once: with 99 places kept at another Listener on the count, one place back at a third, and no more", func(t *testing.T) {
