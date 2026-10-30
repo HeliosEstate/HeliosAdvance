@@ -110,10 +110,11 @@ while IFS=$'\t' read -r -u 3 last item; do
           # Only the item, the body's first paragraph, and its key change: whatever else the
           # issue holds, such as the developer's record of a deferral, stays, and a closed issue
           # stays closed.
+          # A body with no blank line keeps every line after its first.
+          rest=$(printf '%s\n' "$current" | awk 'seen || /^[ \t\r]*$/ { seen = 1; print }')
+          [ -n "$rest" ] || rest=$(printf '\n'; printf '%s\n' "$current" | tail -n +2)
           { printf '%s\n' "$text"
-            printf '%s\n' "$current" | awk 'seen || /^[ \t\r]*$/ { seen = 1; print }' |
-              sed -E "s/noticed-key: [0-9a-f]{16}/noticed-key: $newkey/"
-            printf '%s' "$current" | grep -q '^[ \t\r]*$' || printf '\n<!-- noticed-key: %s -->\n%s\n' "$newkey" "$marker"
+            printf '%s\n' "$rest" | sed -E "s/noticed-key: [0-9a-f]{16}/noticed-key: $newkey/"
           } | gh issue edit "$number" --title "$(title_for "$text")" --body-file -
           gh issue comment "$number" --body "Reworded in $from; this issue now carries the new wording."
         elif ! printf '%s' "$current" | grep -qF "<!-- noticed-reworded: $source $newkey -->"; then
