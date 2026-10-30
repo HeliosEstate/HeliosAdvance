@@ -54,9 +54,9 @@ func acceptCall(t *testing.T, terminal bool, before string, window uint32) openC
 	return openCall{client: client, channel: expectChannel(t, waitAccept(t, results, patient(5*time.Second)))}
 }
 
-// sendText queues text with SendChar. Its context ends in 5 seconds, so a SendChar that writes
-// where it should only queue, to a caller that lets little through, fails the row rather than
-// waiting for good.
+// sendText queues text with SendChar. Its context ends in 5 seconds, four times that under the race
+// detector, so a SendChar that writes where it should only queue, to a caller that lets little
+// through, fails the row rather than waiting for good.
 func sendText(t *testing.T, channel *ssh.Channel, text []byte) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), patient(5*time.Second))
@@ -820,7 +820,8 @@ func cutWrite(t *testing.T) cutCall {
 // arrives: what comes once the caller opens its window is a prefix of what the cut write held.
 func expectFailedAfter(t *testing.T, call openCall, cut []byte) {
 	t.Helper()
-	// Bounded, so a call that writes where it must fail waits 5 seconds at most, not for good.
+	// Bounded, so a call that writes where it must fail waits 5 seconds at most, four times that
+	// under the race detector, not for good.
 	ctx, cancel := context.WithTimeout(t.Context(), patient(5*time.Second))
 	defer cancel()
 	expectEnd(t, "SendChar after the failed write", call.channel.SendChar(ctx, 'Q'))

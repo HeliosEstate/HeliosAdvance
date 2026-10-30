@@ -160,7 +160,7 @@ func expectWokenAt(t *testing.T, result sendResult, from time.Time) {
 		t.Fatalf("WriteUrgent returned %d, %v, want 0 and os.ErrDeadlineExceeded", result.count, result.err)
 	}
 	if result.returned.Before(from) {
-		t.Fatalf("WriteUrgent returned %v after its expected time, want within [0, %v)", result.returned.Sub(from), sendMargin)
+		t.Fatalf("WriteUrgent returned %v before its expected time, want within [0, %v)", from.Sub(result.returned), sendMargin)
 	}
 	if !result.returned.Before(from.Add(sendMargin)) {
 		if raceBuild {

@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -453,15 +454,17 @@ func TestName(t *testing.T) {
 			wait(t, call.connected.Add(negotiationLimit+patient(margin)))
 			stream := call.recordBulk(call.connected.Add(patient(40 * time.Second)))
 			<-stream.done
-			ended := time.Now()
 			got := stream.received
 			if !bytes.HasPrefix(got, opening) || !bytes.HasSuffix(got, helloTo("k")) {
 				// Under the race detector the engine may still be working through the flood when
 				// the name's 60 seconds end the call, so its own timer decides the bytes: an end
-				// no sooner than that timer could come is not judged there, and an earlier one is.
-				if raceBuild && bytes.HasPrefix(got, opening) && !ended.Before(call.dialed.Add(negotiationLimit+nameLimit-early)) {
-					t.Logf("under the race detector, timing is not judged: the call ended without Hello k %v after the dial, when the name's 60 seconds could have ended it",
-						ended.Sub(call.dialed))
+				// the engine made, no sooner than that timer could come, is not judged there. An
+				// earlier end, or the test's own deadline running out on a call never ended, is.
+				endedByEngine := errors.Is(stream.end, io.EOF) || isReset(stream.end)
+				if raceBuild && bytes.HasPrefix(got, opening) && endedByEngine &&
+					!stream.ended.Before(call.dialed.Add(negotiationLimit+nameLimit-early)) {
+					t.Logf("under the race detector, timing is not judged: the engine ended the call without Hello k %v after the dial, when the name's 60 seconds could have ended it",
+						stream.ended.Sub(call.dialed))
 					return
 				}
 				t.Fatalf("the stream did not run from the opening to Hello k: %v", stream.end)
@@ -816,6 +819,7 @@ type bulkRecording struct {
 	chunkEnds  []int
 	chunkTimes []time.Time
 	end        error
+	ended      time.Time
 	done       chan struct{}
 }
 
@@ -834,7 +838,7 @@ func (call caller) recordBulk(deadline time.Time) *bulkRecording {
 				stream.chunkTimes = append(stream.chunkTimes, time.Now())
 			}
 			if err != nil {
-				stream.end = err
+				stream.end, stream.ended = err, time.Now()
 				return
 			}
 		}
