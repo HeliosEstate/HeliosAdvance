@@ -47,8 +47,10 @@ func Enter() (string, error) {
 }
 
 // Windows may hold a file for a moment after what had it open has ended, a server's output file
-// after pg_ctl stop returns among them, so Leave checks again every leaveInterval up to
-// leaveBound, and only what is still held then is reported.
+// after pg_ctl stop returns among them, and nothing announces when it lets go. So Leave checks
+// again every leaveInterval up to leaveBound, and only what is still held then is reported: the
+// check-again the no-sleep rule allows, a short interval, a stated bound and a report, waiting
+// on a timer as the tests' pause does. testrun is test code, so the rule reaches it.
 const (
 	leaveInterval = 100 * time.Millisecond
 	leaveBound    = 10 * time.Second
@@ -65,7 +67,7 @@ func Leave(folder string) error {
 		if err == nil || time.Now().After(giveUp) {
 			return err
 		}
-		time.Sleep(leaveInterval)
+		<-time.NewTimer(leaveInterval).C
 	}
 }
 
