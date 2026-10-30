@@ -50,13 +50,14 @@ func Enter() (folder string, swept, err error) {
 }
 
 // Windows may hold a file for a moment after what had it open has ended, a server's output file
-// after pg_ctl stop returns among them, and nothing announces when it lets go. So Leave checks
-// again every leaveInterval up to leaveBound, and only what is still held then is reported: the
-// check-again the no-sleep rule allows, a short interval, a stated bound and a report, waiting
-// on a timer as the tests' pause does. testrun is test code, so the rule reaches it.
+// after pg_ctl stop returns or a program ended by a sweep among them, and nothing announces when
+// it lets go. So remove checks again every removeInterval up to removeBound, and only what is
+// still held then is reported: the check-again the no-sleep rule allows, a short interval, a
+// stated bound and a report, waiting on a timer as the tests' pause does. testrun is test code,
+// so the rule reaches it.
 const (
-	leaveInterval = 100 * time.Millisecond
-	leaveBound    = 10 * time.Second
+	removeInterval = 100 * time.Millisecond
+	removeBound    = 10 * time.Second
 )
 
 // Leave removes this run's folder, last in a TestMain. It first stops what still runs from it,
@@ -66,22 +67,24 @@ func Leave(folder string) error {
 	if folder == "" {
 		return nil
 	}
-	if err := stop(folder); err != nil {
-		return err
-	}
-	giveUp := time.Now().Add(leaveBound)
+	return take(folder)
+}
+
+// remove removes a run's folder, checking again while Windows holds a file in it.
+func remove(folder string) error {
+	giveUp := time.Now().Add(removeBound)
 	for {
-		err := remove(folder)
+		err := removeOnce(folder)
 		if err == nil || time.Now().After(giveUp) {
 			return err
 		}
-		<-time.NewTimer(leaveInterval).C
+		<-time.NewTimer(removeInterval).C
 	}
 }
 
-// remove removes a run's folder with its owner last: a removal that fails partway, on a file
+// removeOnce removes a run's folder with its owner last: a removal that fails partway, on a file
 // Windows still holds, leaves the owner, so the next run finds the rest and takes it.
-func remove(folder string) error {
+func removeOnce(folder string) error {
 	entries, err := os.ReadDir(folder)
 	// Binaries started together sweep together, so another may have taken a dead run's folder.
 	if errors.Is(err, fs.ErrNotExist) {
