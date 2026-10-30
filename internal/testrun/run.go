@@ -76,6 +76,7 @@ func Leave(folder string) error {
 // Windows still holds, leaves the owner, so the next run finds the rest and takes it.
 func remove(folder string) error {
 	entries, err := os.ReadDir(folder)
+	// Binaries started together sweep together, so another may have taken a dead run's folder.
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

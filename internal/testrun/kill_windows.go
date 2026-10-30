@@ -18,50 +18,35 @@ const (
 	// so this bounds a hang only.
 	endWaitMilliseconds = 10_000
 	// mostProcesses bounds the list of process numbers Windows is asked for.
-	mostProcesses = 1 << 18
+	mostProcesses = 1 << 16
 	// processIDBytes is the size of one process number in that list.
 	processIDBytes = 4
 )
 
 // stopPrograms ends every process whose program file is in the run's folder, as on Linux: an
-// engine a killed run started keeps its lease and listens until something ends it.
+// engine a killed run started keeps its lease and listens until something ends it. Windows names
+// a program by the path it was started from, which the run built from this same folder name.
 func stopPrograms(folder string) error {
-	prefixes := []string{folder + string(filepath.Separator)}
-	// A temporary folder may be named in its short form, and a program by its long one.
-	if long, err := longPath(folder); err == nil && !strings.EqualFold(long, folder) {
-		prefixes = append(prefixes, long+string(filepath.Separator))
-	}
-	processIDs, err := processes()
-	if err != nil {
+	processIDs := make([]uint32, mostProcesses)
+	var written uint32
+	if err := windows.EnumProcesses(processIDs, &written); err != nil {
 		return err
 	}
+	count := int(written) / processIDBytes
+	if count == mostProcesses {
+		return fmt.Errorf("%d processes or more are running, too many to look through", mostProcesses)
+	}
+	prefix := folder + string(filepath.Separator)
 	name := make([]uint16, windows.MAX_LONG_PATH)
 	var failures []error
-	for _, processID := range processIDs {
-		failures = append(failures, stopIfUnder(processID, prefixes, name))
+	for _, processID := range processIDs[:count] {
+		failures = append(failures, stopIfUnder(processID, prefix, name))
 	}
 	return errors.Join(failures...)
 }
 
-// processes is the number of every running process.
-func processes() ([]uint32, error) {
-	for size := 1024; size <= mostProcesses; size *= 2 {
-		processIDs := make([]uint32, size)
-		var written uint32
-		if err := windows.EnumProcesses(processIDs, &written); err != nil {
-			return nil, err
-		}
-		// A list that fills the buffer may have been cut short, so it is asked for again larger.
-		if count := int(written) / processIDBytes; count < size {
-			return processIDs[:count], nil
-		}
-	}
-	return nil, fmt.Errorf("more than %d processes are running", mostProcesses)
-}
-
-// stopIfUnder ends the process if its program file is under one of the prefixes, and waits for
-// it to end.
-func stopIfUnder(processID uint32, prefixes []string, name []uint16) (err error) {
+// stopIfUnder ends the process if its program file is under the prefix, and waits for it to end.
+func stopIfUnder(processID uint32, prefix string, name []uint16) (err error) {
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, processID)
 	if err != nil {
 		// Another user's process, a protected one, or one that has just ended: none is the run's.
@@ -73,7 +58,8 @@ func stopIfUnder(processID uint32, prefixes []string, name []uint16) (err error)
 		return nil
 	}
 	program := windows.UTF16ToString(name[:size])
-	if !under(program, prefixes) {
+	// Windows compares names ignoring case.
+	if len(program) <= len(prefix) || !strings.EqualFold(program[:len(prefix)], prefix) {
 		return nil
 	}
 	// A program already ending refuses to be ended again, and the wait below tells that apart.
@@ -86,32 +72,4 @@ func stopIfUnder(processID uint32, prefixes []string, name []uint16) (err error)
 		return fmt.Errorf("%s had not ended %d ms after it was told to: %w", program, endWaitMilliseconds, terminated)
 	}
 	return nil
-}
-
-// under is whether the program file is in a folder one of the prefixes names, in Windows' way of
-// comparing names, which ignores case.
-func under(program string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if len(program) > len(prefix) && strings.EqualFold(program[:len(prefix)], prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// longPath is the folder's name with every short form expanded.
-func longPath(folder string) (string, error) {
-	short, err := windows.UTF16PtrFromString(folder)
-	if err != nil {
-		return "", err
-	}
-	long := make([]uint16, windows.MAX_LONG_PATH)
-	n, err := windows.GetLongPathName(short, &long[0], windows.MAX_LONG_PATH)
-	if err != nil {
-		return "", err
-	}
-	if int(n) > len(long) {
-		return "", errors.New("the folder's long name is longer than Windows allows")
-	}
-	return windows.UTF16ToString(long[:n]), nil
 }
