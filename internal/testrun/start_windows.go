@@ -5,7 +5,12 @@ package testrun
 
 import (
 	"errors"
+	"io/fs"
 	"math"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -45,4 +50,35 @@ func processStart(processID int) (started int64, err error) {
 // could not be told: OpenProcess answers ERROR_INVALID_PARAMETER for a number no process has.
 func processGone(err error) bool {
 	return errors.Is(err, windows.ERROR_INVALID_PARAMETER) || errors.Is(err, errProcessExited)
+}
+
+// mine is whether this user owns the folder: the temporary folder here is this user's own.
+func mine(fs.FileInfo) bool {
+	return true
+}
+
+// serverRunsIn is whether the process postmaster.pid names is the server that wrote it, started
+// in the second the file records. A server ended without its file, as by a restart of the
+// machine, leaves a number Windows may give to another process, another PostgreSQL server among
+// them, which pg_ctl would stop.
+func serverRunsIn(data string) bool {
+	text, err := readSmall(filepath.Join(data, "postmaster.pid"))
+	if err != nil {
+		return false
+	}
+	// Its first line is the server's number, its third the second it started.
+	lines := strings.Split(string(text), "\n")
+	if len(lines) < 3 {
+		return false
+	}
+	processID, idErr := strconv.Atoi(strings.TrimSpace(lines[0]))
+	written, writtenErr := strconv.ParseInt(strings.TrimSpace(lines[2]), 10, 64)
+	if idErr != nil || writtenErr != nil {
+		return false
+	}
+	started, err := processStart(processID)
+	// The server writes the file a moment after Windows made the process, which may fall in the
+	// next second or the one after; a number given again comes after its server has ended.
+	late := written - started/int64(time.Second)
+	return err == nil && late >= 0 && late <= 2
 }

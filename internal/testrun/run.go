@@ -27,24 +27,26 @@ const (
 
 // Enter takes what dead runs left, makes this run's own folder with its owner written first, and
 // points the temporary folder at it, for this binary and everything it starts. It is called first
-// in a TestMain. It returns the folder whenever one was made, an error or not, so that Leave can
-// still remove it; the error says what was not done, and the rows can still run.
-func Enter() (string, error) {
+// in a TestMain. swept is what it could not take of dead runs' folders, which this run need not
+// stop for; err is its own folder not made, and then the run stops, since what it made would
+// land outside any folder a run takes. The folder is returned whenever one was made, so Leave can
+// still remove it.
+func Enter() (folder string, swept, err error) {
 	base := os.TempDir()
-	swept := sweep(base)
-	folder, err := os.MkdirTemp(base, runPrefix)
+	swept = sweep(base)
+	folder, err = os.MkdirTemp(base, runPrefix)
 	if err != nil {
-		return "", errors.Join(swept, err)
+		return "", swept, err
 	}
 	if err := own(folder); err != nil {
-		return folder, errors.Join(swept, err)
+		return folder, swept, err
 	}
 	for _, name := range []string{"TMP", "TEMP", "TMPDIR"} {
 		if err := os.Setenv(name, folder); err != nil {
-			return folder, errors.Join(swept, err)
+			return folder, swept, err
 		}
 	}
-	return folder, swept
+	return folder, swept, nil
 }
 
 // Windows may hold a file for a moment after what had it open has ended, a server's output file
@@ -57,10 +59,15 @@ const (
 	leaveBound    = 10 * time.Second
 )
 
-// Leave removes this run's folder, last in a TestMain, once what the run started has stopped.
+// Leave removes this run's folder, last in a TestMain. It first stops what still runs from it,
+// as the next run would: on Linux a running server or program does not keep its folder from being
+// removed, and would outlive it with nothing left to find it by.
 func Leave(folder string) error {
 	if folder == "" {
 		return nil
+	}
+	if err := stop(folder); err != nil {
+		return err
 	}
 	giveUp := time.Now().Add(leaveBound)
 	for {
@@ -122,6 +129,11 @@ func sweep(base string) error {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), runPrefix) {
 			continue
 		}
+		// Another user may make a folder of this name where the temporary folder is shared, and
+		// what this sweep does to a folder it does as this user.
+		if info, err := entry.Info(); err != nil || !mine(info) {
+			continue
+		}
 		folder := filepath.Join(base, entry.Name())
 		if ownerEnded(folder) {
 			failures = append(failures, take(folder))
@@ -175,9 +187,18 @@ func readSmall(path string) (text []byte, err error) {
 	}
 }
 
-// take ends what a dead run left running in its folder, then removes the folder.
+// take ends what a dead run left running in its folder, then removes the folder. A stop that
+// failed leaves the folder and its owner, the only record of what still runs, for the next run.
 func take(folder string) error {
-	return errors.Join(stopServers(folder), stopPrograms(folder), remove(folder))
+	if err := stop(folder); err != nil {
+		return err
+	}
+	return remove(folder)
+}
+
+// stop stops every server and program still running from a run's folder.
+func stop(folder string) error {
+	return errors.Join(stopServers(folder), stopPrograms(folder))
 }
 
 // stopServers stops every PostgreSQL server whose data folder is in the run's folder: a server
@@ -192,9 +213,12 @@ func stopServers(folder string) error {
 		if entry.IsDir() || entry.Name() != "postmaster.pid" {
 			return nil
 		}
+		data := filepath.Dir(path)
+		if !serverRunsIn(data) {
+			return nil
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		data := filepath.Dir(path)
 		if err := exec.CommandContext(ctx, "pg_ctl", "stop", "-D", data, "-m", "immediate", "-w", "-t", "60").Run(); err != nil {
 			failures = append(failures, fmt.Errorf("stopping the server in %s: %w", data, err))
 		}

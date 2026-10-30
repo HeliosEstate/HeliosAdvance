@@ -69,7 +69,7 @@ func stopIfUnder(processID uint32, prefix string, name []uint16) (err error) {
 		return fmt.Errorf("waiting for %s to end: %w", program, err)
 	}
 	if event != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("%s had not ended %d ms after it was told to: %w", program, endWaitMilliseconds, terminated)
+		return errors.Join(fmt.Errorf("%s had not ended %d ms after it was told to", program, endWaitMilliseconds), terminated)
 	}
 	return nil
 }

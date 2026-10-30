@@ -34,10 +34,14 @@ var startLimit = testrun.Patient(30 * time.Second)
 // the program needs before it listens. First it makes this run's own folder, taking what dead
 // runs left, so that everything the run makes, the program included, lands there.
 func TestMain(tests *testing.M) {
-	runFolder, err := testrun.Enter()
+	runFolder, swept, err := testrun.Enter()
+	if swept != nil {
+		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
+	}
 	if err != nil {
-		// The rows can still run; only what this run or a dead one left may outlive it.
 		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+		_ = testrun.Leave(runFolder)
+		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-ssh-test-")

@@ -66,10 +66,14 @@ var (
 // the shared server inside it, before the rows run, and removes them all after. A failure of the
 // oracle fails every row that needs a server, with its reason: the oracle is required.
 func TestMain(tests *testing.M) {
-	runFolder, err := testrun.Enter()
+	runFolder, swept, err := testrun.Enter()
+	if swept != nil {
+		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
+	}
 	if err != nil {
-		// The rows can still run; only what this run or a dead one left may outlive it.
 		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+		_ = testrun.Leave(runFolder)
+		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()
 	code := tests.Run()

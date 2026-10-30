@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // processStart is when the process with the number started, in clock ticks since boot.
@@ -31,4 +34,23 @@ func processStart(processID int) (int64, error) {
 // could not be told.
 func processGone(err error) bool {
 	return errors.Is(err, fs.ErrNotExist)
+}
+
+// mine is whether this user owns the folder: /tmp is every user's.
+func mine(info fs.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && int(stat.Uid) == os.Geteuid()
+}
+
+// serverRunsIn is whether the process postmaster.pid names is the server of that data folder,
+// whose working folder it is. A server ended without its file leaves a number the kernel may
+// give to any other process, and pg_ctl would signal that one.
+func serverRunsIn(data string) bool {
+	text, err := readSmall(filepath.Join(data, "postmaster.pid"))
+	if err != nil {
+		return false
+	}
+	processID, _, _ := strings.Cut(string(text), "\n")
+	working, err := os.Readlink(filepath.Join("/proc", strings.TrimSpace(processID), "cwd"))
+	return err == nil && working == data
 }
