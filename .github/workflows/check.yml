@@ -57,25 +57,45 @@ jobs:
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
 
-  # The two Linux architectures the engine ships on, ARM64 the deployment target, run every
-  # gate with the race detector and the oracles. Windows runs every gate and every test except
-  # those named TestOracle… or TestLinux…: its runners cannot run Linux containers, so the rows
-  # that drive a container oracle cannot run there, a Linux-only row is named for it, and the race
-  # detector would need a C compiler installed every run. Database tests run on all three, against
-  # a real PostgreSQL the tests make themselves (database Part 1's page, 2026-10-27, in place of
-  # the developer's Linux-only of 2026-10-02). The Windows runner is elevated, so
-  # TestWindowsElevated rows run there, which no loop's machine can (developer, 2026-10-05).
-  # Part 1's tests run on Windows too, by its behavior lines (2026-10-16).
-  # On a pull request, ubuntu-latest also runs check.sh's mutation mode on the changed code, so
-  # a weak test is found before the developer reviews, not after the merge. It stops at an hour,
-  # a limit the developer agreed on 2026-10-16.
+  # The three systems the engine ships on, Linux x86-64, Linux ARM64 (the deployment target) and
+  # Windows x86-64, each twice: without the race detector, where time limits are judged, and with
+  # it, where races are looked for and no time is judged (HeliosDesign #258). Windows' image
+  # carries a C compiler, so the race detector runs there with nothing installed. Windows skips
+  # the tests named TestOracle… or TestLinux…: its runners cannot run Linux containers, and a
+  # Linux-only row is named for it. Database tests run on all three, against a real PostgreSQL the
+  # tests make themselves (database Part 1's page, 2026-10-27).
+  # The tests are split across jobs by their measured time, each job running its packages one at a
+  # time: the Listener's five minutes are real waits on its own limits, the floor no split goes
+  # under, so Linux takes two jobs and Windows, slower, three. The Go gates run once per system,
+  # before the tests in that system's shortest job without the race detector, never beside a timed
+  # row (#258's probes, 2026-10-30).
+  # On a pull request, the row marked mutation (Linux x86-64, without the race detector, the
+  # rest) also runs check.sh's mutation mode on the changed code, so a weak test is found before
+  # the developer reviews. It stops at an hour, a limit the developer agreed on 2026-10-16.
+  # A row's except names packages from the module's root, so a package nested deeper under the
+  # same name is still tested.
   run:
     needs: changes
     if: needs.changes.outputs.skip == '0'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+        include:
+          - { os: ubuntu-latest, mode: norace, group: listener, pkgs: ./internal/listener, gates: true }
+          - { os: ubuntu-latest, mode: norace, group: rest, except: "internal/listener", gates: false, mutation: true }
+          - { os: ubuntu-latest, mode: race, group: listener, pkgs: ./internal/listener, gates: false }
+          - { os: ubuntu-latest, mode: race, group: rest, except: "internal/listener", gates: false }
+          - { os: ubuntu-24.04-arm, mode: norace, group: listener, pkgs: ./internal/listener, gates: true }
+          - { os: ubuntu-24.04-arm, mode: norace, group: rest, except: "internal/listener", gates: false }
+          - { os: ubuntu-24.04-arm, mode: race, group: listener, pkgs: ./internal/listener, gates: false }
+          - { os: ubuntu-24.04-arm, mode: race, group: rest, except: "internal/listener", gates: false }
+          - { os: windows-latest, mode: norace, group: listener, pkgs: ./internal/listener, gates: false }
+          - { os: windows-latest, mode: norace, group: database, except: "internal/listener|cmd/.*|internal/ssh", gates: true }
+          - { os: windows-latest, mode: norace, group: program, pkgs: "./cmd/... ./internal/ssh", gates: false }
+          - { os: windows-latest, mode: race, group: listener, pkgs: ./internal/listener, gates: false }
+          - { os: windows-latest, mode: race, group: database, except: "internal/listener|cmd/.*|internal/ssh", gates: false }
+          - { os: windows-latest, mode: race, group: program, pkgs: "./cmd/... ./internal/ssh", gates: false }
+    name: run (${{ matrix.os }}, ${{ matrix.mode }}, ${{ matrix.group }})
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -92,24 +112,29 @@ jobs:
       # The versions are pinned in .github/tool-versions, one place for every workflow. The linter
       # is the released binary on every runner: its own documentation says a go install build is
       # not guaranteed to work. Its install script serves Windows (a zip, unpacked with unzip, an
-      # .exe) and wants a POSIX path, which cygpath gives from Go's Windows-form GOPATH.
+      # .exe) and wants a POSIX path, which cygpath gives from Go's Windows-form GOPATH. Only the
+      # job that runs the gates installs them, and only the job that runs mutation testing installs
+      # its tool.
       - name: Install gates
+        if: matrix.gates || (github.event_name == 'pull_request' && matrix.mutation)
         run: |
           source .github/tool-versions
-          bin="$(go env GOPATH)/bin"
-          [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
-          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$bin" "$GOLANGCI_LINT"
-          golangci-lint --version
-          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
-          go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
-          go install github.com/google/go-licenses/v2@"$GO_LICENSES"
+          if [ "${{ matrix.gates }}" = true ]; then
+            bin="$(go env GOPATH)/bin"
+            [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
+            curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$bin" "$GOLANGCI_LINT"
+            golangci-lint --version
+            go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
+            go install github.com/google/go-licenses/v2@"$GO_LICENSES"
+          else go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"; fi
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # Plink, an outside Telnet client that Part 4's Telnet rows drive as an oracle, is on no
-      # runner's image. Linux takes it from Ubuntu's signed archive for the image; Windows takes
-      # PuTTY's own installer through winget at a fixed version, checked against the SHA256 in
-      # winget's manifest. The installer's folder joins the PATH of later steps by hand, since a
-      # running job does not see the PATH an installer changes.
+      # runner's image; only the program's rows drive it. Linux takes it from Ubuntu's signed
+      # archive for the image; Windows takes PuTTY's own installer through winget at a fixed
+      # version, checked against the SHA256 in winget's manifest. The installer's folder joins the
+      # PATH of later steps by hand, since a running job does not see the PATH an installer changes.
       - name: Install Plink
+        if: matrix.group == 'rest' || matrix.group == 'program'
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             winget install --id PuTTY.PuTTY -e --version 0.85.0.0 --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
@@ -122,74 +147,78 @@ jobs:
       # ordinary user, so it can stop and start it and change its sign-in rules; no system
       # service is started (developer, 2026-10-28). Every runner's image carries PostgreSQL with
       # its service off, each its own version (on 2026-10-28: 18 on ubuntu-latest, 16 on Linux
-      # ARM64, 17 on Windows); nothing is installed. The tools' folder, on no runner's PATH, joins
-      # the PATH of later steps, and a runner without them fails here, not in the tests.
+      # ARM64, 17 on Windows); nothing is installed, and a runner without them fails here, not in
+      # the tests. The tools' folder is handed to the steps that run the tests alone, never put on
+      # every later step's PATH: on Windows it carries its own copies of shared libraries (OpenSSL,
+      # zlib, ICU) that could shadow another tool's (HeliosDesign #229).
       - name: PostgreSQL's tools
+        if: matrix.group != 'listener'
+        id: postgres
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             [ -n "$PGBIN" ] || { echo "::error::no PostgreSQL on this runner: PGBIN is not set"; exit 1; }
-            echo "$PGBIN" >> "$GITHUB_PATH"
-            export PATH="$(cygpath -u "$PGBIN"):$PATH"
+            bin="$(cygpath -u "$PGBIN")"
           else
             compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
             bin="$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")"
-            echo "$bin" >> "$GITHUB_PATH"
-            export PATH="$bin:$PATH"
           fi
-          initdb --version
-          pg_ctl --version
-      # The oracle images are kept in the Actions cache, so a job asks Docker Hub for a base image
-      # only when an oracle's folder changes. Rebuilding all six on every job met Docker Hub's
-      # "429 Too Many Requests" (developer, 2026-10-09). A partial match restores the images of
-      # the folders that did not change.
-      - name: Restore the oracle images
-        if: runner.os == 'Linux'
-        id: oracle-images
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/oracle-images
-          key: oracle-images-${{ runner.arch }}-${{ hashFiles('oracle/**') }}
-          restore-keys: oracle-images-${{ runner.arch }}-
-      - name: Build the oracles
-        if: runner.os == 'Linux'
-        run: bash .github/oracle-images.sh ~/oracle-images
-      # Saved straight after the build, not at the job's end, so a red run still saves them.
-      - name: Save the oracle images
-        if: runner.os == 'Linux' && steps.oracle-images.outputs.cache-hit != 'true' && hashFiles('oracle/**') != ''
-        uses: actions/cache/save@v6
-        with:
-          path: ~/oracle-images
-          key: ${{ steps.oracle-images.outputs.cache-primary-key }}
-      # The elevated rows skip in a process that is not elevated, so a runner that stopped
-      # being elevated would pass them unseen: it fails here instead.
-      - name: The runner is elevated
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $principal = New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())
-          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'the Windows runner is not elevated: TestWindowsElevated would skip' }
+          PATH="$bin:$PATH" initdb --version
+          PATH="$bin:$PATH" pg_ctl --version
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+      # The packages this job tests: those its row names, or every package but those its row
+      # excepts, so a package added later lands in a job without anyone listing it.
       - name: check.sh
         env:
-          RACE: ${{ runner.os == 'Linux' && '-race' || '' }}
-          COVER: ${{ runner.os == 'Linux' && '-coverprofile=coverage.out' || '' }}
+          RACE: ${{ matrix.mode == 'race' && '-race' || '' }}
+          CGO_ENABLED: ${{ matrix.mode == 'race' && '1' || '' }}
+          COVER: ${{ runner.os == 'Linux' && matrix.mode == 'norace' && '-coverprofile=coverage.out' || '' }}
           TESTSKIP: ${{ runner.os == 'Windows' && '^(TestOracle|TestLinux)' || '' }}
+          GATES: ${{ matrix.gates && '1' || '0' }}
+          ONLY: ${{ matrix.pkgs }}
+          EXCEPT: ${{ matrix.except }}
+          PGDIR: ${{ steps.postgres.outputs.bin }}
           BASE: origin/${{ github.base_ref || 'development' }}
-        run: bash check.sh
+        run: |
+          PKGS=$ONLY
+          if [ -n "$EXCEPT" ]; then mod=$(go list -m); PKGS=$(go list ./... | grep -vE "^${mod//./\\.}/($EXCEPT)\$" | tr '\n' ' '); fi
+          [ -n "$PKGS" ] || { echo "::error::this job has no package to test"; exit 1; }
+          echo "testing: $PKGS"
+          export PKGS
+          [ -n "$PGDIR" ] && export PATH="$PGDIR:$PATH"
+          bash check.sh
+      # The gates ran in this system's gates job, so the mutation run skips them.
       - name: Mutation testing
-        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        if: github.event_name == 'pull_request' && matrix.mutation
         timeout-minutes: 60
         env:
+          PGDIR: ${{ steps.postgres.outputs.bin }}
           BASE: origin/${{ github.base_ref }}
-        run: bash check.sh --mutation
+          GATES: "0"
+        run: |
+          export PATH="$PGDIR:$PATH"
+          bash check.sh --mutation
+      # Nothing a test run makes outlives it (#258): each test program's own folder is gone, and on
+      # Linux nothing still runs from one (there a running program does not stop its folder's
+      # removal). The runner starts empty, so anything found is this job's, the mutation run's
+      # included. The folder is where Go puts temporary files, read the way Go reads it.
+      - name: Nothing left behind
+        if: success() || failure()
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$(pwsh -NoProfile -Command '[IO.Path]::GetTempPath()')")
+          else tmp=${TMPDIR:-/tmp}; fi
+          left=$(ls -d "${tmp%/}"/hadv-test-run-* 2>/dev/null || true)
+          [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || true)"
+          [ -z "$left" ] || { echo "$left"; echo "::error::a test run left these behind"; exit 1; }
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is a
       # report too; QA's broken copies are the gate on test strength (the developer, 2026-10-22).
+      # It is read from the Linux jobs without the race detector, each table its job's packages.
       - name: Coverage report
-        if: always() && runner.os == 'Linux'
+        if: always() && runner.os == 'Linux' && matrix.mode == 'norace'
         run: |
           [ -f coverage.out ] || { echo "no coverage profile: the tests did not run" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
           go tool cover -html=coverage.out -o coverage.html
           {
-            echo "## Coverage on ${{ matrix.os }}: $(go tool cover -func=coverage.out | awk '$1=="total:"{print $NF}')"
+            echo "## Coverage on ${{ matrix.os }}, ${{ matrix.group }}: $(go tool cover -func=coverage.out | awk '$1=="total:"{print $NF}')"
             echo
             echo '| Package | Statements covered |'
             echo '|---|---|'
@@ -200,15 +229,16 @@ jobs:
           } > coverage.md
           cat coverage.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
-        if: always() && runner.os == 'Linux'
+        if: always() && runner.os == 'Linux' && matrix.mode == 'norace'
         with:
-          name: coverage-${{ matrix.os }}
+          name: coverage-${{ matrix.os }}-${{ matrix.group }}
           path: |
             coverage.out
             coverage.html
             coverage.md
           if-no-files-found: ignore
           retention-days: 14
+
 
   # The coverage table on the pull request itself, as one comment updated on every run. The
   # only job that can write to the pull request, and it runs nothing from the branch: it reads
