@@ -4,50 +4,62 @@
 # developer decides each issue, and no merge is handed to him while its pull request or its
 # issue has one still labeled noticed.
 #
-# The bodies are data: they reach the script only through the environment and stdin. A pull
-# request from a fork, and an issue edited by anyone but the developer, the interactive
-# session's App or a loop, open nothing. An issue event runs this file as it is on the default
-# branch, development, so the plan half works once this reaches it; the pull request half works
-# from the branch. A pull request into a build branch, feature/issue-<n>, is read too, since every
-# session lists what it notices there (developer, 2026-10-27); a build branch made from
-# development before this reached it reads them once development is merged into it.
+# It reads a list once, at signoff, not at every edit (developer, 2026-10-30): an item is known
+# by its text, so each rewording of a line while the work went on opened another issue. The
+# developer's gh signoff starts it, for the pull request and for the plan in the issue it closes,
+# waits for it, and then refuses while any noticed issue is open. A pull request that merges any
+# other way, such as a contract into a build branch, is read when it merges, so no list goes
+# unread.
+#
+# The bodies are data: the script reads them from GitHub and takes them on stdin. It always runs
+# as it is on the default branch, development, never a pull request's own copy, so no branch's
+# code runs with this workflow's right to write issues. A pull request from a fork opens nothing.
 name: noticed
 
 on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "The body to read: pr-<number> or issue-<number>"
+        required: true
   pull_request:
-    types: [opened, edited, reopened]
+    types: [closed]
     branches: [development, main, 'feature/issue-*']
-  issues:
-    types: [opened, edited]
 
 permissions:
   contents: read
   issues: write
-  # To write each noticed item's issue tag into the pull request's body (developer, 2026-10-30).
-  pull-requests: write
 
-# One run at a time for each pull request or issue: an issue just opened is missing from
-# GitHub's issue list for about ten seconds (seen 2026-10-10), so two runs on one body side by
-# side could open an item twice. GitHub keeps one waiting run per group and drops older
-# waiting ones, so the group is per body, and the run kept has that body's latest text.
+# One run at a time for each body: an issue just opened is missing from GitHub's issue list for
+# about ten seconds (seen 2026-10-10), so two runs on one body side by side could open an item
+# twice.
 concurrency:
-  group: noticed-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: noticed-${{ inputs.source || format('pr-{0}', github.event.pull_request.number) }}
   cancel-in-progress: false
 
 jobs:
   open:
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-aetheria[bot]", "helios-lampetia[bot]", "helios-phaethusa[bot]"]'), github.event.sender.login))
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          BODY: ${{ github.event_name == 'pull_request' && github.event.pull_request.body || github.event.issue.body }}
-          SOURCE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('issue-{0}', github.event.issue.number) }}
-        run: printf '%s\n' "$BODY" | bash .github/noticed.sh "$SOURCE"
+          SOURCE: ${{ inputs.source || format('pr-{0}', github.event.pull_request.number) }}
+        run: |
+          case $SOURCE in
+            pr-[0-9]*) path="pulls/${SOURCE#pr-}" ;;
+            issue-[0-9]*) path="issues/${SOURCE#issue-}" ;;
+          esac
+          [[ $SOURCE =~ ^(pr|issue)-[0-9]+$ ]] || { echo "::error::source is pr-<number> or issue-<number>, not $SOURCE"; exit 1; }
+          gh api "repos/$GH_REPO/$path" --jq '.body // ""' | bash .github/noticed.sh "$SOURCE"
       # Holds the concurrency group until an issue this run opened shows in the list (about
-      # ten seconds, measured 2026-10-10), so the next run finds it and opens no second one.
-      - run: sleep 20
+      # ten seconds, measured 2026-10-10), so the next run finds it and opens no second one,
+      # even when this run failed part way.
+      - if: always()
+        run: sleep 20
