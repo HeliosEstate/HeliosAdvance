@@ -114,7 +114,7 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command.SysProcAttr = processAttributes()
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = patient(5 * time.Second)
 	// A program built with the race detector sleeps a second at exit by default, waiting for late
 	// reports, which would read as a slow exit; a race it finds still reaches the log and fails
 	// the row.

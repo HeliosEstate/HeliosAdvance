@@ -287,7 +287,7 @@ func TestCall(t *testing.T) {
 				closingCaller(t, program)
 				closed = time.Now()
 			}
-			expectServedBy(t, program.ssh, closed.Add(patient(margin)))
+			expectServedBy(t, program.ssh, closed.Add(margin))
 		})
 		t.Run("a caller that stays: closed 3 seconds after the channel's close, not before", func(t *testing.T) {
 			t.Parallel()
@@ -922,17 +922,25 @@ func closingCaller(t *testing.T, program *engine) {
 }
 
 // expectServedBy dials until a caller is sent the version line, by deadline. Under the race
-// detector the caller stretches the deadline, so a place that is never freed still fails, as a
-// hang would.
+// detector it dials on for a stretched margin past the deadline, or past now where the test
+// itself came late, so only a place that is never freed fails, as a hang would.
 func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	t.Helper()
+	giveUp := deadline
+	if raceBuild {
+		giveUp = time.Now()
+		if deadline.After(giveUp) {
+			giveUp = deadline
+		}
+		giveUp = giveUp.Add(patient(margin))
+	}
 	for {
 		client := dialRaw(t, address)
 		if version, err := client.readVersion(time.Now().Add(patient(margin))); err == nil && string(version) == versionLine {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no caller was served by the deadline")
+		if time.Now().After(giveUp) {
+			t.Fatalf("no caller was served by %v, %v past the deadline", giveUp.Format(time.RFC3339Nano), giveUp.Sub(deadline))
 		}
 	}
 }

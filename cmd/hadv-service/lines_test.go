@@ -155,16 +155,20 @@ func TestProgram(t *testing.T) {
 				// closing wait, so nothing but the stop ends either in the window.
 				from, sentBy := send(t, program)
 				notAfter := sentBy.Add(patient(margin))
-				if sentBy.After(silent.connected.Add(negotiationLimit)) {
-					if raceBuild {
-						t.Logf("under the race detector, timing is not judged: the stop was sent %v after the silent caller connected, past the negotiation's own end, so the row is not judged",
-							sentBy.Sub(silent.connected))
-						return
-					}
+				// Under the race detector a stop the test sent too late leaves the two calls
+				// unjudged, since something else may have ended them, but the exit is still the
+				// stop's.
+				inTime := !sentBy.After(silent.connected.Add(negotiationLimit))
+				if !inTime && !raceBuild {
 					t.Fatalf("the stop was sent %v after the silent caller connected, past the negotiation's own end", sentBy.Sub(silent.connected))
 				}
-				silent.expectEnd(t, from, notAfter)
-				closing.awaitReset(t, from, notAfter)
+				if inTime {
+					silent.expectEnd(t, from, notAfter)
+					closing.awaitReset(t, from, notAfter)
+				} else {
+					t.Logf("under the race detector, timing is not judged: the stop was sent %v after the silent caller connected, past the negotiation's own end, so the calls are not judged",
+						sentBy.Sub(silent.connected))
+				}
 				_, exitedAt := program.exit(t, notAfter)
 				expectWithin(t, "the exit", exitedAt, from, notAfter)
 				program.expectLog(t, "started")
@@ -318,12 +322,13 @@ func TestProgram(t *testing.T) {
 			// the engine read to the caller's end of stream.
 			if servedAt := time.Now(); servedAt.After(answeredAt.Add(closingWait)) ||
 				servedAt.After(firstConnected.Add(negotiationLimit+nameLimit)) {
-				if raceBuild {
-					t.Logf("under the race detector, timing is not judged: a caller was served only %v after the closing caller answered, too late to tell what ended the call, so the row is not judged",
+				// Under the race detector only that is left unjudged: the log's contents are not a
+				// matter of time.
+				if !raceBuild {
+					t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
 						servedAt.Sub(answeredAt))
-					return
 				}
-				t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
+				t.Logf("under the race detector, timing is not judged: a caller was served only %v after the closing caller answered, too late to tell what ended the call",
 					servedAt.Sub(answeredAt))
 			}
 			_, sentBy := send(t, program)

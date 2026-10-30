@@ -421,7 +421,7 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 			return
 		}
 		if time.Now().After(giveUp) {
-			t.Fatalf("every caller was refused until the deadline")
+			t.Fatalf("every caller was refused until %v, %v past the deadline", giveUp.Format(time.RFC3339Nano), giveUp.Sub(deadline))
 		}
 		wait(t, time.Now().Add(20*time.Millisecond))
 	}

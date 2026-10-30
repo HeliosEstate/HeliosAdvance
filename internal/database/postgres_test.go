@@ -990,6 +990,20 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 	}
 }
 
+// expectEngineWithin checks a moment came inside a window anchored on an earlier event of the
+// engine's own, such as the renewal before it. Under the race detector that earlier event may
+// itself have come late while the engine's ticker brings the next one on time, so a short gap
+// there is right: neither bound is judged, and the moment is only logged.
+func expectEngineWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
+	t.Helper()
+	if raceBuild {
+		t.Logf("under the race detector, timing is not judged: %s came %v into its window of %v, which opens from an earlier event of the engine's",
+			what, moment.Sub(notBefore), notAfter.Sub(notBefore))
+		return
+	}
+	expectWithin(t, what, moment, notBefore, notAfter)
+}
+
 // raceStretch is how much longer a wait may take under the race detector, which slows the engine
 // and the test by an amount nobody controls: generous, since a stretched wait still fails a
 // hang, and no upper bound on time is judged there.

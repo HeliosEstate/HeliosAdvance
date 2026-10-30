@@ -198,7 +198,7 @@ func startChild(t *testing.T) childListener {
 	}
 	child := exec.CommandContext(t.Context(), "sh", append([]string{"-c", `ulimit -n "$1" && shift && exec "$@"`},
 		append(arguments, childArgument)...)...)
-	child.WaitDelay = 5 * time.Second
+	child.WaitDelay = patient(5 * time.Second)
 	stdin, err := child.StdinPipe()
 	if err != nil {
 		t.Fatalf("the child's standard input: %v", err)

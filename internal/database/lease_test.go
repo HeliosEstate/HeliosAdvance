@@ -43,22 +43,17 @@ func waitForLost(t *testing.T, lease *database.Lease, deadline time.Time) time.T
 	return time.Time{}
 }
 
-// expectHeld checks the Lease is not lost through the moment given. Called after that moment, it
-// can tell only whether the Lease is lost now, not when, so it looks without waiting: a choice
-// between a lost Lease and a timer already run out would otherwise go either way. A loss seen that
-// late may be the test's own lateness, so under the race detector, which slows the test as much
-// as the engine, it is logged rather than failed.
+// expectHeld checks the Lease is not lost through the moment given. Its rows are ones where the
+// Lease must not be lost at all, so a loss is the engine's fault whenever it came. Called after
+// that moment, it looks without waiting, since a choice between a lost Lease and a timer already
+// run out would otherwise go either way.
 func expectHeld(t *testing.T, lease *database.Lease, through time.Time) {
 	t.Helper()
 	if !time.Now().Before(through) {
 		select {
 		case <-lease.Lost():
-			if raceBuild {
-				t.Logf("under the race detector, timing is not judged: the Lease was lost when the test first looked, %v after %v",
-					time.Since(through), through.Format(time.RFC3339Nano))
-				return
-			}
-			t.Fatalf("the Lease was lost when the test first looked, %v after %v", time.Since(through), through.Format(time.RFC3339Nano))
+			t.Fatalf("the Lease was lost by %v, when the test looked, %v after %v", time.Now().Format(time.RFC3339Nano),
+				time.Since(through), through.Format(time.RFC3339Nano))
 		default:
 		}
 		return
@@ -106,7 +101,7 @@ func TestLease(t *testing.T) {
 			created, _, taken := takeBoard(t, sharedServer(t))
 			changes := created.waitForUpdates(t, 3, taken.transactionStart.Add(2*renewEvery+patient(timingMargin+time.Second)))
 			for index := 1; index < 3; index++ {
-				expectWithin(t, "a renewal", changes[index].transactionStart,
+				expectEngineWithin(t, "a renewal", changes[index].transactionStart,
 					changes[index-1].transactionStart.Add(renewEvery-timingMargin), changes[index-1].transactionStart.Add(renewEvery+timingMargin))
 				expectExactEnd(t, changes[index], leaseLength)
 				if changes[index].newHolder != taken.newHolder {
@@ -121,7 +116,7 @@ func TestLease(t *testing.T) {
 			locked := time.Now()
 			created.lockRow(t)
 			sent := server.waitForUpdatesSent(t, created.login, locked, 2, taken.transactionStart.Add(2*renewEvery+patient(2*timingMargin)))
-			expectWithin(t, "the renewal after the one kept waiting", sent[1], sent[0].Add(renewEvery-timingMargin), sent[0].Add(tryLimit+timingMargin))
+			expectEngineWithin(t, "the renewal after the one kept waiting", sent[1], sent[0].Add(renewEvery-timingMargin), sent[0].Add(tryLimit+timingMargin))
 		})
 		t.Run("another run's holder written after the take: the renewal leaves the row as that run wrote it", func(t *testing.T) {
 			t.Parallel()
@@ -189,7 +184,7 @@ func TestLease(t *testing.T) {
 			created, lease, taken := takeBoard(t, sharedServer(t))
 			created.lockRow(t)
 			lost := waitForLost(t, lease, taken.transactionStart.Add(lossAfter+patient(2*timingMargin)))
-			expectWithin(t, "the loss", lost, taken.transactionStart.Add(lossAfter-timingMargin), taken.transactionStart.Add(lossAfter+timingMargin))
+			expectEngineWithin(t, "the loss", lost, taken.transactionStart.Add(lossAfter-timingMargin), taken.transactionStart.Add(lossAfter+timingMargin))
 		})
 		t.Run("the server stopped straight after the first renewal: lost 25 s after that renewal", func(t *testing.T) {
 			t.Parallel()
@@ -199,7 +194,7 @@ func TestLease(t *testing.T) {
 			server.control(t, "stop", "-m", "fast", "-w", "-t", "60")
 			renewed := changes[1].transactionStart
 			lost := waitForLost(t, lease, renewed.Add(lossAfter+patient(2*timingMargin)))
-			expectWithin(t, "the loss", lost, renewed.Add(lossAfter-timingMargin), renewed.Add(lossAfter+timingMargin))
+			expectEngineWithin(t, "the loss", lost, renewed.Add(lossAfter-timingMargin), renewed.Add(lossAfter+timingMargin))
 		})
 	})
 

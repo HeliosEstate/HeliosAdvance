@@ -88,7 +88,7 @@ func runOpenSSH(t *testing.T, program *engine, call openSSHCall) openSSHResult {
 	ctx, cancel := context.WithTimeout(t.Context(), patient(30*time.Second))
 	defer cancel()
 	command := exec.CommandContext(ctx, "ssh", arguments...)
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = patient(5 * time.Second)
 	input, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

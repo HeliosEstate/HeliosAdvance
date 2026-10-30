@@ -105,7 +105,7 @@ func runProgram(t *testing.T, options ...string) *engine {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command := exec.CommandContext(t.Context(), programPath, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = patient(5 * time.Second)
 	if raceBuild {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
 	}
