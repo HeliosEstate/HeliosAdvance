@@ -518,7 +518,27 @@ func (server *postgres) writeHBA() error {
 	}
 	lines = append(lines, server.hbaExtra...)
 	lines = append(lines, "hostssl all all "+databaseHost+"/32 scram-sha-256")
-	return os.WriteFile(filepath.Join(server.data, "pg_hba.conf"), []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	return replaceFile(filepath.Join(server.data, "pg_hba.conf"), []byte(strings.Join(lines, "\n")+"\n"))
+}
+
+// replaceFile puts the new contents in place whole. On Windows each new connection reads
+// pg_hba.conf again, and one that reads it while it is written in place is refused with "could not
+// load pg_hba.conf"; a rename gives it the old file or the new one. The rename is tried again for a
+// while, since Windows refused one now and then while connections were being made.
+func replaceFile(path string, contents []byte) error {
+	temporary := path + ".new"
+	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := os.Rename(temporary, path)
+		if err == nil || time.Now().After(deadline) {
+			return err
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		<-timer.C
+	}
 }
 
 // signInRule puts a sign-in rule for one login ahead of the others, reloads the server, and waits
