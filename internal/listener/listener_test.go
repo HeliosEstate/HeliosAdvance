@@ -40,20 +40,20 @@ func TestCall(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			call.readOpening(t, call.connected.Add(progressLimit))
-			stream := call.record(call.send(t, answers).done.Add(5 * time.Second))
+			stream := call.record(call.send(t, answers).done.Add(patient(5 * time.Second)))
 			finish(t, call, stream, nil, true)
 		})
 		t.Run("a silent caller", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
+			stream := call.record(call.connected.Add(negotiationLimit + patient(5*time.Second)))
 			finish(t, call, stream, opening, false)
 		})
 		t.Run("the opening comes at once, before the caller sends anything", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			// The nearest fault waits for the caller's first byte, which never comes.
-			call.readOpening(t, call.connected.Add(wideMargin))
+			call.readOpening(t, call.connected.Add(patient(wideMargin)))
 		})
 	})
 	t.Run("If the caller sends WILL for a Telnet option other than SGA, BINARY, TTYPE, NAWS, NEW-ENVIRON and TSPEED, or DO for one other than ECHO, SGA and BINARY, then the engine shall refuse it, WILL with DONT and DO with WONT.", func(t *testing.T) {
@@ -61,7 +61,7 @@ func TestCall(t *testing.T) {
 		t.Run("DO and WILL for other options, then the answers", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(5 * time.Second))
+			stream := call.record(call.connected.Add(patient(5 * time.Second)))
 			call.send(t, join(request(doVerb, 2), request(doVerb, telnetTypeOption), request(doVerb, 255),
 				request(will, echo), request(will, 25), answers))
 			finish(t, call, stream, join(opening, request(wont, 2), request(wont, telnetTypeOption), request(wont, 255),
@@ -84,7 +84,7 @@ func TestCall(t *testing.T) {
 			t.Run(row.name, func(t *testing.T) {
 				t.Parallel()
 				call := dial(t, startEngine(t, 1)[0])
-				stream := call.record(call.connected.Add(5 * time.Second))
+				stream := call.record(call.connected.Add(patient(5 * time.Second)))
 				call.send(t, row.sent)
 				finish(t, call, stream, join(opening, row.replies), true)
 			})
@@ -99,7 +99,7 @@ func TestCall(t *testing.T) {
 		t.Run("text, every data byte, commands and a subnegotiation, then the answers", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(5 * time.Second))
+			stream := call.record(call.connected.Add(patient(5 * time.Second)))
 			call.send(t, join([]byte("hello\r\n"), everyDataByte, []byte{iac, iac, iac, nop, iac, dataMark, iac, 247, iac, 248, iac, 249},
 				[]byte{iac, subnegotiationBegin, telnetTypeOption, 1, iac, subnegotiationEnd}, []byte{doVerb, echo, doVerb, sga}))
 			sent := call.send(t, answers)
@@ -113,7 +113,7 @@ func TestCall(t *testing.T) {
 		t.Run("a subnegotiation that never ends, answers inside it", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
+			stream := call.record(call.connected.Add(negotiationLimit + patient(5*time.Second)))
 			call.send(t, join([]byte{iac, subnegotiationBegin, telnetTypeOption}, answers))
 			for next := time.Now(); next.Before(call.dialed.Add(negotiationLimit - 300*time.Millisecond)); next = next.Add(200 * time.Millisecond) {
 				wait(t, next)
@@ -220,7 +220,7 @@ func TestCall(t *testing.T) {
 		normalCall := func(t *testing.T, address string, otherDialed time.Time) {
 			t.Helper()
 			call := dial(t, address)
-			stream := call.record(call.connected.Add(5 * time.Second))
+			stream := call.record(call.connected.Add(patient(5 * time.Second)))
 			opened := call.connected
 			answered := call.send(t, answers)
 			greetingAt := finish(t, call, stream, opening, true)

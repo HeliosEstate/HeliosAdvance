@@ -24,7 +24,7 @@ var (
 )
 
 // startLimit is how long the program may take to name its listeners.
-const startLimit = 30 * time.Second
+var startLimit = patient(30 * time.Second)
 
 // TestMain builds the program the page's rows run from outside, under the race detector when
 // the tests run under it. A build that fails fails every such row with its reason, rather than
@@ -105,7 +105,7 @@ func runProgram(t *testing.T, options ...string) *engine {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command := exec.CommandContext(t.Context(), programPath, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = patient(5 * time.Second)
 	if raceBuild {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
 	}

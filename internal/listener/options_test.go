@@ -35,7 +35,7 @@ var agreed = join(request(doVerb, echo), request(doVerb, sga), request(doVerb, b
 func optionCall(t *testing.T, negotiation, typed, want []byte) {
 	t.Helper()
 	call := dial(t, startEngine(t, 1)[0])
-	stream := call.record(call.connected.Add(negotiationLimit + 5*time.Second))
+	stream := call.record(call.connected.Add(negotiationLimit + patient(5*time.Second)))
 	call.send(t, negotiation)
 	stream.waitFor(t, bytes.Index(want, asked)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 	call.send(t, join(typed, []byte("n\r")))
