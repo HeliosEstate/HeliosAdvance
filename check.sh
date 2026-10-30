@@ -4,7 +4,8 @@
 # Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER,
 #   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
 #   PKGS (CI, the packages one job tests; default all), GATES=0 (CI, a job whose Go gates another
-#   job of the same run checks)
+#   job of the same run checks), TIMED (CI, a file for the timed rows' place-in-window lines),
+#   MUTATE (CI, with --mutation: whole packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -285,13 +286,32 @@ if [ -n "$pkgs" ]; then
   [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
   # every failure from load on record came with every package at once (HeliosDesign #258).
-  go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
+  # Mutation mode runs no plain test pass: gremlins runs each package's tests itself.
+  if [ "$MUTATION" = 1 ]; then
+    :
+  elif [ -n "${TIMED:-}" ]; then
+    # CI keeps every timed row's place in its window (#258): a passing test's log shows only in
+    # Go's -json stream, so its "into its window of" lines go to $TIMED, a few KB, and the console
+    # gets what a plain run prints, each package's result and every failed test's output.
+    need jq "jq, from the system's packages"
+    stream=$(mktemp); status=0
+    go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
+    jq -r 'select(.Action == "output") | .Output' "$stream" | grep 'into its window of' > "$TIMED" || true
+    jq -sj '[.[] | select(.Action == "fail" and .Test) | .Package + " " + (.Test | split("/")[0])] as $failed
+      | .[] | select(.Action == "build-output" or .Action == "output")
+      | select(.Test == null or ((.Package + " " + (.Test | split("/")[0])) as $k | any($failed[]; . == $k)))
+      | .Output' "$stream"
+    rm -f "$stream"
+    [ "$status" = 0 ] || exit "$status"
+  else
+    go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
+  fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
     # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
-  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; then
+  elif [ "$MUTATION" = 1 ] && { [ -n "${MUTATE:-}" ] || git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; }; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
@@ -306,10 +326,17 @@ if [ -n "$pkgs" ]; then
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
     # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
     # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
-    # The run stays at the repository root (.): a package path matches no diff entry (its 278).
-    mutants=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^(cmd|internal/testrun)/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
-    echo "$mutants"
-    grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$mutants" || fail "mutation testing: no result lines, so there is nothing to report"
+    # The run on a diff stays at the repository root (.): a package path matches no diff entry (its
+    # 278). MUTATE names whole packages instead (a QA change to existing rows, a milestone), each
+    # mutated in full.
+    if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
+    mutants=
+    for target in "${targets[@]}"; do
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      echo "$out"
+      grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
+      mutants+="$out"$'\n'
+    done
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       { echo "## Mutation testing, a report"; echo '```'
         grep -E 'LIVED|NOT COVERED|Killed:|Timed out:|Test efficacy|Mutator coverage' <<< "$mutants"
