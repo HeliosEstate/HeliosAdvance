@@ -211,6 +211,25 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 }')
 [ -z "$long" ] || { echo "$long"; fail "a comment line runs past 100 columns: wrap it, or shorten a nolint's reason"; }
 
+# 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
+# entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
+# only begins the same way; a merge that keeps the other side of a conflict would bring one back
+# with everything green (HeliosAdvance #160). Each of the engine's paths in the file is judged,
+# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
+# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
+# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
+# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
+# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
+# developer's, and his review of every change to it is the check for that.
+[ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
+paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
+  grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
+  fail "no path of the engine's own was found in .golangci.yml, so its import rules cannot be checked"
+loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths" || true)
+[ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's paths without a closing \$"; }
+wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
+[ "$wide" = 1 ] || fail "the import rules hold the engine's module-wide entry $wide times, not once"
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
