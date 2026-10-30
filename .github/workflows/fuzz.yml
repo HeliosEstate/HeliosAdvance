@@ -185,7 +185,8 @@ jobs:
         run: exit 1
 
   # Run by hand once a fix has merged: an upload with no result under the alert's category marks
-  # it fixed.
+  # its alerts fixed. GitHub's processing of an upload can stall and the run still ends green (seen
+  # once, 2026-10-30): if the alerts are still open afterwards, run it again.
   close:
     if: inputs.close != ''
     runs-on: ubuntu-latest
