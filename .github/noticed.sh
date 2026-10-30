@@ -37,6 +37,8 @@ dry=${DRY_RUN:-}
 marker="<!-- noticed-source: $source -->"
 left="<!-- noticed-left: $source -->"
 body=$(cat)
+errors=$(mktemp)
+trap 'rm -f "$errors"' EXIT
 
 # items prints, for each item of the body's noticed list, the number of its last line, a tab and
 # the item on one line: the list starts at a line that is only the heading (any # or ** around
@@ -111,8 +113,13 @@ while IFS=$'\t' read -r -u 3 last item; do
     # The named issue is read itself, not found in the list, which holds only the newest
     # thousand. A tag a line before already used names that line's issue, so a second line
     # carrying it is a new item, and the two cannot take turns rewording one issue.
+    # Only an issue GitHub says is not there counts as missing: any other failure stops the run,
+    # which the next edit repeats, rather than open a second issue and overwrite the real tag.
     current=""
-    [ -n "${listed[$number]:-}" ] || current=$(gh issue view "$number" --json body -q .body 2>/dev/null || true)
+    if [ -z "${listed[$number]:-}" ] && ! current=$(gh api "repos/$GH_REPO/issues/$number" --jq '.body // ""' 2> "$errors"); then
+      grep -q 'HTTP 404' "$errors" || { cat "$errors" >&2; exit 1; }
+      current=""
+    fi
     if printf '%s' "$current" | grep -q 'noticed-key: '; then
       listed[$number]=1
       newkey=$(key "$text")
