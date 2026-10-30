@@ -2,10 +2,11 @@
 # (developer, 2026-10-30: "keep an eye on when GitHub's images update major versions as well as
 # PostgreSQL's support plan for when we decide to drop older versions"). It changes nothing itself:
 # check.yml names each system's major, and dropping or adding one is his decision.
-# - A moving image label (ubuntu-latest, windows-latest) on a new operating system release.
-# - A PostgreSQL major released that no job tests.
+# - A moving image label (ubuntu-latest, windows-latest) on a new operating system release, or
+#   windows-latest carrying a new PostgreSQL major (Windows tests the image's own copy).
+# - A PostgreSQL major 16 or later released that no job tests.
 # - A tested major within 90 days of its last release, by the project's published plan.
-# One issue per change at a time: an open issue carrying the change's marker is not opened twice.
+# One issue per change: an issue carrying the change's marker, open or closed, is not opened again.
 name: pg-watch
 
 on:
@@ -23,7 +24,7 @@ jobs:
       matrix:
         include:
           - { label: ubuntu-latest, known: "Ubuntu 26.04" }
-          - { label: windows-latest, known: "Windows Server 2025" }
+          - { label: windows-latest, known: "Windows Server 2025, PostgreSQL 17" }
     runs-on: ${{ matrix.label }}
     outputs:
       ubuntu-latest: ${{ steps.os.outputs.ubuntu-latest }}
@@ -38,6 +39,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             os=$(pwsh -NoProfile -Command '(Get-CimInstance Win32_OperatingSystem).Caption' | tr -d '\r' | sed 's/^Microsoft //; s/ Datacenter$//')
+            os="$os, PostgreSQL $(basename "$(dirname "$(cygpath -u "${PGBIN:-/none/bin}")")")"
           else
             os=$(. /etc/os-release && echo "$NAME $VERSION_ID")
           fi
@@ -59,24 +61,29 @@ jobs:
           UBUNTU: ${{ needs.image.outputs.ubuntu-latest }}
           WINDOWS: ${{ needs.image.outputs.windows-latest }}
           IMAGES: ${{ needs.image.result }}
+          # The majors check.yml's PostgreSQL step tests; a change to one is a change to both.
           TESTED: "16 17 18"
         run: |
           set -euo pipefail
           open() { # marker title body
-            if [ -n "$(gh issue list --label needs-developer --state open --limit 200 --json number,body -q ".[] | select(.body | contains(\"$1\")) | .number" | head -n 1)" ]; then
-              echo "already open: $2"; return
-            fi
+            local issues existing
+            issues=$(gh issue list --label needs-developer --state all --limit 1000 --json number,body)
+            existing=$(jq -r --arg m "$1" '[.[] | select(.body | contains($m))][0].number // empty' <<< "$issues")
+            if [ -n "$existing" ]; then echo "already raised in #$existing: $2"; return; fi
             printf '%s\n\n%s\n' "$3" "$1" | gh issue create --title "$2" --label needs-developer --body-file - > /dev/null
             echo "opened: $2"
           }
           [ "$IMAGES" = success ] || { echo "::error::an image job failed, so its label was not read"; exit 1; }
           [ -z "$UBUNTU" ] || open "<!-- pg-watch: ubuntu-latest $UBUNTU -->" "GitHub's ubuntu-latest is now $UBUNTU" \
-            "The ubuntu-latest label, which runs Linux x86-64's tests with PostgreSQL 18, now gives $UBUNTU. Decide whether the tests stay on the label or move to a fixed one, and update the known release in pg-watch.yml."
+            "The ubuntu-latest label, which runs the Linux x86-64 tests, now gives $UBUNTU. Decide whether the tests stay on the label or move to a fixed one, and update the known release in pg-watch.yml."
           [ -z "$WINDOWS" ] || open "<!-- pg-watch: windows-latest $WINDOWS -->" "GitHub's windows-latest is now $WINDOWS" \
-            "The windows-latest label, which runs Windows' tests with PostgreSQL 17, now gives $WINDOWS. Decide whether the tests stay on the label or move to a fixed one, and update the known release in pg-watch.yml."
+            "The windows-latest label, which runs the Windows tests on the image's own PostgreSQL, now gives $WINDOWS. Decide what Windows tests, and update check.yml and the known release in pg-watch.yml."
           versions=$(curl -sSf https://www.postgresql.org/versions.json)
           soon=$(date -u -d '+90 days' +%Y-%m-%d)
           while IFS=' ' read -r major eol; do
+            [[ "$major" =~ ^[0-9]+$ && "$eol" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+              { echo "::error::PostgreSQL's version list gave an unexpected entry: $major $eol"; exit 1; }
+            [ "$major" -ge 16 ] || continue
             if ! grep -qw "$major" <<< "$TESTED"; then
               open "<!-- pg-watch: new major $major -->" "PostgreSQL $major is released and no job tests it" \
                 "PostgreSQL $major is a supported release by the project's list, and no job in check.yml tests it. Decide which system tests it (HeliosDesign #271 planned 19 as a fourth)."
@@ -84,4 +91,4 @@ jobs:
               open "<!-- pg-watch: end of $major -->" "PostgreSQL $major's last release is on $eol" \
                 "PostgreSQL $major, which check.yml tests, has its last release on $eol by the project's published plan, within 90 days. Decide whether the engine drops it, and what that job tests instead."
             fi
-          done < <(jq -r '.[] | select(.supported) | "\(.major) \(.eolDate)"' <<< "$versions" | awk '$1 + 0 >= 16')
+          done < <(jq -r '.[] | select(.supported) | "\(.major) \(.eolDate)"' <<< "$versions")

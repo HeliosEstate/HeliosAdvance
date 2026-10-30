@@ -148,13 +148,17 @@ jobs:
       # service is started (developer, 2026-10-28). Each system tests one supported major, so
       # every major the engine supports is tested once (developer, 2026-10-30): 18 on Linux
       # x86-64, 16 on Linux ARM64, 17 on Windows; 19 joins on its release (HeliosDesign #271).
-      # Each run takes the major's newest update from PostgreSQL's own packages: on Linux its apt
-      # repository; on Windows the image's copy when it is the newest the project publishes, else
-      # the project's Windows binaries. A job whose major is not its own fails here. The weekly
-      # pg-watch workflow says when an image or a major's support moves. The tools' folder is handed
-      # to the steps that run the tests alone, never put on every later step's PATH: on Windows it
-      # carries its own copies of shared libraries (OpenSSL, zlib, ICU) that could shadow another
-      # tool's (HeliosDesign #229).
+      # On Linux each run takes the major's newest update from PostgreSQL's own apt repository,
+      # whose packages apt checks against its signing key; a newly installed major makes no
+      # cluster or service of its own. On Windows the image's copy is used: GitHub installs it with
+      # the project's signed installer and checks its publisher, while the project's Windows
+      # binaries come unsigned and with no checksum to check, so its updates arrive when GitHub
+      # refreshes the image (developer, 2026-10-30). A job whose major is not its own fails here.
+      # pg-watch.yml lists the same majors (TESTED) and says when an image or a major's support
+      # moves; a change to one is a change to both. The tools' folder is handed to the steps that
+      # run the tests alone, never put on every later step's PATH: on Windows it carries its own
+      # copies of shared libraries (OpenSSL, zlib, ICU) that could shadow another tool's
+      # (HeliosDesign #229).
       - name: PostgreSQL's tools
         if: matrix.group != 'listener'
         id: postgres
@@ -162,16 +166,12 @@ jobs:
           PG: ${{ runner.os == 'Windows' && '17' || runner.arch == 'ARM64' && '16' || '18' }}
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
-            newest="$PG.$(curl -sSf https://www.postgresql.org/versions.json | jq -r --arg m "$PG" '.[] | select(.major == $m) | .latestMinor')"
+            [ -n "${PGBIN:-}" ] || { echo "::error::no PostgreSQL on this runner: PGBIN is not set"; exit 1; }
             bin="$(cygpath -u "$PGBIN")"
-            if ! "$bin/pg_ctl" --version | tr -d '\r' | grep -q " $newest\$"; then
-              curl -sSfL -o "$RUNNER_TEMP/pg.zip" "https://get.enterprisedb.com/postgresql/postgresql-$newest-1-windows-x64-binaries.zip"
-              unzip -q "$RUNNER_TEMP/pg.zip" -d "$RUNNER_TEMP"
-              bin="$RUNNER_TEMP/pgsql/bin"
-            fi
           else
+            echo 'create_main_cluster = false' | sudo tee -a /etc/postgresql-common/createcluster.conf > /dev/null
             sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y > /dev/null
-            sudo apt-get install -y -q "postgresql-$PG" > /dev/null
+            sudo apt-get install -y -q "postgresql-$PG" "postgresql-client-$PG" > /dev/null
             bin="/usr/lib/postgresql/$PG/bin"
           fi
           "$bin/pg_ctl" --version | tr -d '\r' | grep -qE " $PG\.[0-9]+" ||
