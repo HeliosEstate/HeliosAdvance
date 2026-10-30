@@ -46,18 +46,36 @@ func Enter() (string, error) {
 	return folder, swept
 }
 
+// Windows may hold a file for a moment after what had it open has ended, a server's output file
+// after pg_ctl stop returns among them, so Leave checks again every leaveInterval up to
+// leaveBound, and only what is still held then is reported.
+const (
+	leaveInterval = 100 * time.Millisecond
+	leaveBound    = 10 * time.Second
+)
+
 // Leave removes this run's folder, last in a TestMain, once what the run started has stopped.
 func Leave(folder string) error {
 	if folder == "" {
 		return nil
 	}
-	return remove(folder)
+	giveUp := time.Now().Add(leaveBound)
+	for {
+		err := remove(folder)
+		if err == nil || time.Now().After(giveUp) {
+			return err
+		}
+		time.Sleep(leaveInterval)
+	}
 }
 
 // remove removes a run's folder with its owner last: a removal that fails partway, on a file
 // Windows still holds, leaves the owner, so the next run finds the rest and takes it.
 func remove(folder string) error {
 	entries, err := os.ReadDir(folder)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
