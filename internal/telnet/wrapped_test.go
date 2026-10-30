@@ -45,11 +45,12 @@ func expectWrapped(t *testing.T, call string, err, want error) {
 // waitedError is the error a call running on its own goroutine returns, within a hang's bound.
 func waitedError(t *testing.T, call string, returned <-chan error) error {
 	t.Helper()
+	bound := patient(10 * time.Second)
 	select {
 	case err := <-returned:
 		return err
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s had not returned 10 seconds after its context was cancelled", call)
+	case <-time.After(bound):
+		t.Fatalf("%s had not returned %v after its context was cancelled", call, bound)
 		return nil
 	}
 }
@@ -97,7 +98,7 @@ func TestLineWrapsTheContextsError(t *testing.T) {
 			t.Run(row.name+", a byte waiting: the context's error, wrapped", func(t *testing.T) {
 				t.Parallel()
 				_, line := answeredLine(t, []byte("a"))
-				_, err := line.RecvChar(row.ctx(t), time.Now().Add(time.Minute))
+				_, err := line.RecvChar(row.ctx(t), time.Now().Add(patient(time.Minute)))
 				expectWrapped(t, "RecvChar", err, row.want)
 			})
 		}
@@ -107,7 +108,7 @@ func TestLineWrapsTheContextsError(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			returned := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(ctx, time.Now().Add(time.Minute))
+				_, err := line.RecvChar(ctx, time.Now().Add(patient(time.Minute)))
 				returned <- err
 			}()
 			cancel()
@@ -135,7 +136,7 @@ func TestLineWrapsTheContextsError(t *testing.T) {
 			done := closeOn(ctx, line)
 			expectEndOfStream(t, pair.client)
 			cancel()
-			expectWrapped(t, "Close", waitClosed(t, done, 10*time.Second).err, context.Canceled)
+			expectWrapped(t, "Close", waitClosed(t, done, patient(10*time.Second)).err, context.Canceled)
 		})
 	})
 }

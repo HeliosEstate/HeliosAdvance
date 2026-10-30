@@ -125,12 +125,12 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 		},
 		{
 			name:   "filled, the deadline 10 seconds away, a long-passed deadline set from a second goroutine at 500 ms: ErrDeadlineExceeded then",
-			filled: true, deadline: 10 * time.Second, wakeAfter: 500 * time.Millisecond,
+			filled: true, deadline: patient(10 * time.Second), wakeAfter: 500 * time.Millisecond,
 			wantErr: os.ErrDeadlineExceeded, atLeast: 400 * time.Millisecond, below: 3 * time.Second,
 		},
 		{
 			name:   "filled, the deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens",
-			filled: true, deadline: 10 * time.Second, drainAfter: 500 * time.Millisecond,
+			filled: true, deadline: patient(10 * time.Second), drainAfter: 500 * time.Millisecond,
 			atLeast: 400 * time.Millisecond, below: 5 * time.Second,
 		},
 		{
@@ -193,7 +193,7 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			var result urgentResult
 			select {
 			case result = <-finished:
-			case <-time.After(row.below + 2*time.Second):
+			case <-time.After(patient(row.below + 2*time.Second)):
 				// A send that never returns holds the connection's write lock, so closing the
 				// server's end would block behind it; resetting the caller's end completes the
 				// send with an error.
@@ -201,7 +201,7 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 				_ = client.Close()
 				select {
 				case <-finished:
-				case <-time.After(5 * time.Second):
+				case <-time.After(patient(5 * time.Second)):
 					t.Fatalf("WriteUrgent was still waiting after %v and resetting the caller's end did not wake it", time.Since(started))
 				}
 				t.Fatalf("WriteUrgent was still waiting after %v, want it back in less than %v", time.Since(started), row.below)
@@ -211,8 +211,15 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			if !errors.Is(err, row.wantErr) {
 				t.Fatalf("WriteUrgent returned (%d, %v), want error %v", count, err, row.wantErr)
 			}
-			if took < row.atLeast || took >= row.below {
+			if took < row.atLeast {
 				t.Fatalf("WriteUrgent took %v, want at least %v and less than %v", took, row.atLeast, row.below)
+			}
+			if took >= row.below {
+				if raceBuild {
+					t.Logf("under the race detector, timing is not judged: WriteUrgent took %v, %v past its bound", took, took-row.below)
+				} else {
+					t.Fatalf("WriteUrgent took %v, want at least %v and less than %v", took, row.atLeast, row.below)
+				}
 			}
 			switch {
 			case row.wantErr == nil && count != 1:

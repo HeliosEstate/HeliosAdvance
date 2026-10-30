@@ -77,6 +77,19 @@ const (
 // at once; the rest is room for the engine's own work under load.
 const margin = 750 * time.Millisecond
 
+// raceStretch is how much longer a wait may take under the race detector, which slows the engine
+// and the test by an amount nobody controls: generous, since a stretched wait still fails a
+// hang, and no upper bound on time is judged there.
+const raceStretch = 4
+
+// patient stretches a wait under the race detector; without it the wait is unchanged.
+func patient(wait time.Duration) time.Duration {
+	if raceBuild {
+		return raceStretch * wait
+	}
+	return wait
+}
+
 // opening is the eight requests the contract's New line gives, in order.
 var opening = join(
 	request(will, echo), request(will, sga), request(will, binary), request(doVerb, binary),
@@ -459,14 +472,23 @@ func expectSynchs(t *testing.T, client *net.TCPConn, before []byte, count int, d
 	}
 }
 
-// write sends bytes from the scripted caller and fails the test if they do not go.
-func write(t *testing.T, connection net.Conn, data []byte) time.Time {
+// sending is when a caller's write began and when it returned. The engine can read the bytes and
+// act on them before the writer's goroutine reads the clock again, so a window on what the
+// engine does with them opens from began and closes from done.
+type sending struct {
+	began, done time.Time
+}
+
+// write sends bytes from the scripted caller and fails the test if they do not go. It returns
+// when the write began and when it returned.
+func write(t *testing.T, connection net.Conn, data []byte) sending {
 	t.Helper()
-	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = connection.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
+	began := time.Now()
 	if _, err := connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
-	return time.Now()
+	return sending{began: began, done: time.Now()}
 }
 
 // writeUrgent sends bytes from the scripted caller with the last one as TCP urgent data, as a
