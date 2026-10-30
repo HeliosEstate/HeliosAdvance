@@ -114,7 +114,11 @@ for index in "${!gone[@]}"; do
   sources=$(printf '%s\n' "$body" | grep -c '^<!-- noticed-source: ' || true)
   if [ "$reworded" = 1 ] && [ "$sources" = 1 ] && printf '%s' "$body" | grep -qF "$marker"; then
     new=${joined[$index]}
-    issue_body "$new" "$from" "$(key "$new")" "$marker" | gh issue edit "$existing" --title "$(title_for "$new")" --body-file -
+    # Only the item, its first paragraph, and its key change: whatever else the body holds, such
+    # as the developer's record of a deferral, stays, and a closed issue stays closed.
+    { printf '%s\n' "$new"; printf '%s\n' "$body" | awk 'seen || /^[ \t\r]*$/ { seen = 1; print }' |
+      sed "s/noticed-key: $oldkey/noticed-key: $(key "$new")/"; } |
+      gh issue edit "$existing" --title "$(title_for "$new")" --body-file -
     gh issue comment "$existing" --body "Reworded in $from; this issue now carries the new wording."
   else
     gh issue comment "$existing" --body "Its line left the list in $from. It stays open for the developer's decision."
