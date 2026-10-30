@@ -77,8 +77,10 @@ func serverRunsIn(data string) bool {
 		return false
 	}
 	started, err := processStart(processID)
-	// The server writes the file a moment after Windows made the process, which may fall in the
-	// next second or the one after; a number given again comes after its server has ended.
+	// The server writes its start inside its main, after Windows made the process, which on a
+	// loaded machine may be seconds later, and a live server judged stale is the worse mistake:
+	// so a minute is allowed. The other mistake needs a new PostgreSQL, the only process
+	// pg_ctl's signal reaches, to be given the number within that minute of the old start.
 	late := written - started/int64(time.Second)
-	return err == nil && late >= 0 && late <= 2
+	return err == nil && late >= 0 && late <= 60
 }

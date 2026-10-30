@@ -285,10 +285,20 @@ func sweep() []byte {
 }
 
 // expectDeadlineAt checks a read on the server end, the client silent, waits until the deadline.
+// closeAfter closes the server end a stretched margin after the deadline, or after now if that
+// is later: under the race detector Negotiate may return past the deadline, and a watchdog
+// already run out would close the connection before the check reads it.
+func closeAfter(server *net.TCPConn, deadline time.Time) *time.Timer {
+	from := deadline
+	if now := time.Now(); now.After(from) {
+		from = now
+	}
+	return time.AfterFunc(time.Until(from.Add(testrun.Patient(margin))), func() { _ = server.Close() })
+}
+
 func expectReadDeadlineAt(t *testing.T, server *net.TCPConn, deadline time.Time) {
 	t.Helper()
-	watchdog := time.AfterFunc(time.Until(deadline.Add(testrun.Patient(margin))), func() { _ = server.Close() })
-	defer watchdog.Stop()
+	defer closeAfter(server, deadline).Stop()
 	got, err := server.Read(make([]byte, 16))
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("a read after Negotiate returned gave %d bytes and %v, want a passed deadline", got, err)
@@ -300,8 +310,7 @@ func expectReadDeadlineAt(t *testing.T, server *net.TCPConn, deadline time.Time)
 // deadline.
 func expectWriteDeadlineAt(t *testing.T, server *net.TCPConn, deadline time.Time) {
 	t.Helper()
-	watchdog := time.AfterFunc(time.Until(deadline.Add(testrun.Patient(margin))), func() { _ = server.Close() })
-	defer watchdog.Stop()
+	defer closeAfter(server, deadline).Stop()
 	// Windows takes a large write whole into its own buffers, so the write is repeated until one
 	// has to wait.
 	chunk := make([]byte, 1<<20)
@@ -562,6 +571,10 @@ func TestNegotiate(t *testing.T) {
 			// Which ends first, the 3 seconds or the context 500 ms after them, is two timers'
 			// race; under the race detector either may be late, so either outcome is only logged.
 			if testrun.Race && errors.Is(got.err, telnet.ErrDeadlineEnded) {
+				// Too soon still fails: the race detector cannot make a return early.
+				if got.returned.Before(limit.Add(-early)) {
+					t.Fatalf("Negotiate returned %v, %v before its 3 seconds ended", got.err, limit.Sub(got.returned))
+				}
 				t.Logf("under the race detector, the outcome is not judged: Negotiate returned %v, %v after the call", got.err, got.returned.Sub(call.called))
 				return
 			}
@@ -976,7 +989,9 @@ func TestNegotiate(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			_ = pair.client.SetReadBuffer(4096)
-			deadline := time.Now().Add(2 * time.Second)
+			// Stretched under the race detector: an opening and a close that come late would
+			// otherwise meet the context's deadline and turn ErrCallerClosed into ErrDeadlineEnded.
+			deadline := time.Now().Add(testrun.Patient(2 * time.Second))
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			expectOpening(t, pair.client, call.called.Add(testrun.Patient(margin)))
 			_ = pair.client.CloseWrite()
