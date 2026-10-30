@@ -84,9 +84,9 @@ linters:
           allow:
             - $gostd
             # The rule for a call's end and the wake, written once (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package telnet_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/telnet$
         # The Telnet unit's Windows urgent write, the one file that may import the module's
         # windows package (docs/architecture.md, the developer's of 2026-10-27).
         telnet-windows-urgent:
@@ -109,23 +109,23 @@ linters:
           allow:
             - $gostd
             # Its own path, so its black-box tests in package session_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/session
+            - github.com/heliosestate/heliosadvance/internal/session$
         textio:
           files: ["**/internal/textio/**"]
           list-mode: strict
           allow:
             - $gostd
             # The rule for a call's end, written once (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package textio_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/textio
+            - github.com/heliosestate/heliosadvance/internal/textio$
         timeup:
           files: ["**/internal/timeup/**"]
           list-mode: strict
           allow:
             - $gostd
             # Its own path, so its black-box tests in package timeup_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
         ssh:
           files: ["**/internal/ssh/**"]
           list-mode: strict
@@ -135,9 +135,9 @@ linters:
             # packages, such as ssh/agent, are not allowed.
             - golang.org/x/crypto/ssh$
             # The rule for a call's end and the wake, written once (docs/architecture.md).
-            - github.com/heliosestate/heliosadvance/internal/timeup
+            - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package ssh_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/ssh
+            - github.com/heliosestate/heliosadvance/internal/ssh$
         listener:
           files: ["**/internal/listener/**", "!$test"]
           list-mode: strict
@@ -145,8 +145,8 @@ linters:
             - $gostd
             # It hands every kind's call to the Session through Text I/O, and names no kind of
             # connection (docs/architecture.md, Part 3's shape).
-            - github.com/heliosestate/heliosadvance/internal/textio
-            - github.com/heliosestate/heliosadvance/internal/session
+            - github.com/heliosestate/heliosadvance/internal/textio$
+            - github.com/heliosestate/heliosadvance/internal/session$
         # The Listener's tests drive it with a real kind of connection, Telnet's, never a fake;
         # its approved rows for the Session and Text I/O run over a real Telnet Line. Its code
         # still names no kind (developer, 2026-10-25).
@@ -155,11 +155,11 @@ linters:
           list-mode: strict
           allow:
             - $gostd
-            - github.com/heliosestate/heliosadvance/internal/textio
-            - github.com/heliosestate/heliosadvance/internal/session
-            - github.com/heliosestate/heliosadvance/internal/telnet
+            - github.com/heliosestate/heliosadvance/internal/textio$
+            - github.com/heliosestate/heliosadvance/internal/session$
+            - github.com/heliosestate/heliosadvance/internal/telnet$
             # Its own path, so its black-box tests in package listener_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/listener
+            - github.com/heliosestate/heliosadvance/internal/listener$
         database:
           files: ["**/internal/database/**"]
           list-mode: strict
@@ -174,7 +174,7 @@ linters:
             # not by text an update of pgx could change (the developer's "yes", 2026-10-29).
             - github.com/jackc/pgx/v5/pgproto3$
             # Its own path, so its black-box tests in package database_test can import it.
-            - github.com/heliosestate/heliosadvance/internal/database
+            - github.com/heliosestate/heliosadvance/internal/database$
         hadv-service:
           files: ["**/cmd/hadv-service/**"]
           list-mode: strict
@@ -182,12 +182,12 @@ linters:
             - $gostd
             # It starts and stops the Listener, and pairs each kind's sockets with its way in
             # (docs/architecture.md, Part 3's shape); Text I/O and the Session are the Listener's.
-            - github.com/heliosestate/heliosadvance/internal/listener
-            - github.com/heliosestate/heliosadvance/internal/telnet
-            - github.com/heliosestate/heliosadvance/internal/ssh
+            - github.com/heliosestate/heliosadvance/internal/listener$
+            - github.com/heliosestate/heliosadvance/internal/telnet$
+            - github.com/heliosestate/heliosadvance/internal/ssh$
             # It reads the connection file and takes the lease before it listens, and closes the
             # listeners when the lease is lost (database Part 1).
-            - github.com/heliosestate/heliosadvance/internal/database
+            - github.com/heliosestate/heliosadvance/internal/database$
     forbidigo:
       analyze-types: true
       forbid:
