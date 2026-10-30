@@ -468,12 +468,11 @@ func TestName(t *testing.T) {
 					// greeting and prompt. A reset may drop the end of what was sent, so a last
 					// reply cut short there is not the engine's.
 					rest := got[len(opening):]
-					if askedAt := bytes.Index(rest, asked); askedAt >= 0 {
-						if askedAt%3 != 0 {
-							t.Fatalf("the greeting and the prompt are not whole between whole replies")
-						}
-						rest = join(rest[:askedAt], rest[askedAt+len(asked):])
+					askedAt := bytes.Index(rest, asked)
+					if askedAt < 0 || askedAt%3 != 0 {
+						t.Fatalf("the greeting and the prompt are not whole between whole replies")
 					}
+					rest = join(rest[:askedAt], rest[askedAt+len(asked):])
 					if isReset(stream.end) {
 						rest = rest[:len(rest)/3*3]
 					}
