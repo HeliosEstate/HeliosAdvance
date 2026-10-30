@@ -101,9 +101,9 @@ linters:
         # A new arrow is a new line here, in the same PR, with its reason. Each of the engine's
         # own packages is named exactly, ending in $, so a later package whose path only begins
         # the same way, or a unit's own sub-package, is a new arrow and needs its own line. check.sh
-        # refuses any of the engine's paths in this file, however written, that does not end in $,
-        # but the dependencies rule's one module-wide entry. Outside modules' entries end in $ too,
-        # by hand: no check reads them.
+        # refuses an engine path in an allow list that does not end in $, but the dependencies
+        # rule's one module-wide entry: it catches a slip or a merge, not a disguise, which review
+        # of this file catches. Outside modules' entries end in $ too, by hand: no check reads them.
         telnet:
           files: ["**/internal/telnet/**", "!**/internal/telnet/urgent_windows.go"]
           list-mode: strict
@@ -306,3 +306,6 @@ formatters:
   enable:
     - gofmt
     - goimports
+  exclusions:
+    # As for the linters: a file that says it was generated is formatted like any other.
+    generated: disable
