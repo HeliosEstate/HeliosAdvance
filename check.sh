@@ -214,19 +214,17 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
-# with everything green (HeliosAdvance #160). Each of the engine's paths in an allow list is
-# judged, written plainly, quoted, in a one-line list or on the line after a folded marker, once
-# comments are taken off; the dependencies rule's module-wide entry, ending in /, is the one
-# exception, and there is one. This catches what a merge or a slip brings back, not a disguise
-# (a shortened path, a reference to another rule's list, an escape, a # inside quotes): the file
-# is the developer's, and his review of every change to it is the check for that.
+# with everything green (HeliosAdvance #160). Each of the engine's paths in the file is judged,
+# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
+# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
+# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
+# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
+# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
+# developer's, and his review of every change to it is the check for that.
 [ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
-paths=$(awk '{ indent = match($0, /[^ ]/) - 1 }
-  inallow && $0 ~ /[^[:space:]]/ && $0 !~ /^[[:space:]]*#/ && indent <= allowindent { inallow = 0 }
-  /^[[:space:]]*allow:/ { inallow = 1; allowindent = indent }
-  { print (inallow ? $0 : "") }' .golangci.yml | sed 's/#.*//' |
+paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
   grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
-  fail "no path of the engine's own was found in an allow list of .golangci.yml, so its import rules cannot be checked"
+  fail "no path of the engine's own was found in .golangci.yml, so its import rules cannot be checked"
 loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths" || true)
 [ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's paths without a closing \$"; }
 wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
