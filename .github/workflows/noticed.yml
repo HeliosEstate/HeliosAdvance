@@ -44,6 +44,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           BODY: ${{ github.event_name == 'pull_request' && github.event.pull_request.body || github.event.issue.body }}
+          # The body before an edit, so a reworded line updates its issue instead of opening another
+          # (#226); empty for a new body or an edit of the title alone.
+          OLD_BODY: ${{ github.event.changes.body.from }}
           SOURCE: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('issue-{0}', github.event.issue.number) }}
         run: printf '%s\n' "$BODY" | bash .github/noticed.sh "$SOURCE"
       # Holds the concurrency group until an issue this run opened shows in the list (about
