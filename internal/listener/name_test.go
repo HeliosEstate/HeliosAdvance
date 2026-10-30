@@ -463,8 +463,23 @@ func TestName(t *testing.T) {
 				endedByEngine := errors.Is(stream.end, io.EOF) || isReset(stream.end)
 				if raceBuild && bytes.HasPrefix(got, opening) && endedByEngine &&
 					!stream.ended.Before(call.dialed.Add(negotiationLimit+nameLimit-early)) {
-					t.Logf("under the race detector, timing is not judged: the engine ended the call without Hello k %v after the dial, when the name's 60 seconds could have ended it",
-						stream.ended.Sub(call.dialed))
+					// Only where the stream was cut is the timer's: the replies before it are the
+					// engine's own, and must still be whole, once and in order, around a whole
+					// greeting and prompt. A reset may drop the end of what was sent, so a last
+					// reply cut short there is not the engine's.
+					rest := got[len(opening):]
+					if askedAt := bytes.Index(rest, asked); askedAt >= 0 {
+						if askedAt%3 != 0 {
+							t.Fatalf("the greeting and the prompt are not whole between whole replies")
+						}
+						rest = join(rest[:askedAt], rest[askedAt+len(asked):])
+					}
+					if isReset(stream.end) {
+						rest = rest[:len(rest)/3*3]
+					}
+					answered := expectNumberedReplies(t, rest)
+					t.Logf("under the race detector, timing is not judged: the engine ended the call without Hello k %v after the dial, when the name's 60 seconds could have ended it, after %d replies each whole and once",
+						stream.ended.Sub(call.dialed), answered)
 					return
 				}
 				t.Fatalf("the stream did not run from the opening to Hello k: %v", stream.end)

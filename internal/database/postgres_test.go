@@ -971,7 +971,7 @@ func pause(t *testing.T, length time.Duration) {
 
 // expectWithin checks a moment came inside its window and logs how far into it. Under the race
 // detector a moment too late is only logged, since that detector slows the engine by an amount
-// nobody controls; a moment too soon is still a fault (the developer, 2026-10-26).
+// nobody controls; a moment too soon is still a fault (the developer, 2026-10-30).
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
 	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))

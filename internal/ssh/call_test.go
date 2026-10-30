@@ -937,11 +937,17 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	for {
 		client := dialRaw(t, address)
 		if version, err := client.readVersion(time.Now().Add(patient(margin))); err == nil && string(version) == versionLine {
+			if served := time.Now(); raceBuild && served.After(deadline) {
+				t.Logf("under the race detector, timing is not judged: a caller was served %v past the deadline", served.Sub(deadline))
+			}
 			return
 		}
 		if time.Now().After(giveUp) {
 			t.Fatalf("no caller was served by %v, %v past the deadline", giveUp.Format(time.RFC3339Nano), giveUp.Sub(deadline))
 		}
+		// A pause between refused callers, so that on a slow runner they do not pile up while
+		// the engine frees a place.
+		waitUntil(t, time.Now().Add(20*time.Millisecond))
 	}
 }
 
