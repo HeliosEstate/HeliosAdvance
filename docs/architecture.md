@@ -27,4 +27,4 @@ approved tests are, since a change to it changes every timed row at once.
 
 | Unit | Package | Owns | Uses |
 |---|---|---|---|
-| Testrun | `internal/testrun` | What every test binary shares about its own run: whether it runs under the race detector, and how much longer a wait may take there; and the run's own folder, made first in a TestMain, where everything the run makes lands, servers and programs included, removed last, and taken by the next run when a run ends without removing it: its servers stopped with pg_ctl, on Linux its programs ended, and the folder removed | the Go standard library only |
+| Testrun | `internal/testrun` | What every test binary shares about its own run: whether it runs under the race detector, and how much longer a wait may take there; and the run's own folder, made first in a TestMain, where everything the run makes lands, servers and programs included, removed last, and taken by the next run when a run ends without removing it: its servers stopped with pg_ctl, its programs ended by where their executable lives, and the folder removed | golang.org/x/sys/windows, in its Windows files alone; the Go standard library |
