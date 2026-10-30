@@ -54,9 +54,10 @@ items | while IFS= read -r item; do
   fi
   # No --label: with it, gh asks the search index, which lagged minutes behind a new issue, and
   # one item became three issues (#52, #54, #57, 2026-10-22). Without it gh reads the issues
-  # themselves; the key marker is in noticed issues alone.
-  existing=$(gh issue list --state all --limit 1000 --json number,body \
-    -q ".[] | select(.body | contains(\"noticed-key: $key\")) | .number" | head -1)
+  # themselves. Only an issue this workflow opened counts: anyone can write a key into an issue
+  # of a public repository, and a planted, closed one would otherwise stand in for the item.
+  existing=$(gh issue list --state all --limit 1000 --json number,body,author \
+    -q ".[] | select(.author.login == \"app/github-actions\") | select(.body | contains(\"noticed-key: $key\")) | .number" | head -1)
   if [ -n "$existing" ]; then
     body=$(gh issue view "$existing" --json body -q .body)
     if ! printf '%s' "$body" | grep -qF "$marker"; then
