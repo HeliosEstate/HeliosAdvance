@@ -8,14 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"strconv"
 	"strings"
 )
 
 // processStart is when the process with the number started, in clock ticks since boot.
 func processStart(processID int) (int64, error) {
-	text, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", processID))
+	text, err := readSmall(fmt.Sprintf("/proc/%d/stat", processID))
 	if err != nil {
 		return 0, err
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -131,7 +132,7 @@ func sweep(base string) error {
 // ownerEnded is whether the folder's owner has ended: none has its number, or the one that has it
 // started at another moment, its number having been given again.
 func ownerEnded(folder string) bool {
-	text, err := os.ReadFile(filepath.Join(folder, ownerName))
+	text, err := readSmall(filepath.Join(folder, ownerName))
 	if err != nil {
 		return false
 	}
@@ -149,6 +150,28 @@ func ownerEnded(folder string) bool {
 		return processGone(err)
 	}
 	return now != started
+}
+
+// smallFileBytes bounds what readSmall reads: an owner, or a process's stat on Linux, is far less.
+const smallFileBytes = 4096
+
+// readSmall reads a file of at most smallFileBytes; a larger one is not what was asked for.
+func readSmall(path string) (text []byte, err error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	buffer := make([]byte, smallFileBytes)
+	n, err := io.ReadFull(file, buffer)
+	switch {
+	case err == nil:
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, smallFileBytes)
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return buffer[:n], nil
+	default:
+		return nil, err
+	}
 }
 
 // take ends what a dead run left running in its folder, then removes the folder.
