@@ -183,6 +183,18 @@ jobs:
           export PKGS
           [ -n "$PGDIR" ] && export PATH="$PGDIR:$PATH"
           bash check.sh
+      # Nothing a test run makes outlives it (#258): each test program's own folder is gone, and on
+      # Linux nothing still runs from one (there a running program does not stop its folder's
+      # removal). The runner starts empty, so anything found is this job's. The folder is where Go
+      # puts temporary files, read the way Go reads it.
+      - name: Nothing left behind
+        if: success() || failure()
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$(pwsh -NoProfile -Command '[IO.Path]::GetTempPath()')")
+          else tmp=${TMPDIR:-/tmp}; fi
+          left=$(ls -d "${tmp%/}"/hadv-test-run-* 2>/dev/null || true)
+          [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || true)"
+          [ -z "$left" ] || { echo "$left"; echo "::error::a test run left these behind"; exit 1; }
       - name: Mutation testing
         if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && matrix.mode == 'norace' && matrix.group == 'rest'
         timeout-minutes: 60
