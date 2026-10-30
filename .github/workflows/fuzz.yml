@@ -1,0 +1,99 @@
+# Fuzzes every fuzz target each night, ten minutes each (HeliosDesign #258's CI work, the
+# developer's approval of 2026-10-30). check.sh runs each target's seeds alone, so without this no
+# run ever fuzzes, and the rule for a parser of a caller's bytes, a fuzz target that fuzzes, would
+# hold in name only. The targets are found by listing, so a new one is fuzzed without anyone
+# naming it here. A failing input opens one issue per target, holding the input and the line
+# that replays it; QA adds it to the target's seeds by a QA commit, and the issue says so.
+name: fuzz
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: List the fuzz targets
+        id: list
+        shell: bash
+        run: |
+          list=$(go test -list '^Fuzz' ./... | awk -v mod="$(go list -m)" '
+            /^Fuzz/ { names[n++] = $1; next }
+            /^ok/ { pkg = $2; sub("^" mod, ".", pkg); for (i = 0; i < n; i++) printf "%s{\"pkg\":\"%s\",\"name\":\"%s\"}", (out++ ? "," : "["), pkg, names[i]; n = 0 }
+            END { print (out ? "]" : "[]") }')
+          echo "$list"
+          [ "$list" != "[]" ] || { echo "::error::no fuzz target found"; exit 1; }
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: targets
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.list) }}
+    name: fuzz (${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Fuzz for ten minutes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PKG: ${{ matrix.target.pkg }}
+          NAME: ${{ matrix.target.name }}
+        run: |
+          if go test -run '^$' -fuzz "^$NAME\$" -fuzztime 10m "$PKG" > fuzz.txt 2>&1; then
+            tail -3 fuzz.txt
+            exit 0
+          fi
+          cat fuzz.txt
+          found=$(find "$PKG/testdata/fuzz/$NAME" -type f 2>/dev/null | head -1)
+          [ -n "$found" ] || { echo "::error::$NAME failed with no failing input written"; exit 1; }
+          marker="<!-- fuzz: $NAME -->"
+          existing=$(gh issue list --state open --limit 1000 --json number,body,author \
+            -q ".[] | select(.author.login == \"app/github-actions\") | select(.body | contains(\"$marker\")) | .number" | head -1)
+          {
+            echo "Last night's fuzzing of \`$NAME\` in \`$PKG\` found an input it fails on (run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo
+            echo "The input, as Go wrote it to \`$PKG/testdata/fuzz/$NAME/$(basename "$found")\`:"
+            echo
+            echo '```'
+            head -c 4000 "$found"
+            echo
+            echo '```'
+            echo
+            echo "Replayed, once the file is in place: \`go test -run '^$NAME/$(basename "$found")\$' $PKG\`"
+            echo
+            echo "The failure:"
+            echo
+            echo '```'
+            grep -v '^fuzz: elapsed' fuzz.txt | tail -40
+            echo '```'
+            echo
+            echo "QA adds the input to the target's seeds by a QA commit, and the fault is fixed or brought to the developer."
+            echo
+            echo "$marker"
+          } > body.md
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "Fuzzing found a failing input for $NAME" --body-file body.md
+          fi
+          exit 1
