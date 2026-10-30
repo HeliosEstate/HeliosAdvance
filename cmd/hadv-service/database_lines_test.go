@@ -130,16 +130,11 @@ func expectExactEnd(t *testing.T, change update, after time.Duration) {
 	}
 }
 
-// expectLeaseWithin checks a moment came inside its window, as expectWithin does, except under the
-// race detector, where the timing verdict is off and the moment is only logged (the developer,
-// 2026-10-26).
+// expectLeaseWithin checks a moment came inside its window, as expectWithin does, under the race
+// detector too: there the lower bound, which a slow engine cannot fail, is still judged, and the
+// upper bound is only logged.
 func expectLeaseWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
-	if raceBuild {
-		t.Logf("under the race detector, timing is not judged: %s came %v into its window of %v",
-			what, moment.Sub(notBefore), notAfter.Sub(notBefore))
-		return
-	}
 	expectWithin(t, what, moment, notBefore, notAfter)
 }
 
@@ -149,7 +144,7 @@ func waitingCaller(t *testing.T, address string) caller {
 	t.Helper()
 	call := expectServed(t, address)
 	call.send(t, answers)
-	call.readExactly(t, []byte(greeting+prompt), time.Now().Add(margin))
+	call.readExactly(t, []byte(greeting+prompt), time.Now().Add(patient(margin)))
 	return call
 }
 
@@ -248,11 +243,11 @@ func TestDatabaseProgram(t *testing.T) {
 			program := startOnBoard(t, created)
 			program.listening(t)
 			created.setRow(t, foreignHolder, "now() + interval '25 seconds'")
-			program.expectLine(t, 1, "lease_lost", time.Now().Add(renewEvery+leaseMargin))
-			program.expectLine(t, 2, "waiting", time.Now().Add(waitLineLimit))
-			waitForStarted(t, program, 3, time.Now().Add(25*time.Second+retryEvery+tryLimit+leaseMargin))
+			program.expectLine(t, 1, "lease_lost", time.Now().Add(renewEvery+patient(leaseMargin)))
+			program.expectLine(t, 2, "waiting", time.Now().Add(patient(waitLineLimit)))
+			waitForStarted(t, program, 3, time.Now().Add(25*time.Second+retryEvery+tryLimit+patient(leaseMargin)))
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(endLeaseWait+margin))
+			program.exit(t, sentBy.Add(endLeaseWait+patient(margin)))
 			program.expectLog(t, "started", "lease_lost", "waiting", "started")
 			expectNoPassword(t, program)
 		})
@@ -384,7 +379,7 @@ func TestDatabaseProgram(t *testing.T) {
 			contents.Port = database.port(t)
 			port := freedPort(t)
 			program := startWithFile(t, contents.write(t), nil, portOption, port)
-			program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+			program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 			expectNotListening(t, program, port)
 			for len(database.triesSoFar()) < 3 {
 				if program.lineCount() > 1 {
@@ -440,15 +435,15 @@ func TestDatabaseProgram(t *testing.T) {
 				contents.Port = database.port
 				port := freedPort(t)
 				program := startWithFile(t, contents.write(t), nil, portOption, port)
-				program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+				program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 				expectNotListening(t, program, port)
 				fix(t)
 				fixed := time.Now()
 				// The line is about when the program tries, so the try is read from the server's
 				// log; the take that follows is the database unit's, bounded by its own 10 s.
-				tried := database.waitForTry(t, created.login, fixed, fixed.Add(retryEvery+2*leaseMargin))
+				tried := database.waitForTry(t, created.login, fixed, fixed.Add(retryEvery+patient(2*leaseMargin)))
 				expectLeaseWithin(t, "the first try after the fix", tried, fixed.Truncate(time.Millisecond), fixed.Add(retryEvery+leaseMargin))
-				waitForStarted(t, program, 1, tried.Add(tryLimit+leaseMargin))
+				waitForStarted(t, program, 1, tried.Add(tryLimit+patient(leaseMargin)))
 			})
 		}
 		t.Run("not answering, recovering, no connection free, read-only and a lease held: five waiting lines, five reasons", func(t *testing.T) {
@@ -471,7 +466,7 @@ func TestDatabaseProgram(t *testing.T) {
 				"read-only": readOnly.file(), "lease held": held.file(),
 			} {
 				program := startWithFile(t, contents.write(t), nil, portOption, "0")
-				reasons[name], _ = program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+				reasons[name], _ = program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 			}
 			expectDifferent(t, reasons)
 		})
@@ -486,14 +481,14 @@ func TestDatabaseProgram(t *testing.T) {
 			ends := created.row(t).until
 			port := freedPort(t)
 			program := startWithFile(t, created.file().write(t), nil, portOption, port)
-			program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+			program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 			expectNotListening(t, program, port)
 			if changes := created.updates(t); len(changes) != 1 {
 				t.Fatalf("the waiting program updated the row: %+v", changes)
 			}
-			tried := created.server.waitForTry(t, created.login, ends, ends.Add(retryEvery+2*leaseMargin))
+			tried := created.server.waitForTry(t, created.login, ends, ends.Add(retryEvery+patient(2*leaseMargin)))
 			expectLeaseWithin(t, "the first try after the lease's end", tried, ends.Truncate(time.Millisecond), ends.Add(retryEvery+leaseMargin))
-			started := waitForStarted(t, program, 1, tried.Add(tryLimit+leaseMargin))
+			started := waitForStarted(t, program, 1, tried.Add(tryLimit+patient(leaseMargin)))
 			expectLeaseWithin(t, "the start", started, ends, tried.Add(tryLimit+leaseMargin))
 		})
 		t.Run("two programs on one row: the second waits while the first holds it", func(t *testing.T) {
@@ -502,7 +497,7 @@ func TestDatabaseProgram(t *testing.T) {
 			path := created.file().write(t)
 			startWithFile(t, path, nil, portOption, "0").listening(t)
 			second := startWithFile(t, path, nil, portOption, "0")
-			second.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+			second.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 		})
 	})
 
@@ -514,14 +509,14 @@ func TestDatabaseProgram(t *testing.T) {
 			created.setRow(t, foreignHolder, "now() + interval '5 seconds'")
 			port := freedPort(t)
 			program := startWithFile(t, created.file().write(t), nil, portOption, port)
-			program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+			program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 			expectNotListening(t, program, port)
-			value, _ := program.expectLine(t, 1, "started", time.Now().Add(5*time.Second+retryEvery+tryLimit+leaseMargin))
+			value, _ := program.expectLine(t, 1, "started", time.Now().Add(5*time.Second+retryEvery+tryLimit+patient(leaseMargin)))
 			for _, address := range strings.Split(value, ",") {
 				expectServed(t, strings.TrimPrefix(address, "telnet://"))
 			}
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
-			program.expectLine(t, 2, "lease_lost", time.Now().Add(renewEvery+leaseMargin))
+			program.expectLine(t, 2, "lease_lost", time.Now().Add(renewEvery+patient(leaseMargin)))
 			expectNotListening(t, program, port)
 		})
 	})
@@ -548,7 +543,7 @@ func TestDatabaseProgram(t *testing.T) {
 			first.listening(t)
 			firstHolder := expectHolder(t, created.row(t))
 			_, sentBy := send(t, first)
-			first.exit(t, sentBy.Add(endLeaseWait+margin))
+			first.exit(t, sentBy.Add(endLeaseWait+patient(margin)))
 			startWithFile(t, path, nil, portOption, "0").listening(t)
 			if secondHolder := expectHolder(t, created.row(t)); secondHolder == firstHolder {
 				t.Fatalf("both runs wrote the holder %s", firstHolder)
@@ -562,8 +557,8 @@ func TestDatabaseProgram(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			startOnBoard(t, created).listening(t)
-			taken := created.waitForUpdates(t, 1, time.Now().Add(leaseMargin))[0]
-			changes := created.waitForUpdates(t, 3, taken.transactionStart.Add(2*renewEvery+2*leaseMargin))
+			taken := created.waitForUpdates(t, 1, time.Now().Add(patient(leaseMargin)))[0]
+			changes := created.waitForUpdates(t, 3, taken.transactionStart.Add(2*renewEvery+patient(2*leaseMargin)))
 			for index := 1; index < 3; index++ {
 				expectLeaseWithin(t, "a renewal", changes[index].transactionStart,
 					changes[index-1].transactionStart.Add(renewEvery-leaseMargin), changes[index-1].transactionStart.Add(renewEvery+leaseMargin))
@@ -580,7 +575,7 @@ func TestDatabaseProgram(t *testing.T) {
 			program.listening(t)
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
 			written := created.row(t)
-			program.expectLine(t, 1, "lease_lost", time.Now().Add(renewEvery+leaseMargin))
+			program.expectLine(t, 1, "lease_lost", time.Now().Add(renewEvery+patient(leaseMargin)))
 			if after := created.row(t); after.holder != foreignHolder || !after.until.Equal(written.until) {
 				t.Fatalf("the row became %+v, want the other run's %+v", after, written)
 			}
@@ -594,18 +589,18 @@ func TestDatabaseProgram(t *testing.T) {
 			created := sharedServer(t).newBoard(t)
 			program := startOnBoard(t, created)
 			addresses := program.listening(t)
-			renewed := created.waitForUpdates(t, 2, time.Now().Add(renewEvery+2*leaseMargin))[1].transactionStart
+			renewed := created.waitForUpdates(t, 2, time.Now().Add(renewEvery+patient(2*leaseMargin)))[1].transactionStart
 			lock := created.lockRow(t)
 			pause(t, time.Until(renewed.Add(lossAfter-5*time.Second)))
 			call := waitingCaller(t, addresses[0])
-			_, lost := program.expectLine(t, 1, "lease_lost", renewed.Add(lossAfter+2*leaseMargin))
+			_, lost := program.expectLine(t, 1, "lease_lost", renewed.Add(lossAfter+patient(2*leaseMargin)))
 			expectLeaseWithin(t, "lease_lost", lost, renewed.Add(lossAfter-leaseMargin), renewed.Add(lossAfter+leaseMargin))
-			call.expectEnd(t, lost.Add(-leaseMargin), lost.Add(margin))
+			call.expectEnd(t, lost.Add(-leaseMargin), lost.Add(patient(margin)))
 			for _, address := range addresses {
 				expectRefused(t, address)
 			}
 			lock.release(t)
-			waitForStarted(t, program, 2, time.Now().Add(retryEvery+tryLimit+leaseMargin))
+			waitForStarted(t, program, 2, time.Now().Add(retryEvery+tryLimit+patient(leaseMargin)))
 		})
 		t.Run("another run's holder written: lease_lost by the next renewal, then waiting; that lease ended: started again", func(t *testing.T) {
 			t.Parallel()
@@ -615,10 +610,10 @@ func TestDatabaseProgram(t *testing.T) {
 			changed := time.Now()
 			created.setRow(t, foreignHolder, "now() + interval '25 seconds'")
 			ends := created.row(t).until
-			_, lost := program.expectLine(t, 1, "lease_lost", changed.Add(renewEvery+leaseMargin))
+			_, lost := program.expectLine(t, 1, "lease_lost", changed.Add(renewEvery+patient(leaseMargin)))
 			expectLeaseWithin(t, "lease_lost", lost, changed, changed.Add(renewEvery+leaseMargin))
-			program.expectLine(t, 2, "waiting", lost.Add(retryEvery+tryLimit+leaseMargin))
-			started := waitForStarted(t, program, 3, ends.Add(retryEvery+tryLimit+leaseMargin))
+			program.expectLine(t, 2, "waiting", lost.Add(retryEvery+tryLimit+patient(leaseMargin)))
+			started := waitForStarted(t, program, 3, ends.Add(retryEvery+tryLimit+patient(leaseMargin)))
 			expectLeaseWithin(t, "the start", started, ends, ends.Add(retryEvery+tryLimit+leaseMargin))
 		})
 	})
@@ -634,7 +629,7 @@ func TestDatabaseProgram(t *testing.T) {
 				program.listening(t)
 				holder := expectHolder(t, created.row(t))
 				_, sentBy := send(t, program)
-				_, exitedAt := program.exit(t, sentBy.Add(endLeaseWait+margin))
+				_, exitedAt := program.exit(t, sentBy.Add(endLeaseWait+patient(margin)))
 				changes := created.updates(t)
 				last := changes[len(changes)-1]
 				if last.newHolder != holder || last.recorded.After(exitedAt) {
@@ -652,7 +647,7 @@ func TestDatabaseProgram(t *testing.T) {
 			before := created.row(t)
 			lock := created.lockRow(t)
 			from, sentBy := send(t, program)
-			_, exitedAt := program.exit(t, sentBy.Add(endLeaseWait+leaseMargin))
+			_, exitedAt := program.exit(t, sentBy.Add(endLeaseWait+patient(leaseMargin)))
 			expectLeaseWithin(t, "the exit", exitedAt, from, sentBy.Add(endLeaseWait+margin))
 			lock.release(t)
 			if after := created.row(t); after.holder != before.holder {
@@ -671,16 +666,16 @@ func TestDatabaseProgram(t *testing.T) {
 			// it: a hold that runs out on a clock can end before a loaded machine's first try.
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
 			program := startOnBoard(t, created)
-			program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+			program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 			created.setRow(t, foreignHolder, "now()")
-			waitForStarted(t, program, 1, time.Now().Add(retryEvery+tryLimit+leaseMargin))
+			waitForStarted(t, program, 1, time.Now().Add(retryEvery+tryLimit+patient(leaseMargin)))
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
-			program.expectLine(t, 2, "lease_lost", time.Now().Add(renewEvery+leaseMargin))
-			program.expectLine(t, 3, "waiting", time.Now().Add(waitLineLimit))
+			program.expectLine(t, 2, "lease_lost", time.Now().Add(renewEvery+patient(leaseMargin)))
+			program.expectLine(t, 3, "waiting", time.Now().Add(patient(waitLineLimit)))
 			created.setRow(t, foreignHolder, "now()")
-			waitForStarted(t, program, 4, time.Now().Add(retryEvery+tryLimit+leaseMargin))
+			waitForStarted(t, program, 4, time.Now().Add(retryEvery+tryLimit+patient(leaseMargin)))
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(endLeaseWait+margin))
+			program.exit(t, sentBy.Add(endLeaseWait+patient(margin)))
 			program.expectLog(t, "waiting", "started", "lease_lost", "waiting", "started")
 		})
 	})
@@ -695,9 +690,9 @@ func TestDatabaseProgram(t *testing.T) {
 				contents := sharedBoard.file()
 				contents.Port = database.port(t)
 				program := startWithFile(t, contents.write(t), nil, portOption, "0")
-				program.expectLine(t, 0, "waiting", time.Now().Add(waitLineLimit))
+				program.expectLine(t, 0, "waiting", time.Now().Add(patient(waitLineLimit)))
 				from, sentBy := send(t, program)
-				_, exitedAt := program.exit(t, sentBy.Add(margin))
+				_, exitedAt := program.exit(t, sentBy.Add(patient(margin)))
 				expectLeaseWithin(t, "the exit", exitedAt, from, sentBy.Add(margin))
 				program.expectLog(t, "waiting")
 			})

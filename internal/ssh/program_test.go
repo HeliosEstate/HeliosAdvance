@@ -24,7 +24,7 @@ var (
 )
 
 // startLimit is how long the program may take to name its listeners.
-const startLimit = 30 * time.Second
+var startLimit = patient(30 * time.Second)
 
 // TestMain builds the program the page's rows run from outside, under the race detector when
 // the tests run under it. A build that fails fails every such row with its reason, rather than

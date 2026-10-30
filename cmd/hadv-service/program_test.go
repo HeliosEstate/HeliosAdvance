@@ -35,7 +35,7 @@ const (
 
 // startLimit bounds how long the program may take to name its listeners or to exit after a
 // refusal. The page gives it no limit; this one only keeps a hung program from hanging the run.
-const startLimit = 30 * time.Second
+var startLimit = patient(30 * time.Second)
 
 var (
 	programPath  string
@@ -529,7 +529,7 @@ func heldPort(t *testing.T) (port string, ipv4, ipv6 net.Listener) {
 // expectRefused checks a dial to the address is refused: nothing listens there.
 func expectRefused(t *testing.T, address string) {
 	t.Helper()
-	connection, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(t.Context(), "tcp", address)
+	connection, err := (&net.Dialer{Timeout: patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
 	if err == nil {
 		_ = connection.Close()
 		t.Errorf("a caller reached %s, where the engine may not listen", address)

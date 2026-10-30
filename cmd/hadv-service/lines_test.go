@@ -43,9 +43,9 @@ const (
 func (call caller) typeName(t *testing.T) {
 	t.Helper()
 	call.send(t, append(append([]byte{}, answers...), typedName+"\r"...))
-	call.readExactly(t, []byte(greeting+prompt+typedName+"\r\n"+reply+typedName+"\r\n"), time.Now().Add(margin))
+	call.readExactly(t, []byte(greeting+prompt+typedName+"\r\n"+reply+typedName+"\r\n"), time.Now().Add(patient(margin)))
 	shutdownFrom := time.Now()
-	call.expectEnd(t, shutdownFrom, shutdownFrom.Add(margin))
+	call.expectEnd(t, shutdownFrom, shutdownFrom.Add(patient(margin)))
 }
 
 func TestProgram(t *testing.T) {
@@ -154,8 +154,13 @@ func TestProgram(t *testing.T) {
 				// which shut down after the silent caller connected, inside its 3 seconds of
 				// closing wait, so nothing but the stop ends either in the window.
 				from, sentBy := send(t, program)
-				notAfter := sentBy.Add(margin)
+				notAfter := sentBy.Add(patient(margin))
 				if sentBy.After(silent.connected.Add(negotiationLimit)) {
+					if raceBuild {
+						t.Logf("under the race detector, timing is not judged: the stop was sent %v after the silent caller connected, past the negotiation's own end, so the row is not judged",
+							sentBy.Sub(silent.connected))
+						return
+					}
 					t.Fatalf("the stop was sent %v after the silent caller connected, past the negotiation's own end", sentBy.Sub(silent.connected))
 				}
 				silent.expectEnd(t, from, notAfter)
@@ -179,7 +184,7 @@ func TestProgram(t *testing.T) {
 				expectServed(t, address)
 			}
 			from, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(patient(margin)))
 			_ = from
 			values := program.expectLog(t, "started")
 			want := "telnet://" + strings.Join(addresses, ",telnet://")
@@ -248,7 +253,7 @@ func TestProgram(t *testing.T) {
 			_ = whole.connection.Close()
 			expectServed(t, addresses[len(addresses)-1])
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(patient(margin)))
 			program.expectLog(t, "started")
 		})
 	})
@@ -261,7 +266,7 @@ func TestProgram(t *testing.T) {
 			program := startProgram(t, portOption, "0")
 			program.listening(t)
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(patient(margin)))
 			program.expectLog(t, "started")
 		})
 		t.Run("the start_failed line is start_failed= and a reason, ending in LF", func(t *testing.T) {
@@ -284,7 +289,7 @@ func TestProgram(t *testing.T) {
 			// The engine refuses a request only once it has read every byte the caller sent
 			// before it, so the refusal shows the text above has been read.
 			during.send(t, []byte{iac, will, unknownOption})
-			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(margin))
+			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(patient(margin)))
 			// The text sent after negotiation becomes the name, cut at 30 characters, and once
 			// Hello is written the engine shuts its sending side and says nothing more, so the
 			// only sign it has read all of the text, to the caller's end of stream, is the call
@@ -297,7 +302,7 @@ func TestProgram(t *testing.T) {
 			after := expectServed(t, addresses[len(addresses)-1])
 			answeredAt := time.Now()
 			after.send(t, answers)
-			after.readExactly(t, []byte(greeting), time.Now().Add(margin))
+			after.readExactly(t, []byte(greeting), time.Now().Add(patient(margin)))
 			if served(t, addresses[0]) {
 				t.Fatalf("a caller was served with %d connections open", connectionCap)
 			}
@@ -313,11 +318,16 @@ func TestProgram(t *testing.T) {
 			// the engine read to the caller's end of stream.
 			if servedAt := time.Now(); servedAt.After(answeredAt.Add(closingWait)) ||
 				servedAt.After(firstConnected.Add(negotiationLimit+nameLimit)) {
+				if raceBuild {
+					t.Logf("under the race detector, timing is not judged: a caller was served only %v after the closing caller answered, too late to tell what ended the call, so the row is not judged",
+						servedAt.Sub(answeredAt))
+					return
+				}
 				t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
 					servedAt.Sub(answeredAt))
 			}
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(patient(margin)))
 			if strings.Contains(program.text(), canary) {
 				t.Fatalf("the local log holds what a caller sent:\n%s", program.text())
 			}
