@@ -592,7 +592,8 @@ func TestDatabaseProgram(t *testing.T) {
 			addresses := program.listening(t)
 			renewed := created.waitForUpdates(t, 2, time.Now().Add(renewEvery+testrun.Patient(2*leaseMargin)))[1].transactionStart
 			lock := created.lockRow(t)
-			pause(t, time.Until(renewed.Add(lossAfter-5*time.Second)))
+			// Set up at once, not a fixed time before the loss: the caller waits at the prompt far
+			// longer than the 25 seconds, and a slow machine's setup has the whole of them.
 			call := waitingCaller(t, addresses[0])
 			_, lost := program.expectLine(t, 1, "lease_lost", renewed.Add(lossAfter+testrun.Patient(2*leaseMargin)))
 			expectEngineWithin(t, "lease_lost", lost, renewed.Add(lossAfter-leaseMargin), renewed.Add(lossAfter+leaseMargin))
