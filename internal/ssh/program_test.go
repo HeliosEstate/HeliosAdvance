@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 var (
@@ -24,13 +26,25 @@ var (
 )
 
 // startLimit is how long the program may take to name its listeners.
-var startLimit = patient(30 * time.Second)
+var startLimit = testrun.Patient(30 * time.Second)
 
 // TestMain builds the program the page's rows run from outside, under the race detector when
 // the tests run under it. A build that fails fails every such row with its reason, rather than
 // stopping before any runs; the contract's rows need no program. It also prepares the database
-// the program needs before it listens.
+// the program needs before it listens. First it makes this run's own folder, taking what dead
+// runs left, so that everything the run makes, the program included, lands there.
 func TestMain(tests *testing.M) {
+	runFolder, swept, err := testrun.Enter()
+	if swept != nil {
+		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+		if err := testrun.Leave(runFolder); err != nil {
+			fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+		}
+		os.Exit(1)
+	}
 	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-ssh-test-")
 	if err != nil {
@@ -42,7 +56,7 @@ func TestMain(tests *testing.M) {
 		}
 		programPath = filepath.Join(directory, name)
 		arguments := []string{"build", "-o", programPath}
-		if raceBuild {
+		if testrun.Race {
 			arguments = append(arguments, "-race")
 		}
 		arguments = append(arguments, "../../cmd/hadv-service")
@@ -52,10 +66,12 @@ func TestMain(tests *testing.M) {
 		}
 	}
 	code := tests.Run()
-	if directory != "" {
-		_ = os.RemoveAll(directory)
+	stopOracle()
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
 	}
-	removeOracle()
 	os.Exit(code)
 }
 
@@ -105,8 +121,8 @@ func runProgram(t *testing.T, options ...string) *engine {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command := exec.CommandContext(t.Context(), programPath, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
-	command.WaitDelay = patient(5 * time.Second)
-	if raceBuild {
+	command.WaitDelay = testrun.Patient(5 * time.Second)
+	if testrun.Race {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
 	}
 	stderr, err := command.StderrPipe()

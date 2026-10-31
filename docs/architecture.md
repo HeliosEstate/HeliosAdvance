@@ -19,3 +19,12 @@ is in its package's `contract.go`; what the engine does as a whole is in
 | Timeup | `internal/timeup` | Once, for every unit that reads or writes a caller's connection: the rule for whether a call's time has run out, judged by the clock as well as by the context; the time a call must stop by, the earlier of its own deadline and its context's; and the wake that sets a connection's deadlines long past so a waiting read or write returns when it has | the Go standard library only |
 | Database | `internal/database` | The engine's side of the board's database: reading the connection file; connecting over TLS and signing in by SCRAM-SHA-256 with channel binding; refusing a login that could change the schema; the schema version and the server's row; and the lease, taken, renewed every 10 seconds, lost or ended. The schema and a server's login's rights are its `schema.sql` | github.com/jackc/pgx/v5 and its pgconn and pgproto3 packages; the Go standard library |
 | The program | `cmd/hadv-service` | Starting and stopping: the command line, the refusal as root, waiting for the database and its lease before it listens and closing everything when the lease is lost, reading the SSH host key, one listener function per kind, each in its own file, holding that kind's port, its addresses (127.0.0.1 and ::1 for now), its key and its way in, which opens its sockets with one shared helper and makes its listener; making the engine's one count of open connections, making every kind's listener before starting any, and stopping them all together; the local log, and the stop signals | Listener, Telnet, SSH, Database; the Go standard library |
+
+## Test support
+
+Not part of the engine: no engine code imports it, only the tests do. It is the developer's, as the
+approved tests are, since a change to it changes every timed row at once.
+
+| Unit | Package | Owns | Uses |
+|---|---|---|---|
+| Testrun | `internal/testrun` | What every test binary shares about its own run: whether it runs under the race detector, and how much longer a wait may take there; and the run's own folder, made first in a TestMain, where everything the run makes lands, servers and programs included, removed last, and taken by the next run when a run ends without removing it: its servers stopped with pg_ctl, its programs ended by where their executable lives, and the folder removed | golang.org/x/sys/windows, in its Windows files alone; the Go standard library |

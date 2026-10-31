@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 const (
@@ -56,19 +58,6 @@ const margin = 750 * time.Millisecond
 // early is how far before its deadline a runner's clock may wake a wait.
 const early = 20 * time.Millisecond
 
-// raceStretch is how much longer a wait may take under the race detector, which slows the engine
-// and the test by an amount nobody controls: generous, since a stretched wait still fails a
-// hang, and no upper bound on time is judged there.
-const raceStretch = 4
-
-// patient stretches a wait under the race detector; without it the wait is unchanged.
-func patient(wait time.Duration) time.Duration {
-	if raceBuild {
-		return raceStretch * wait
-	}
-	return wait
-}
-
 var (
 	// opening is the eight requests Part 4's line gives, in order.
 	opening = []byte{iac, will, echo, iac, will, sga, iac, will, binary, iac, doVerb, binary,
@@ -88,7 +77,7 @@ type caller struct {
 // dial connects a caller, closed when the test ends.
 func dial(t *testing.T, address string) caller {
 	t.Helper()
-	opened, err := (&net.Dialer{Timeout: patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
+	opened, err := (&net.Dialer{Timeout: testrun.Patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("dialing the engine at %s: %v", address, err)
 	}
@@ -103,7 +92,7 @@ func dial(t *testing.T, address string) caller {
 // send writes the caller's bytes.
 func (call caller) send(t *testing.T, data []byte) {
 	t.Helper()
-	_ = call.connection.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
+	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -113,7 +102,7 @@ func (call caller) send(t *testing.T, data []byte) {
 func expectServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, opening, call.connected.Add(patient(margin)))
+	call.readExactly(t, opening, call.connected.Add(testrun.Patient(margin)))
 	return call
 }
 
@@ -122,7 +111,7 @@ func expectServed(t *testing.T, address string) caller {
 func served(t *testing.T, address string) bool {
 	t.Helper()
 	call := dial(t, address)
-	_ = call.connection.SetReadDeadline(call.connected.Add(patient(margin)))
+	_ = call.connection.SetReadDeadline(call.connected.Add(testrun.Patient(margin)))
 	received := make([]byte, len(opening))
 	got, err := io.ReadFull(call.connection, received)
 	switch {
@@ -204,20 +193,21 @@ func pause(t *testing.T, length time.Duration) {
 	}
 }
 
-// expectWithin checks a moment falls in its window and logs how far into it it came.
+// expectWithin checks a moment falls in its window and logs how far into it it came. Under the
+// race detector, which slows the engine by an amount nobody controls, only too soon fails.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
+	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
 	if moment.After(notAfter) {
-		if raceBuild {
+		if testrun.Race {
 			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
 		} else {
 			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
 		}
 	}
-	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
 
 // isReset tells a connection reset or abort, as Linux and Windows report it.

@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // childArgument marks the run of this test binary that is the child holding the Listener: an
@@ -108,7 +110,7 @@ func failedSpell(t *testing.T, offset time.Duration) {
 		// Recorded from its opening on, so a greeting is timed when it came, however long the
 		// rest took to set up.
 		if index >= freedDescriptors {
-			streams[index] = held[index].record(held[index].connected.Add(negotiationLimit + 2*patient(wideMargin)))
+			streams[index] = held[index].record(held[index].connected.Add(negotiationLimit + 2*testrun.Patient(wideMargin)))
 		}
 	}
 
@@ -120,7 +122,7 @@ func failedSpell(t *testing.T, offset time.Duration) {
 	results := make([]chan waitingResult, len(waiting))
 	for index, call := range waiting {
 		results[index] = make(chan waitingResult, 1)
-		_ = call.connection.SetReadDeadline(spell.Add(offset + failedAcceptLimit + patient(margin)))
+		_ = call.connection.SetReadDeadline(spell.Add(offset + failedAcceptLimit + testrun.Patient(margin)))
 		go func() {
 			received := make([]byte, len(opening))
 			got, err := io.ReadFull(call.connection, received)
@@ -136,7 +138,7 @@ func failedSpell(t *testing.T, offset time.Duration) {
 		_ = call.connection.Close()
 	}
 	for _, call := range waiting {
-		_ = call.connection.SetReadDeadline(freed.Add(failedAcceptLimit + patient(acceptMargin)))
+		_ = call.connection.SetReadDeadline(freed.Add(failedAcceptLimit + testrun.Patient(acceptMargin)))
 	}
 	t.Logf("the descriptors were freed %v after the planned moment", freed.Sub(spell.Add(offset)))
 
@@ -161,7 +163,7 @@ func failedSpell(t *testing.T, offset time.Duration) {
 		got := <-result
 		if got.err != nil || !slices.Equal(got.received, opening) {
 			t.Fatalf("the waiting caller on socket %d got % x and %v by 1 second and %v after %d descriptors were freed %v into the failed spell, want % x",
-				index+1, got.received, got.err, patient(acceptMargin), freedDescriptors, offset, opening)
+				index+1, got.received, got.err, testrun.Patient(acceptMargin), freedDescriptors, offset, opening)
 		}
 		if got.arrived.Before(freed.Add(-early)) {
 			t.Fatalf("the waiting caller on socket %d was served %v before any descriptor was freed: accepting had not failed",
@@ -198,7 +200,7 @@ func startChild(t *testing.T) childListener {
 	}
 	child := exec.CommandContext(t.Context(), "sh", append([]string{"-c", `ulimit -n "$1" && shift && exec "$@"`},
 		append(arguments, childArgument)...)...)
-	child.WaitDelay = patient(5 * time.Second)
+	child.WaitDelay = testrun.Patient(5 * time.Second)
 	stdin, err := child.StdinPipe()
 	if err != nil {
 		t.Fatalf("the child's standard input: %v", err)
@@ -228,7 +230,7 @@ func startChild(t *testing.T) childListener {
 			}
 		}
 	}()
-	timer := time.NewTimer(patient(30 * time.Second))
+	timer := time.NewTimer(testrun.Patient(30 * time.Second))
 	defer timer.Stop()
 	// The limits are checked before anything the Listener did, so a row red against unbuilt code
 	// also shows the child ran under the limit.
@@ -269,7 +271,7 @@ func startChild(t *testing.T) childListener {
 				return named
 			}
 		case <-timer.C:
-			t.Fatalf("the child named no address within %v", patient(30*time.Second))
+			t.Fatalf("the child named no address within %v", testrun.Patient(30*time.Second))
 		}
 	}
 }

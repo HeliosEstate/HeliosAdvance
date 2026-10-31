@@ -18,6 +18,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // sendMargin is the margin the Telnet unit's other timed rows use.
@@ -26,19 +28,6 @@ const sendMargin = 750 * time.Millisecond
 // sendBound is how long past its expected return a row waits for WriteUrgent before it resets
 // the caller, which ends any send, and fails.
 const sendBound = 3 * time.Second
-
-// raceStretch is how much longer a wait may take under the race detector, which slows the engine
-// and the test by an amount nobody controls: generous, since a stretched wait still fails a
-// hang, and no upper bound on time is judged there.
-const raceStretch = 4
-
-// patient stretches a wait under the race detector; without it the wait is unchanged.
-func patient(wait time.Duration) time.Duration {
-	if raceBuild {
-		return raceStretch * wait
-	}
-	return wait
-}
 
 // sendPair is a loopback pair with urgent data kept in line on both ends, the caller's included,
 // since Windows resets a caller that does not read its urgent data and lets it pile up.
@@ -159,11 +148,12 @@ func expectWokenAt(t *testing.T, result sendResult, from time.Time) {
 	if !errors.Is(result.err, os.ErrDeadlineExceeded) || result.count != 0 {
 		t.Fatalf("WriteUrgent returned %d, %v, want 0 and os.ErrDeadlineExceeded", result.count, result.err)
 	}
+	t.Logf("WriteUrgent's return came %v into its window of %v", result.returned.Sub(from), sendMargin)
 	if result.returned.Before(from) {
 		t.Fatalf("WriteUrgent returned %v before its expected time, want within [0, %v)", from.Sub(result.returned), sendMargin)
 	}
 	if !result.returned.Before(from.Add(sendMargin)) {
-		if raceBuild {
+		if testrun.Race {
 			t.Logf("under the race detector, timing is not judged: WriteUrgent came %v late", result.returned.Sub(from.Add(sendMargin)))
 		} else {
 			t.Fatalf("WriteUrgent returned %v after its expected time, want within [0, %v)", result.returned.Sub(from), sendMargin)
@@ -183,13 +173,13 @@ func TestUrgentSend(t *testing.T) {
 			if err := engine.SetWriteDeadline(deadline); err != nil {
 				t.Fatalf("setting the write deadline: %v", err)
 			}
-			expectWokenAt(t, sendBounded(t, engine, caller, deadline.Add(patient(sendMargin+sendBound))), deadline)
+			expectWokenAt(t, sendBounded(t, engine, caller, deadline.Add(testrun.Patient(sendMargin+sendBound))), deadline)
 		})
 		t.Run("the same, its deadline 10 seconds away, a long-passed deadline set from another goroutine at 500 ms: os.ErrDeadlineExceeded then", func(t *testing.T) {
 			t.Parallel()
 			engine, caller := sendPair(t)
 			fillConnection(t, engine)
-			if err := engine.SetWriteDeadline(time.Now().Add(patient(10 * time.Second))); err != nil {
+			if err := engine.SetWriteDeadline(time.Now().Add(testrun.Patient(10 * time.Second))); err != nil {
 				t.Fatalf("setting the write deadline: %v", err)
 			}
 			wakeAt := time.Now().Add(500 * time.Millisecond)
@@ -203,13 +193,13 @@ func TestUrgentSend(t *testing.T) {
 					<-woken
 				}
 			})
-			expectWokenAt(t, sendBounded(t, engine, caller, wakeAt.Add(patient(sendMargin+sendBound))), wakeAt)
+			expectWokenAt(t, sendBounded(t, engine, caller, wakeAt.Add(testrun.Patient(sendMargin+sendBound))), wakeAt)
 		})
 		t.Run("the same, its deadline 10 seconds away, the context the wake is registered with cancelled at 500 ms: os.ErrDeadlineExceeded then", func(t *testing.T) {
 			t.Parallel()
 			engine, caller := sendPair(t)
 			fillConnection(t, engine)
-			if err := engine.SetWriteDeadline(time.Now().Add(patient(10 * time.Second))); err != nil {
+			if err := engine.SetWriteDeadline(time.Now().Add(testrun.Patient(10 * time.Second))); err != nil {
 				t.Fatalf("setting the write deadline: %v", err)
 			}
 			ctx, cancel := context.WithCancel(t.Context())
@@ -218,13 +208,13 @@ func TestUrgentSend(t *testing.T) {
 			cancelAt := time.Now().Add(500 * time.Millisecond)
 			stop := time.AfterFunc(time.Until(cancelAt), cancel)
 			t.Cleanup(func() { stop.Stop(); cancel() })
-			expectWokenAt(t, sendBounded(t, engine, caller, cancelAt.Add(patient(sendMargin+sendBound))), cancelAt)
+			expectWokenAt(t, sendBounded(t, engine, caller, cancelAt.Add(testrun.Patient(sendMargin+sendBound))), cancelAt)
 		})
 		t.Run("the same, its deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens, DM the last byte read", func(t *testing.T) {
 			t.Parallel()
 			engine, caller := sendPair(t)
 			fillConnection(t, engine)
-			if err := engine.SetWriteDeadline(time.Now().Add(patient(10 * time.Second))); err != nil {
+			if err := engine.SetWriteDeadline(time.Now().Add(testrun.Patient(10 * time.Second))); err != nil {
 				t.Fatalf("setting the write deadline: %v", err)
 			}
 			read := make(chan struct{})
@@ -239,7 +229,7 @@ func TestUrgentSend(t *testing.T) {
 					<-read
 				}
 			})
-			result := sendBounded(t, engine, caller, time.Now().Add(patient(5*time.Second+sendBound)))
+			result := sendBounded(t, engine, caller, time.Now().Add(testrun.Patient(5*time.Second+sendBound)))
 			if result.err != nil || result.count != 1 {
 				t.Fatalf("WriteUrgent returned %d, %v, want 1 and no error", result.count, result.err)
 			}
@@ -255,7 +245,7 @@ func TestUrgentSend(t *testing.T) {
 				t.Fatalf("setting the write deadline: %v", err)
 			}
 			called := time.Now()
-			expectWokenAt(t, sendBounded(t, engine, caller, called.Add(patient(sendMargin+sendBound))), called)
+			expectWokenAt(t, sendBounded(t, engine, caller, called.Add(testrun.Patient(sendMargin+sendBound))), called)
 			if _, count, err := readAll(caller); err != nil || count != 0 {
 				t.Fatalf("the caller received %d bytes (error %v), want none", count, err)
 			}

@@ -17,6 +17,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The command codes, from RFC 854 and RFC 885, not from the package.
@@ -76,19 +78,6 @@ const (
 // deadline at most 1.2 ms late and moved bytes over loopback in under 0.5 ms, forty connections
 // at once; the rest is room for the engine's own work under load.
 const margin = 750 * time.Millisecond
-
-// raceStretch is how much longer a wait may take under the race detector, which slows the engine
-// and the test by an amount nobody controls: generous, since a stretched wait still fails a
-// hang, and no upper bound on time is judged there.
-const raceStretch = 4
-
-// patient stretches a wait under the race detector; without it the wait is unchanged.
-func patient(wait time.Duration) time.Duration {
-	if raceBuild {
-		return raceStretch * wait
-	}
-	return wait
-}
 
 // opening is the eight requests the contract's New line gives, in order.
 var opening = join(
@@ -483,7 +472,7 @@ type sending struct {
 // when the write began and when it returned.
 func write(t *testing.T, connection net.Conn, data []byte) sending {
 	t.Helper()
-	_ = connection.SetWriteDeadline(time.Now().Add(patient(5 * time.Second)))
+	_ = connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
 	began := time.Now()
 	if _, err := connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)

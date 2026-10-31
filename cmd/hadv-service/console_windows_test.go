@@ -7,6 +7,7 @@ package main_test
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // processAttributes puts each program in a process group of its own, so that a console break
@@ -40,7 +43,10 @@ while ($null -ne ($line = [Console]::In.ReadLine())) { $r = $k::GenerateConsoleC
 // program a console break and gives a moment before it was sent and one after.
 func prepareBreak(t *testing.T) func(*testing.T, *run) (time.Time, time.Time) {
 	t.Helper()
-	sender := exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", breakScript)
+	// Not the row's context, which ends, and so kills the sender, before the cleanup below runs:
+	// killed that way it left an empty folder in Temp each time on CI, where closing its input
+	// first ends it whole.
+	sender := exec.CommandContext(context.WithoutCancel(t.Context()), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", breakScript)
 	input, err := sender.StdinPipe()
 	if err != nil {
 		t.Fatalf("the break sender's input: %v", err)
@@ -54,7 +60,18 @@ func prepareBreak(t *testing.T) func(*testing.T, *run) (time.Time, time.Time) {
 	}
 	t.Cleanup(func() {
 		_ = input.Close()
-		_ = sender.Wait()
+		exited := make(chan struct{})
+		go func() {
+			_ = sender.Wait()
+			close(exited)
+		}()
+		// A sender that does not end with its input is killed, so a stuck one cannot hang the run.
+		select {
+		case <-exited:
+		case <-time.After(testrun.Patient(30 * time.Second)):
+			_ = sender.Process.Kill()
+			<-exited
+		}
 	})
 	lines := make(chan string, 4)
 	go func() {
