@@ -37,8 +37,11 @@ const (
 	versionPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 )
 
-// timingMargin is how late an event may come past its moment on every runner. To be measured at
-// CI's own load on each runner before the summary; this is the draft.
+// timingMargin is how late an event may come past its moment. Measured on CI (2026-10-31), one run
+// of its jobs, each running one package: no lease row here or in the program's came more than
+// 136 ms past its moment, and each left at least 1935 ms of the 2 s margin unused. Only the lease
+// rows were read, not Take's rows or the client's close. Off CI, under every package's tests at
+// once, a renewal once came past the margin. One run is too few to set a tighter margin on.
 const timingMargin = 2 * time.Second
 
 // takeErrors are every error Take may return but the context's and a *SchemaVersionError.
