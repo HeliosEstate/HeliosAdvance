@@ -10,11 +10,9 @@ package main_test
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,16 +60,6 @@ func startOnBoard(t *testing.T, created *board) *run {
 	return startWithFile(t, created.file().write(t), nil, portOption, "0")
 }
 
-// freedPort finds a port free at 127.0.0.1 and ::1 and frees it again, for a program to be
-// started on; while the program waits, nothing should listen there.
-func freedPort(t *testing.T) string {
-	t.Helper()
-	port, ipv4, ipv6 := heldPort(t)
-	_ = ipv4.Close()
-	_ = ipv6.Close()
-	return port
-}
-
 // endLease ends another run's lease on the board's row now, and returns the end the database
 // wrote. Rows hold that lease for an hour and end it once the program's own line shows it
 // waiting: a lease set to end a fixed time on could end before a slow machine's program has
@@ -82,16 +70,13 @@ func endLease(t *testing.T, created *board) time.Time {
 	return created.row(t).until
 }
 
-// expectNotListening checks nothing listens at the port at either address, and on Linux that
-// the system's table shows the program holding no listening socket.
-func expectNotListening(t *testing.T, program *run, port string) {
+// expectNotListening checks the system's table shows the program holding no listening socket.
+// It reads the program's own sockets, not a dial to a port freed for it: a port freed is any
+// program's to take, a parallel row's engine among them, and a dial would then be answered.
+func expectNotListening(t *testing.T, program *run) {
 	t.Helper()
-	expectRefused(t, net.JoinHostPort(ipv4Loopback, port))
-	expectRefused(t, net.JoinHostPort(ipv6Loopback, port))
-	if runtime.GOOS == "linux" {
-		if sockets := listeningSockets(t, program.command.Process.Pid); len(sockets) != 0 {
-			t.Fatalf("the program listens at %q while it may not", sockets)
-		}
+	if sockets := listeningSockets(t, program.command.Process.Pid); len(sockets) != 0 {
+		t.Fatalf("the program listens at %q while it may not", sockets)
 	}
 }
 
@@ -396,10 +381,9 @@ func TestDatabaseProgram(t *testing.T) {
 			database := startAcceptor(t)
 			contents := sharedBoard.file()
 			contents.Port = database.port(t)
-			port := freedPort(t)
-			program := startWithFile(t, contents.write(t), nil, portOption, port)
+			program := startWithFile(t, contents.write(t), nil, portOption, "0")
 			program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
-			expectNotListening(t, program, port)
+			expectNotListening(t, program)
 			for len(database.triesSoFar()) < 3 {
 				if program.lineCount() > 1 {
 					t.Fatalf("the program wrote more than one line while waiting:\n%s", program.text())
@@ -410,7 +394,7 @@ func TestDatabaseProgram(t *testing.T) {
 			for index := 1; index < 3; index++ {
 				expectEngineWithin(t, "a try", tries[index], tries[index-1].Add(retryEvery-leaseMargin), tries[index-1].Add(retryEvery+leaseMargin))
 			}
-			expectNotListening(t, program, port)
+			expectNotListening(t, program)
 			if program.lineCount() != 1 {
 				t.Fatalf("the program wrote more than one line while waiting:\n%s", program.text())
 			}
@@ -452,10 +436,9 @@ func TestDatabaseProgram(t *testing.T) {
 				created, database, fix := cause.prepare(t)
 				contents := created.file()
 				contents.Port = database.port
-				port := freedPort(t)
-				program := startWithFile(t, contents.write(t), nil, portOption, port)
+				program := startWithFile(t, contents.write(t), nil, portOption, "0")
 				program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
-				expectNotListening(t, program, port)
+				expectNotListening(t, program)
 				fix(t)
 				fixed := time.Now()
 				// The line is about when the program tries, so the try is read from the server's
@@ -497,10 +480,9 @@ func TestDatabaseProgram(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
-			port := freedPort(t)
-			program := startWithFile(t, created.file().write(t), nil, portOption, port)
+			program := startWithFile(t, created.file().write(t), nil, portOption, "0")
 			program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
-			expectNotListening(t, program, port)
+			expectNotListening(t, program)
 			if changes := created.updates(t); len(changes) != 1 {
 				t.Fatalf("the waiting program updated the row: %+v", changes)
 			}
@@ -526,10 +508,9 @@ func TestDatabaseProgram(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
-			port := freedPort(t)
-			program := startWithFile(t, created.file().write(t), nil, portOption, port)
+			program := startWithFile(t, created.file().write(t), nil, portOption, "0")
 			program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
-			expectNotListening(t, program, port)
+			expectNotListening(t, program)
 			ends := endLease(t, created)
 			value, _ := program.expectLine(t, 1, "started", ends.Add(retryEvery+tryLimit+testrun.Patient(leaseMargin)))
 			for _, address := range strings.Split(value, ",") {
@@ -537,7 +518,7 @@ func TestDatabaseProgram(t *testing.T) {
 			}
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
 			program.expectLine(t, 2, "lease_lost", time.Now().Add(renewEvery+testrun.Patient(leaseMargin)))
-			expectNotListening(t, program, port)
+			expectNotListening(t, program)
 		})
 	})
 
