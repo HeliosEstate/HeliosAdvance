@@ -73,6 +73,13 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - A branch that changes a locked test without a signed QA commit is refused at the first gates,
   so no test runs on it. A probe that needs changed tests carries them as data under `testdata`
   and copies them into a scratch worktree on the runner.
+- An unbracketed `|` in `go test -run` splits the whole pattern: `TestTake/^A|^B` runs
+  `TestTake/^A` and a top-level test `^B`, so B's rows never run and a broken copy passes for the
+  wrong reason. Bracket it: `TestTake/^(A|B)`.
+- Go's coverage starts a block at a case's body, so mutation testing reads a mutant in a `case`
+  expression as not covered even when rows run through it, and one in `internal/` that only
+  `cmd/`'s rows catch as lived, since `cmd/` is left out of it. Plant such a mutant before calling
+  it a gap.
 
 ## Runners
 
@@ -98,3 +105,6 @@ CI skips both. Green is `bash check.sh`, never `go test` alone.
 - A copy of a server by `pg_basebackup` asks for its checkpoint at once: the default spreads it
   out, and on a loaded runner it ran close to two minutes.
 - A refusal row asserts the exact refusal, so the unbuilt code's own error cannot pass it.
+- On Windows a server reads `pg_hba.conf` again for each new connection, and one that reads it
+  while it is written in place refuses the connection. A test writes the file elsewhere and
+  renames it over.
