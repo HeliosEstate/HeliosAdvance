@@ -383,10 +383,16 @@ func TestSessionRun(t *testing.T) {
 		t.Run("the context's deadline while it waits for the name: ErrCallEnded wrapping context.DeadlineExceeded", func(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, answers, nil)
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			// The deadline is the setup's hang bound: a second was met in the greeting's write on a
+			// slow machine, before the wait for the name the row is about.
+			deadline := time.Now().Add(testrun.Patient(testrun.HangBound))
+			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			defer cancel()
 			done := runOn(ctx, pair)
 			pair.expectReceived(t, asked)
+			if left := time.Until(deadline); left < margin {
+				t.Fatalf("the greeting and the prompt came %v before the deadline, under a margin: the row cannot reach its case", left)
+			}
 			if got := <-done; !errors.Is(got.err, session.ErrCallEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Run returned %v, want ErrCallEnded wrapping context.DeadlineExceeded", got.err)
 			}
