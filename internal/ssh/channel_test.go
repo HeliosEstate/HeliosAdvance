@@ -657,9 +657,6 @@ func TestChannel(t *testing.T) {
 			closed := make(chan error, 1)
 			go func() { closed <- call.channel.Close(t.Context()) }()
 			expectClosingMessages(t, call.client, "")
-			// The window opens before the caller's close and closes from after it, so a test
-			// paused between the two cannot see the engine as early.
-			closing := time.Now()
 			_ = call.client.connection.CloseWrite()
 			callerClosed := time.Now()
 			select {
@@ -667,7 +664,7 @@ func TestChannel(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Close gave %v, want no error", err)
 				}
-				expectWithin(t, "Close's return", time.Now(), closing, callerClosed.Add(margin))
+				expectWithin(t, "Close's return", time.Now(), callerClosed, callerClosed.Add(margin))
 			case <-time.After(testrun.Patient(margin + time.Second)):
 				t.Fatalf("Close had not returned %v after the caller closed", testrun.Patient(margin+time.Second))
 			}
