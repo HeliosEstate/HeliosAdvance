@@ -14,7 +14,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"testing"
 	"time"
 
@@ -490,23 +489,20 @@ func writeUrgent(t *testing.T, connection *net.TCPConn, data []byte) time.Time {
 	return time.Now()
 }
 
-// flood sends option requests and never reads, until its writes stop going through: the
-// engine's replies have filled the caller's receive buffer and the engine's send buffer, so a
-// write of the engine's waits. It returns once it has seen its own writes block.
-func flood(t *testing.T, connection *net.TCPConn) {
+// caseDeadline is the deadline a row sets up for, when its setup must be done before it: the
+// setup's hang bound, stretched under the race detector. A deadline a fixed second away was met
+// before a slow machine's setup ended, and found the call where the row did not mean it to.
+func caseDeadline() time.Time {
+	return time.Now().Add(testrun.Patient(testrun.HangBound))
+}
+
+// expectCaseReached fails the row when its setup ended less than a margin before the deadline it
+// set up for: the deadline would find the call somewhere other than where the row needs it, and
+// the row would pass without reaching its case. With caseDeadline, only a setup that hung fails.
+func expectCaseReached(t *testing.T, deadline time.Time) {
 	t.Helper()
-	_ = connection.SetReadBuffer(4096)
-	requests := repeated(request(doVerb, telnetTypeOption), 1024)
-	for {
-		_ = connection.SetWriteDeadline(time.Now().Add(300 * time.Millisecond))
-		_, err := connection.Write(requests)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			_ = connection.SetWriteDeadline(time.Time{})
-			return
-		}
-		if err != nil {
-			t.Fatalf("flooding: %v", err)
-		}
+	if left := time.Until(deadline); left < margin {
+		t.Fatalf("the setup ended %v before the deadline, under a margin: the row cannot reach its case", left)
 	}
 }
 

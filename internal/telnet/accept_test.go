@@ -326,15 +326,16 @@ func TestAcceptUrgent(t *testing.T) {
 			}
 			expectWithin(t, "RecvChar's return", returned, deadline, deadline.Add(margin))
 		})
-		t.Run("during negotiation, the context's deadline at 1 second: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
+		t.Run("during negotiation, the context's deadline once its write waits: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			keepUrgentInLine(t, pair.client)
-			deadline := time.Now().Add(time.Second)
+			deadline := caseDeadline()
 			done := acceptOn(withDeadline(t, deadline), pair.server.TCPConn)
 			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			fill(t, pair.server.TCPConn)
 			write(t, pair.client, join(command(abortOutput), lateAnswers))
+			expectCaseReached(t, deadline)
 			got := waitAccepted(t, done, time.Until(deadline)+testrun.Patient(2*margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)

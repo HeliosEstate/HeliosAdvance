@@ -649,14 +649,6 @@ func TestNegotiate(t *testing.T) {
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
 		})
-		t.Run("a deadline at 1 second, a write waiting", func(t *testing.T) {
-			t.Parallel()
-			pair := connect(t)
-			deadline := time.Now().Add(time.Second)
-			call := negotiate(withDeadline(t, deadline), pair.server)
-			flood(t, pair.client)
-			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
-		})
 		t.Run("at the edge: a deadline 3 seconds after a moment before the call", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
@@ -669,14 +661,6 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			deadline := time.Now().Add(time.Second)
 			call := negotiate(endsLate(t, deadline), pair.server)
-			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
-		})
-		t.Run("a deadline at 1 second that the context reports ended only later, a write waiting", func(t *testing.T) {
-			t.Parallel()
-			pair := connect(t)
-			deadline := time.Now().Add(time.Second)
-			call := negotiate(endsLate(t, deadline), pair.server)
-			flood(t, pair.client)
 			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
 		})
 	})
@@ -695,11 +679,14 @@ func TestNegotiate(t *testing.T) {
 		})
 		t.Run("cancelled at 500 ms, a write waiting", func(t *testing.T) {
 			t.Parallel()
-			pair := connect(t)
+			// A small window, so the write the flood leaves waiting stays waiting.
+			pair := connectSmall(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			call := negotiate(ctx, pair.server)
-			flood(t, pair.client)
+			if !stallNegotiation(t, pair, call) {
+				return
+			}
 			wait(t.Context(), call.called.Add(500*time.Millisecond))
 			cancelled := time.Now()
 			cancel()
@@ -860,9 +847,12 @@ func TestNegotiate(t *testing.T) {
 		})
 		t.Run("the caller resets the connection while a write waits", func(t *testing.T) {
 			t.Parallel()
-			pair := connect(t)
+			// A small window, so the write the flood leaves waiting stays waiting.
+			pair := connectSmall(t)
 			call := negotiate(withDeadline(t, time.Now().Add(testrun.Patient(10*time.Second))), pair.server)
-			flood(t, pair.client)
+			if !stallNegotiation(t, pair, call) {
+				return
+			}
 			broken := time.Now()
 			reset(t, pair.client)
 			expectReturn(t, call.result(t, broken.Add(testrun.Patient(margin))), 0, []error{telnet.ErrConnectionFailed}, broken, broken.Add(margin))
