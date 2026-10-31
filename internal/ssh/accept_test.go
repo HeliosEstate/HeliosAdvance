@@ -541,12 +541,14 @@ func TestAccept(t *testing.T) {
 		})
 		t.Run("end of file, then the deadline passing while it waits: ErrDeadlineEnded wrapping context.DeadlineExceeded at the deadline", func(t *testing.T) {
 			t.Parallel()
-			deadline := time.Now().Add(2 * time.Second)
+			// Two seconds were met before a slow machine's handshake had reached the wait.
+			deadline := testrun.CaseDeadline()
 			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			t.Cleanup(cancel)
 			address, results, _ := acceptPair(t, ctx, readKey(t))
 			reachEnd(t, address, results, false, "")
-			result := waitAccept(t, results, 2*time.Second+testrun.Patient(margin+time.Second))
+			testrun.ExpectCaseReached(t, deadline, margin)
+			result := waitAccept(t, results, time.Until(deadline)+testrun.Patient(margin+time.Second))
 			expectAcceptError(t, result, ssh.ErrDeadlineEnded, context.DeadlineExceeded)
 			expectWithin(t, "Accept's return", result.returned, deadline, deadline.Add(margin))
 		})
@@ -650,12 +652,14 @@ func TestAccept(t *testing.T) {
 			})
 			t.Run("the deadline passing while "+stage.name+": ErrDeadlineEnded wrapping context.DeadlineExceeded at the deadline", func(t *testing.T) {
 				t.Parallel()
-				deadline := time.Now().Add(2 * time.Second)
+				// Two seconds were met before a slow machine's handshake had reached the stage.
+				deadline := testrun.CaseDeadline()
 				ctx, cancel := context.WithDeadline(t.Context(), deadline)
 				t.Cleanup(cancel)
 				address, results, _ := acceptPair(t, ctx, readKey(t))
 				stage.reach(t, address)
-				result := waitAccept(t, results, 2*time.Second+testrun.Patient(margin+time.Second))
+				testrun.ExpectCaseReached(t, deadline, margin)
+				result := waitAccept(t, results, time.Until(deadline)+testrun.Patient(margin+time.Second))
 				expectAcceptError(t, result, ssh.ErrDeadlineEnded, context.DeadlineExceeded)
 				expectWithin(t, "Accept's return", result.returned, deadline, deadline.Add(margin))
 			})

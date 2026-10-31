@@ -30,8 +30,10 @@ import (
 const lingerFor = 300 * time.Millisecond
 
 // keptAfter is how long after the ceiling row's caller is accepted its kept places are taken:
-// longer than its probes take, so they end before any kept place reaches its own ceiling.
-const keptAfter = 5 * time.Second
+// longer than its probes take, so they end before any kept place reaches its own ceiling. The
+// probes have no time of their own, so it is the hang bound, stretched: five seconds was a
+// fixed time a slow machine's probes could outrun.
+var keptAfter = testrun.Patient(testrun.HangBound)
 
 // errRefusedByTest is what the Opens written here return when they serve no call.
 var errRefusedByTest = errors.New("the test's Open serves no call")

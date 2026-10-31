@@ -489,23 +489,6 @@ func writeUrgent(t *testing.T, connection *net.TCPConn, data []byte) time.Time {
 	return time.Now()
 }
 
-// caseDeadline is the deadline a row sets up for, when its setup must be done before it: the
-// setup's hang bound, stretched under the race detector. A deadline a fixed second away was met
-// before a slow machine's setup ended, and found the call where the row did not mean it to.
-func caseDeadline() time.Time {
-	return time.Now().Add(testrun.Patient(testrun.HangBound))
-}
-
-// expectCaseReached fails the row when its setup ended less than a margin before the deadline it
-// set up for: the deadline would find the call somewhere other than where the row needs it, and
-// the row would pass without reaching its case. With caseDeadline, only a setup that hung fails.
-func expectCaseReached(t *testing.T, deadline time.Time) {
-	t.Helper()
-	if left := time.Until(deadline); left < margin {
-		t.Fatalf("the setup ended %v before the deadline, under a margin: the row cannot reach its case", left)
-	}
-}
-
 // reset closes the caller's end abortively, so the engine's next read or write fails with a
 // reset.
 func reset(t *testing.T, connection *net.TCPConn) {
