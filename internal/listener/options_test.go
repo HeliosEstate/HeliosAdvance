@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
@@ -37,7 +36,7 @@ var agreed = join(request(doVerb, echo), request(doVerb, sga), request(doVerb, b
 func optionCall(t *testing.T, negotiation, typed, want []byte) {
 	t.Helper()
 	call := dial(t, startEngine(t, 1)[0])
-	stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+	stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 	call.send(t, negotiation)
 	stream.waitFor(t, bytes.Index(want, asked)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 	call.send(t, join(typed, []byte("n\r")))

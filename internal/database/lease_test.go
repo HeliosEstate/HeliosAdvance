@@ -40,7 +40,14 @@ func waitForLost(t *testing.T, lease *database.Lease, deadline time.Time) time.T
 	case <-lease.Lost():
 		return time.Now()
 	case <-timer.C:
-		t.Fatalf("the Lease was not lost by %v", deadline.Format(time.RFC3339Nano))
+		// For a test that came late, both may be ready and the select picks either: a loss
+		// already made wins.
+		select {
+		case <-lease.Lost():
+			return time.Now()
+		default:
+			t.Fatalf("the Lease was not lost by %v", deadline.Format(time.RFC3339Nano))
+		}
 	}
 	return time.Time{}
 }

@@ -466,7 +466,7 @@ func replaceFile(path string, contents []byte) error {
 	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(testrun.Patient(5 * time.Second))
+	deadline := time.Now().Add(testrun.Patient(testrun.HangBound))
 	for {
 		err := os.Rename(temporary, path)
 		if err == nil || time.Now().After(deadline) {

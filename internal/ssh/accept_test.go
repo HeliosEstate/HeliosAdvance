@@ -33,7 +33,7 @@ const (
 func (client *rawClient) expectNoBytes(server *net.TCPConn) {
 	client.t.Helper()
 	_ = server.Close()
-	err := client.fill(1, time.Now().Add(testrun.Patient(5*time.Second)))
+	err := client.fill(1, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if len(client.pending) > 0 || err == nil {
 		client.t.Fatalf("the caller received %q, want nothing", client.pending)
 	}
@@ -127,7 +127,7 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			address, _, _ := acceptPair(t, t.Context(), readKey(t))
 			client := dialRaw(t, address)
-			version, err := client.readVersion(time.Now().Add(testrun.Patient(5 * time.Second)))
+			version, err := client.readVersion(time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if err != nil || string(version) != versionLine {
 				t.Fatalf("the first line was %q, %v, want %q", version, err, versionLine)
 			}
@@ -137,7 +137,7 @@ func TestAccept(t *testing.T) {
 			address, _, _ := acceptPair(t, t.Context(), readKey(t))
 			client := dialRaw(t, address)
 			client.sendVersion()
-			expectKexInit(t, client.readServerKexInit(time.Now().Add(testrun.Patient(5*time.Second))))
+			expectKexInit(t, client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound))))
 		})
 	})
 
@@ -148,7 +148,7 @@ func TestAccept(t *testing.T) {
 			address, results, _ := acceptPair(t, t.Context(), readKey(t))
 			client := dialRaw(t, address)
 			client.sendVersion()
-			client.readServerKexInit(time.Now().Add(testrun.Patient(5 * time.Second)))
+			client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendKexInit(defaultOffer("curve25519-sha256", strict))
 			client.sendPacket(message(messageIgnore).text("strict").data)
 			exchange := curveExchange(t, "curve25519-sha256")
@@ -162,7 +162,7 @@ func TestAccept(t *testing.T) {
 			if !isEnd(err) {
 				t.Fatalf("after the IGNORE the engine sent %v, %v, want the end of the connection", payload, err)
 			}
-			expectNoShell(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectNoShell(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 		t.Run("the same IGNORE, strict not offered: the key exchange's reply comes", func(t *testing.T) {
 			t.Parallel()
@@ -176,7 +176,7 @@ func TestAccept(t *testing.T) {
 			address, results, _ := acceptPair(t, t.Context(), readKey(t))
 			client := readyClient(t, address, "anyone")
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 	})
 
@@ -190,7 +190,7 @@ func TestAccept(t *testing.T) {
 				t.Fatalf("the second session: message %d, want OPEN_FAILURE", reply[0])
 			}
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 		for _, kind := range []struct{ name, kind string }{
 			{directChannel, directChannel},
@@ -213,7 +213,7 @@ func TestAccept(t *testing.T) {
 					t.Fatalf("the session after it: message %d, want OPEN_CONFIRMATION", reply[0])
 				}
 				client.toShell(false)
-				expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 		t.Run("pty-req before shell: accepted, twice; the board will echo", func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestAccept(t *testing.T) {
 				}
 			}
 			client.toShell(false)
-			if channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second))); !channel.Echoes() {
+			if channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound))); !channel.Echoes() {
 				t.Fatalf("Echoes was false after an accepted pty-req")
 			}
 		})
@@ -240,7 +240,7 @@ func TestAccept(t *testing.T) {
 					t.Fatalf("the %s request: message %d, want FAILURE", request, reply[0])
 				}
 				client.toShell(false)
-				expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 		t.Run("a refused request that asks for no reply: nothing written, the next request's reply comes next", func(t *testing.T) {
@@ -249,7 +249,7 @@ func TestAccept(t *testing.T) {
 			client := readyClient(t, address, "anyone")
 			client.request("exec", false, (&wire{}).text("ls").data)
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 		for _, request := range []string{"tcpip-forward", "cancel-tcpip-forward", "keepalive@openssh.com",
 			"no-more-sessions@openssh.com", unknownName} {
@@ -258,11 +258,11 @@ func TestAccept(t *testing.T) {
 				address, results, _ := acceptPair(t, t.Context(), readKey(t))
 				client := readyClient(t, address, "anyone")
 				client.sendPacket(message(messageGlobalRequest).text(request).boolean(true).text("127.0.0.1").uint32Value(0).data)
-				if reply, err := client.next(time.Now().Add(testrun.Patient(5 * time.Second))); err != nil || reply[0] != messageRequestFailure {
+				if reply, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || reply[0] != messageRequestFailure {
 					t.Fatalf("the %s request: %v, %v, want REQUEST_FAILURE", request, reply, err)
 				}
 				client.toShell(false)
-				expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 		t.Run("ping@openssh.com: the pong, holding the same data", func(t *testing.T) {
@@ -270,7 +270,7 @@ func TestAccept(t *testing.T) {
 			address, _, _ := acceptPair(t, t.Context(), readKey(t))
 			client := readyClient(t, address, "anyone")
 			client.sendPacket(message(messagePing).text(canary).data)
-			reply, err := client.nextIgnoring(time.Now().Add(testrun.Patient(5 * time.Second)))
+			reply, err := client.nextIgnoring(time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if want := message(messagePong).text(canary).data; err != nil || string(reply) != string(want) {
 				t.Fatalf("the ping's reply was %v, %v, want %v", reply, err, want)
 			}
@@ -282,7 +282,7 @@ func TestAccept(t *testing.T) {
 			client.sendData("ab")
 			client.sendData("c")
 			client.toShell(false)
-			channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			expectReceived(t, channel, "abc")
 		})
 		t.Run("extended data before the shell: never read as the caller's data", func(t *testing.T) {
@@ -293,7 +293,7 @@ func TestAccept(t *testing.T) {
 			client.sendExtended("XYZ")
 			client.sendData("b")
 			client.toShell(false)
-			channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			expectReceived(t, channel, "ab")
 			expectNothingMore(t, channel)
 		})
@@ -313,7 +313,7 @@ func TestAccept(t *testing.T) {
 				shellSent := time.Now()
 				client.toShell(terminal)
 				accepted := time.Now()
-				result := waitAccept(t, results, testrun.Patient(5*time.Second))
+				result := waitAccept(t, results, testrun.Patient(testrun.HangBound))
 				expectChannel(t, result)
 				expectWithin(t, "Accept's return", result.returned, shellSent, accepted.Add(margin))
 			})
@@ -328,7 +328,7 @@ func TestAccept(t *testing.T) {
 			case <-time.After(quietFor):
 			}
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 	})
 
@@ -352,7 +352,7 @@ func TestAccept(t *testing.T) {
 				out := message(messageUserauthRequest).text("anyone").text("ssh-connection").text(method.name)
 				out.data = append(out.data, method.extra...)
 				client.sendPacket(out.data)
-				expectNoShell(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectNoShell(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 		rows := []struct {
@@ -382,14 +382,14 @@ func TestAccept(t *testing.T) {
 				t.Helper()
 				client := dialRaw(t, address)
 				client.sendVersion()
-				client.readServerKexInit(time.Now().Add(testrun.Patient(5 * time.Second)))
+				client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				_ = client.connection.CloseWrite()
 			}},
 			{"a caller that resets mid-handshake", func(t *testing.T, address string) {
 				t.Helper()
 				client := dialRaw(t, address)
 				client.sendVersion()
-				client.readServerKexInit(time.Now().Add(testrun.Patient(5 * time.Second)))
+				client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				_ = client.connection.SetLinger(0)
 				_ = client.connection.Close()
 			}},
@@ -421,7 +421,7 @@ func TestAccept(t *testing.T) {
 				t.Helper()
 				client := dialRaw(t, address)
 				client.sendVersion()
-				if _, err := client.readVersion(time.Now().Add(testrun.Patient(5 * time.Second))); err != nil {
+				if _, err := client.readVersion(time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil {
 					t.Fatalf("the engine's version line: %v", err)
 				}
 				client.sendPacket(disconnectMessage())
@@ -430,7 +430,7 @@ func TestAccept(t *testing.T) {
 				t.Helper()
 				client := dialRaw(t, address)
 				client.sendVersion()
-				client.readServerKexInit(time.Now().Add(testrun.Patient(5 * time.Second)))
+				client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				client.sendKexInit(defaultOffer("curve25519-sha256", true))
 				client.sendPacket(disconnectMessage())
 			}},
@@ -446,7 +446,7 @@ func TestAccept(t *testing.T) {
 				t.Parallel()
 				address, results, _ := acceptPair(t, t.Context(), readKey(t))
 				row.setUp(t, address)
-				expectNoShell(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectNoShell(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 	})
@@ -457,11 +457,11 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			client, results := endBeforeShell(t, false, "")
 			client.toShell(false)
-			channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			if channel.Echoes() {
 				t.Fatalf("Echoes gave true with no pty-req, want false")
 			}
-			if got, err := channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(5*time.Second))); !errors.Is(err, io.EOF) {
+			if got, err := channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound))); !errors.Is(err, io.EOF) {
 				t.Fatalf("RecvChar gave %q, %v, want io.EOF", got, err)
 			}
 		})
@@ -469,7 +469,7 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			client, results := endBeforeShell(t, true, "")
 			client.toShell(false)
-			if channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second))); !channel.Echoes() {
+			if channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound))); !channel.Echoes() {
 				t.Fatalf("Echoes gave false after a pty-req before the end of file, want true")
 			}
 		})
@@ -477,7 +477,7 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			client, results := endBeforeShell(t, false, "")
 			client.toShell(true)
-			if channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second))); !channel.Echoes() {
+			if channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound))); !channel.Echoes() {
 				t.Fatalf("Echoes gave false after a pty-req after the end of file, want true")
 			}
 		})
@@ -491,9 +491,9 @@ func TestAccept(t *testing.T) {
 				t.Parallel()
 				client, results := endBeforeShell(t, false, row.before)
 				client.toShell(false)
-				channel := expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				channel := expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 				expectReceived(t, channel, row.before)
-				if got, err := channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(5*time.Second))); !errors.Is(err, io.EOF) {
+				if got, err := channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound))); !errors.Is(err, io.EOF) {
 					t.Fatalf("after the bytes RecvChar gave %q, %v, want io.EOF", got, err)
 				}
 			})
@@ -505,10 +505,10 @@ func TestAccept(t *testing.T) {
 			client.sendTogether(
 				message(messageChannelEOF).uint32Value(client.engineChannel).data,
 				message(messageChannelRequest).uint32Value(client.engineChannel).text("shell").boolean(true).data)
-			if reply, err := client.next(time.Now().Add(testrun.Patient(5 * time.Second))); err != nil || reply[0] != messageChannelSuccess {
+			if reply, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || reply[0] != messageChannelSuccess {
 				t.Fatalf("the shell's reply: %v, %v, want SUCCESS", reply, err)
 			}
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 		for _, row := range []struct {
 			name string
@@ -524,7 +524,7 @@ func TestAccept(t *testing.T) {
 				t.Parallel()
 				client, results := endBeforeShell(t, false, "")
 				row.end(client)
-				expectNoShell(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectNoShell(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 		t.Run("end of file, a wait, then the context cancelled: ErrDeadlineEnded wrapping context.Canceled at once, and nothing more written", func(t *testing.T) {
@@ -541,12 +541,14 @@ func TestAccept(t *testing.T) {
 		})
 		t.Run("end of file, then the deadline passing while it waits: ErrDeadlineEnded wrapping context.DeadlineExceeded at the deadline", func(t *testing.T) {
 			t.Parallel()
-			deadline := time.Now().Add(2 * time.Second)
+			// Two seconds were met before a slow machine's handshake had reached the wait.
+			deadline := testrun.CaseDeadline()
 			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			t.Cleanup(cancel)
 			address, results, _ := acceptPair(t, ctx, readKey(t))
 			reachEnd(t, address, results, false, "")
-			result := waitAccept(t, results, 2*time.Second+testrun.Patient(margin+time.Second))
+			testrun.ExpectCaseReached(t, deadline, margin)
+			result := waitAccept(t, results, time.Until(deadline)+testrun.Patient(margin+time.Second))
 			expectAcceptError(t, result, ssh.ErrDeadlineEnded, context.DeadlineExceeded)
 			expectWithin(t, "Accept's return", result.returned, deadline, deadline.Add(margin))
 		})
@@ -557,17 +559,17 @@ func TestAccept(t *testing.T) {
 				t.Fatalf("the second session channel: message %d, want OPEN_FAILURE", reply[0])
 			}
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 		t.Run("end of file, then a global request wanting a reply: REQUEST_FAILURE, and then shell: the Channel", func(t *testing.T) {
 			t.Parallel()
 			client, results := endBeforeShell(t, false, "")
 			client.sendPacket(message(messageGlobalRequest).text(unknownName).boolean(true).data)
-			if reply, err := client.next(time.Now().Add(testrun.Patient(5 * time.Second))); err != nil || reply[0] != messageRequestFailure {
+			if reply, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || reply[0] != messageRequestFailure {
 				t.Fatalf("the global request's reply: %v, %v, want REQUEST_FAILURE", reply, err)
 			}
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 		t.Run("end of file, then exec wanting a reply: FAILURE, and then shell: the Channel", func(t *testing.T) {
 			t.Parallel()
@@ -576,7 +578,7 @@ func TestAccept(t *testing.T) {
 				t.Fatalf("exec: message %d, want FAILURE", reply[0])
 			}
 			client.toShell(false)
-			expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+			expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 		})
 	})
 
@@ -607,7 +609,7 @@ func TestAccept(t *testing.T) {
 				address, results, servers := acceptPair(t, ctx, readKey(t))
 				client := dialRaw(t, address)
 				client.sendVersion()
-				result := waitAccept(t, results, testrun.Patient(5*time.Second))
+				result := waitAccept(t, results, testrun.Patient(testrun.HangBound))
 				expectAcceptError(t, result, ssh.ErrDeadlineEnded, cause)
 				client.expectNoBytes(<-servers)
 			})
@@ -620,7 +622,7 @@ func TestAccept(t *testing.T) {
 				t.Helper()
 				client := dialRaw(t, address)
 				client.sendVersion()
-				client.readServerKexInit(time.Now().Add(testrun.Patient(5 * time.Second)))
+				client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				return client
 			}},
 			{"waiting for a channel", func(t *testing.T, address string) *rawClient {
@@ -650,12 +652,14 @@ func TestAccept(t *testing.T) {
 			})
 			t.Run("the deadline passing while "+stage.name+": ErrDeadlineEnded wrapping context.DeadlineExceeded at the deadline", func(t *testing.T) {
 				t.Parallel()
-				deadline := time.Now().Add(2 * time.Second)
+				// Two seconds were met before a slow machine's handshake had reached the stage.
+				deadline := testrun.CaseDeadline()
 				ctx, cancel := context.WithDeadline(t.Context(), deadline)
 				t.Cleanup(cancel)
 				address, results, _ := acceptPair(t, ctx, readKey(t))
 				stage.reach(t, address)
-				result := waitAccept(t, results, 2*time.Second+testrun.Patient(margin+time.Second))
+				testrun.ExpectCaseReached(t, deadline, margin)
+				result := waitAccept(t, results, time.Until(deadline)+testrun.Patient(margin+time.Second))
 				expectAcceptError(t, result, ssh.ErrDeadlineEnded, context.DeadlineExceeded)
 				expectWithin(t, "Accept's return", result.returned, deadline, deadline.Add(margin))
 			})
@@ -677,7 +681,7 @@ func TestAccept(t *testing.T) {
 			}
 			_ = client.connection.SetLinger(0)
 			_ = client.connection.Close()
-			result := waitAccept(t, results, testrun.Patient(5*time.Second))
+			result := waitAccept(t, results, testrun.Patient(testrun.HangBound))
 			expectAcceptError(t, result, ssh.ErrDeadlineEnded)
 			if late.Err() != nil {
 				t.Fatalf("the context had reported its end before Accept returned: the row proves nothing")
@@ -704,11 +708,11 @@ func TestAccept(t *testing.T) {
 				address, results, servers := acceptPair(t, t.Context(), row.key)
 				client := dialRaw(t, address)
 				client.sendVersion()
-				expectWrongCall(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectWrongCall(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 				client.expectNoBytes(<-servers)
 				address, results, _ = acceptPair(t, t.Context(), readKey(t))
 				readyClient(t, address, "anyone").toShell(false)
-				expectChannel(t, waitAccept(t, results, testrun.Patient(5*time.Second)))
+				expectChannel(t, waitAccept(t, results, testrun.Patient(testrun.HangBound)))
 			})
 		}
 	})
@@ -738,7 +742,7 @@ func expectWrongCall(t *testing.T, result acceptResult) {
 func expectReceived(t *testing.T, channel *ssh.Channel, text string) {
 	t.Helper()
 	for index := range len(text) {
-		got, err := channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(5*time.Second)))
+		got, err := channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)))
 		if err != nil || got != text[index] {
 			t.Fatalf("byte %d was %q, %v, want %q", index, got, err, text[index])
 		}

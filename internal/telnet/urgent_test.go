@@ -203,7 +203,7 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 				_ = client.Close()
 				select {
 				case <-finished:
-				case <-time.After(testrun.Patient(5 * time.Second)):
+				case <-time.After(testrun.Patient(testrun.HangBound)):
 					t.Fatalf("WriteUrgent was still waiting after %v and resetting the caller's end did not wake it", time.Since(started))
 				}
 				t.Fatalf("WriteUrgent was still waiting after %v, want it back in less than %v", time.Since(started), row.below)

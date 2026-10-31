@@ -74,9 +74,10 @@ const wideMargin = 1500 * time.Millisecond
 
 // progressLimit bounds a wait whose line claims no time: the bytes a row needs before its next
 // step. Only a hang should reach it: under twice the usual load such a wait has come at most
-// 1.1 seconds late (2026-10-25). It is no longer than the 5-second recordings that hold most of
-// these calls. The line's own time, where it has one, is checked apart.
-var progressLimit = testrun.Patient(5 * time.Second)
+// 1.1 seconds late (2026-10-25). It is the one hang bound every package uses, as are the
+// recordings that hold most of these calls. The line's own time, where it has one, is checked
+// apart.
+var progressLimit = testrun.Patient(testrun.HangBound)
 
 // early is how far before its deadline a runner's clock may wake a wait.
 const early = 20 * time.Millisecond
@@ -205,7 +206,7 @@ type sending struct {
 // send writes the caller's bytes and returns when the write began and when it returned.
 func (call caller) send(t *testing.T, data []byte) sending {
 	t.Helper()
-	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	began := time.Now()
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)

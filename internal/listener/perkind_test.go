@@ -30,8 +30,10 @@ import (
 const lingerFor = 300 * time.Millisecond
 
 // keptAfter is how long after the ceiling row's caller is accepted its kept places are taken:
-// longer than its probes take, so they end before any kept place reaches its own ceiling.
-const keptAfter = 5 * time.Second
+// longer than its probes take, so they end before any kept place reaches its own ceiling. The
+// probes have no time of their own, so it is the hang bound, stretched: five seconds was a
+// fixed time a slow machine's probes could outrun.
+var keptAfter = testrun.Patient(testrun.HangBound)
 
 // errRefusedByTest is what the Opens written here return when they serve no call.
 var errRefusedByTest = errors.New("the test's Open serves no call")
@@ -616,8 +618,10 @@ func TestListenerPerKind(t *testing.T) {
 			t.Parallel()
 			first := startedListener(t, 1, openTelnet, listener.NewCount())
 			second := startedListener(t, 1, openTelnet, listener.NewCount())
-			callers := holdSilently(t, first.addresses[0], connectionCap)
+			// The second is filled first, so nothing as slow as a hundred dials comes between the
+			// leaving caller's dial, from which its fault is timed, and its close.
 			holdSilently(t, second.addresses[0], connectionCap)
+			callers := holdSilently(t, first.addresses[0], connectionCap)
 			leaving := callers[len(callers)-1]
 			_ = leaving.connection.Close()
 			expectServedBy(t, first.addresses[0], windowEnd(t, time.Now(), leaving.dialed.Add(negotiationLimit)))

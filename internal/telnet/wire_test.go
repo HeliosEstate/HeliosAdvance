@@ -14,7 +14,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"testing"
 	"time"
 
@@ -472,7 +471,7 @@ type sending struct {
 // when the write began and when it returned.
 func write(t *testing.T, connection net.Conn, data []byte) sending {
 	t.Helper()
-	_ = connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+	_ = connection.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	began := time.Now()
 	if _, err := connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
@@ -488,26 +487,6 @@ func writeUrgent(t *testing.T, connection *net.TCPConn, data []byte) time.Time {
 		t.Fatalf("the caller's urgent write failed: %v", err)
 	}
 	return time.Now()
-}
-
-// flood sends option requests and never reads, until its writes stop going through: the
-// engine's replies have filled the caller's receive buffer and the engine's send buffer, so a
-// write of the engine's waits. It returns once it has seen its own writes block.
-func flood(t *testing.T, connection *net.TCPConn) {
-	t.Helper()
-	_ = connection.SetReadBuffer(4096)
-	requests := repeated(request(doVerb, telnetTypeOption), 1024)
-	for {
-		_ = connection.SetWriteDeadline(time.Now().Add(300 * time.Millisecond))
-		_, err := connection.Write(requests)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			_ = connection.SetWriteDeadline(time.Time{})
-			return
-		}
-		if err != nil {
-			t.Fatalf("flooding: %v", err)
-		}
-	}
 }
 
 // reset closes the caller's end abortively, so the engine's next read or write fails with a

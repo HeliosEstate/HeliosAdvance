@@ -45,8 +45,15 @@ func waitAccepted(t *testing.T, done <-chan accepted, limit time.Duration) accep
 	case got := <-done:
 		return got
 	case <-time.After(limit):
-		t.Fatalf("Accept had not returned after %v", limit)
-		return accepted{}
+		// A limit counted to a deadline is below zero for a test that came late, and both may
+		// be ready: a result already in wins.
+		select {
+		case got := <-done:
+			return got
+		default:
+			t.Fatalf("Accept had not returned after %v", limit)
+			return accepted{}
+		}
 	}
 }
 
@@ -280,7 +287,7 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair, line := stalled(t)
 			deadline := time.Now().Add(500 * time.Millisecond)
-			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(testrun.Patient(5*time.Second)))
+			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want os.ErrDeadlineExceeded", err)
 			}
@@ -307,7 +314,7 @@ func TestAcceptUrgent(t *testing.T) {
 			returned, err := recvBounded(t, pair, func() error {
 				_, err := line.RecvChar(ctx, time.Now().Add(testrun.Patient(10*time.Second)))
 				return err
-			}, time.Now().Add(testrun.Patient(5*time.Second)))
+			}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("RecvChar returned %v, want context.Canceled", err)
 			}
@@ -320,21 +327,32 @@ func TestAcceptUrgent(t *testing.T) {
 			returned, err := recvBounded(t, pair, func() error {
 				_, err := line.RecvChar(endsLate(t, deadline), deadline.Add(testrun.Patient(5*time.Second)))
 				return err
-			}, time.Now().Add(testrun.Patient(5*time.Second)))
+			}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want context.DeadlineExceeded", err)
 			}
 			expectWithin(t, "RecvChar's return", returned, deadline, deadline.Add(margin))
 		})
-		t.Run("during negotiation, the context's deadline at 1 second: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
+		t.Run("during negotiation, the context's deadline once its write waits: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			keepUrgentInLine(t, pair.client)
-			deadline := time.Now().Add(time.Second)
+			deadline := testrun.CaseDeadline()
+			called := time.Now()
 			done := acceptOn(withDeadline(t, deadline), pair.server.TCPConn)
 			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			fill(t, pair.server.TCPConn)
 			write(t, pair.client, join(command(abortOutput), lateAnswers))
+			// Negotiation's own 3 seconds end a read that waits, so a setup that ends near them
+			// cannot tell whether the write it set up is what waits, as stallNegotiation does.
+			if late := time.Since(called); late > negotiationLimit-margin {
+				if testrun.Race {
+					t.Logf("under the race detector, timing is not judged: the setup took %v, too near negotiation's 3 seconds, so the row judges nothing", late)
+					return
+				}
+				t.Fatalf("cannot tell: the setup took %v, too near negotiation's 3 seconds for the write to be what waits", late)
+			}
+			testrun.ExpectCaseReached(t, deadline, margin)
 			got := waitAccepted(t, done, time.Until(deadline)+testrun.Patient(2*margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)

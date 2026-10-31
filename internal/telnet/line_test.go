@@ -66,8 +66,15 @@ func (call openCall) result(t *testing.T, deadline time.Time) opened {
 	case got := <-call.done:
 		return got
 	case <-timer.C:
-		t.Fatalf("Open had not returned %v after it was called", time.Since(call.called))
-		return opened{}
+		// For a test that came late, both may be ready and the select picks either: a result
+		// already in wins.
+		select {
+		case got := <-call.done:
+			return got
+		default:
+			t.Fatalf("Open had not returned %v after it was called", time.Since(call.called))
+			return opened{}
+		}
 	}
 }
 
@@ -127,7 +134,7 @@ type recvResult struct {
 	err   error
 }
 
-// recvLater calls RecvChar on its own goroutine, with a deadline 5 seconds away, and hands its
+// recvLater calls RecvChar on its own goroutine, with a deadline the hang bound away, and hands its
 // result back for the row to judge; the row's end waits for it, so nothing reports after the row
 // has ended.
 func recvLater(t *testing.T, line *telnet.Line) <-chan recvResult {
@@ -136,7 +143,7 @@ func recvLater(t *testing.T, line *telnet.Line) <-chan recvResult {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		value, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(5*time.Second)))
+		value, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)))
 		done <- recvResult{value: value, err: err}
 	}()
 	t.Cleanup(func() { <-finished })
@@ -165,7 +172,7 @@ func expectData(t *testing.T, line *telnet.Line, want []byte) {
 // the row rather than waiting for good.
 func sendAll(t *testing.T, line *telnet.Line, data []byte) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), testrun.Patient(5*time.Second))
+	ctx, cancel := context.WithTimeout(t.Context(), testrun.Patient(testrun.HangBound))
 	defer cancel()
 	for index, value := range data {
 		if err := line.SendChar(ctx, value); err != nil {
@@ -979,7 +986,7 @@ func TestLine(t *testing.T) {
 			want := []byte(strings.Repeat(aytAnswerBytes, 1000))
 			received := make(chan []byte, 1)
 			go func() {
-				_ = pair.client.SetReadDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+				_ = pair.client.SetReadDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				replies := make([]byte, len(want))
 				got, err := io.ReadFull(pair.client, replies)
 				if err != nil {
@@ -1000,7 +1007,7 @@ func TestLine(t *testing.T) {
 			// rather than leaving it waiting.
 			received := make(chan []byte, 1)
 			go func() {
-				_ = pair.client.SetReadDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+				_ = pair.client.SetReadDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				replies := make([]byte, 3000)
 				got, err := io.ReadFull(pair.client, replies)
 				if err != nil {
@@ -1058,7 +1065,7 @@ func TestLine(t *testing.T) {
 			pair, line := answeredLine(t, command(abortOutput))
 			done := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(5*time.Second)))
+				_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)))
 				done <- err
 			}()
 			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
@@ -1156,7 +1163,7 @@ func TestLine(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(ctx, time.Now().Add(testrun.Patient(10*time.Second)))
+				_, err := line.RecvChar(ctx, time.Now().Add(testrun.Patient(testrun.HangBound)))
 				done <- err
 			}()
 			expectStillWaiting(t, done)
@@ -1171,7 +1178,7 @@ func TestLine(t *testing.T) {
 			t.Parallel()
 			_, line := answeredLine(t, nil)
 			deadline := time.Now().Add(500 * time.Millisecond)
-			if _, err := line.RecvChar(endsLate(t, deadline), deadline.Add(testrun.Patient(5*time.Second))); !errors.Is(err, context.DeadlineExceeded) {
+			if _, err := line.RecvChar(endsLate(t, deadline), deadline.Add(testrun.Patient(testrun.HangBound))); !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want context.DeadlineExceeded", err)
 			}
 			expectWithin(t, "RecvChar's return", time.Now(), deadline, deadline.Add(margin))
@@ -1192,7 +1199,7 @@ func TestLine(t *testing.T) {
 			pair, line := answeredLine(t, nil)
 			done := make(chan error, 1)
 			go func() {
-				_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(5*time.Second)))
+				_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)))
 				done <- err
 			}()
 			expectStillWaiting(t, done)

@@ -155,7 +155,14 @@ func waitAccept(t *testing.T, results <-chan acceptResult, limit time.Duration) 
 	case result := <-results:
 		return result
 	case <-time.After(limit):
-		t.Fatalf("Accept had not returned after %v", limit)
-		return acceptResult{}
+		// A limit counted to a deadline is below zero for a test that came late, and both may
+		// be ready: a result already in wins.
+		select {
+		case result := <-results:
+			return result
+		default:
+			t.Fatalf("Accept had not returned after %v", limit)
+			return acceptResult{}
+		}
 	}
 }

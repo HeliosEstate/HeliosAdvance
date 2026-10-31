@@ -69,7 +69,7 @@ func openStack(t *testing.T, answer, after []byte) stackPair {
 	}()
 	pair := stackPair{client: client, server: server}
 	pair.expectReceived(t, opening)
-	_ = client.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+	_ = client.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if _, err := client.Write(join(answer, after)); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -84,7 +84,7 @@ func openStack(t *testing.T, answer, after []byte) stackPair {
 
 func (pair stackPair) send(t *testing.T, data []byte) {
 	t.Helper()
-	_ = pair.client.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+	_ = pair.client.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if _, err := pair.client.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -383,10 +383,14 @@ func TestSessionRun(t *testing.T) {
 		t.Run("the context's deadline while it waits for the name: ErrCallEnded wrapping context.DeadlineExceeded", func(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, answers, nil)
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			// A second was met in the greeting's write on a slow machine, before the wait for the
+			// name the row is about.
+			deadline := testrun.CaseDeadline()
+			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			defer cancel()
 			done := runOn(ctx, pair)
 			pair.expectReceived(t, asked)
+			testrun.ExpectCaseReached(t, deadline, margin)
 			if got := <-done; !errors.Is(got.err, session.ErrCallEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Run returned %v, want ErrCallEnded wrapping context.DeadlineExceeded", got.err)
 			}
@@ -640,7 +644,7 @@ func TestTextConn(t *testing.T) {
 			// waits for it however it ends, so nothing reports after the row has ended.
 			done := make(chan received, 1)
 			go func() {
-				got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(5*time.Second)), nameMost)
+				got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost)
 				done <- received{line: got, err: err}
 			}()
 			finished := false
