@@ -616,8 +616,10 @@ func TestListenerPerKind(t *testing.T) {
 			t.Parallel()
 			first := startedListener(t, 1, openTelnet, listener.NewCount())
 			second := startedListener(t, 1, openTelnet, listener.NewCount())
-			callers := holdSilently(t, first.addresses[0], connectionCap)
+			// The second is filled first, so nothing as slow as a hundred dials comes between the
+			// leaving caller's dial, from which its fault is timed, and its close.
 			holdSilently(t, second.addresses[0], connectionCap)
+			callers := holdSilently(t, first.addresses[0], connectionCap)
 			leaving := callers[len(callers)-1]
 			_ = leaving.connection.Close()
 			expectServedBy(t, first.addresses[0], windowEnd(t, time.Now(), leaving.dialed.Add(negotiationLimit)))
