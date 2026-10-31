@@ -197,7 +197,7 @@ jobs:
           [ -n "$PGDIR" ] && export PATH="$PGDIR:$PATH"
           bash check.sh
       # Each timed row's place in its window, kept with the run (#258's item 7), so a margin is read
-      # from ordinary runs, never from a probe branch; and each skipped row's reason (#217).
+      # from ordinary runs, never from a probe branch; and each line where a row cannot tell (#217).
       - uses: actions/upload-artifact@v7
         if: success() || failure()
         with:
