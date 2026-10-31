@@ -943,8 +943,14 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 		if version, err := client.readVersion(time.Now().Add(testrun.Patient(margin))); err == nil && string(version) == versionLine {
 			served := time.Now()
 			t.Logf("a caller's service came %v into its window of %v", served.Sub(called), deadline.Sub(called))
-			if testrun.Race && served.After(deadline) {
-				t.Logf("under the race detector, timing is not judged: a caller was served %v past the deadline", served.Sub(deadline))
+			// Judged as the Listener's is: a try that began before the deadline and was served
+			// after it does not pass, or a place freed late would.
+			if served.After(deadline) {
+				if testrun.Race {
+					t.Logf("under the race detector, timing is not judged: a caller was served %v past the deadline", served.Sub(deadline))
+					return
+				}
+				t.Fatalf("no caller was served until %v past the deadline", served.Sub(deadline))
 			}
 			return
 		}
