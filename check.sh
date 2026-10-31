@@ -296,10 +296,11 @@ if [ -n "$pkgs" ]; then
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
     go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
-    jq -r 'select(.Action == "output") | .Output' "$stream" | grep 'into its window of' > "$TIMED" || true
+    jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep 'into its window of' > "$TIMED" || true
     jq -sj '[.[] | select(.Action == "fail" and .Test) | .Package + " " + (.Test | split("/")[0])] as $failed
       | .[] | select(.Action == "build-output" or .Action == "output")
       | select(.Test == null or ((.Package + " " + (.Test | split("/")[0])) as $k | any($failed[]; . == $k)))
+      | select(.Test != null or (.Output | test("^(PASS|coverage: .*)\n$") | not))
       | .Output' "$stream"
     rm -f "$stream"
     [ "$status" = 0 ] || exit "$status"
