@@ -70,6 +70,15 @@ func (call negotiating) patientResult(t *testing.T, deadline time.Time) negotiat
 	return call.result(t, call.called.Add(testrun.Patient(deadline.Sub(call.called))))
 }
 
+// expectOutcome fails the row unless Negotiate gave the outcome its setup was for: a setup that
+// came late gives another, and where the deadlines are left would then judge a case not reached.
+func expectOutcome(t *testing.T, got negotiated, outcome telnet.Outcome) {
+	t.Helper()
+	if got.err != nil || got.outcome != outcome {
+		t.Fatalf("did not reach its case: Negotiate returned (%v, %v), want (%v, no error)", got.outcome, got.err, outcome)
+	}
+}
+
 // expectReturn checks what Negotiate returned and that it came within its window.
 func expectReturn(t *testing.T, got negotiated, outcome telnet.Outcome, errs []error, notBefore, notAfter time.Time) {
 	t.Helper()
@@ -935,20 +944,20 @@ func TestNegotiate(t *testing.T) {
 		t.Run("answered: a read then waits until the context's deadline", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			deadline := time.Now().Add(2 * time.Second)
+			deadline := testrun.CaseDeadline()
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			write(t, pair.client, answers)
-			call.patientResult(t, deadline)
+			expectOutcome(t, call.patientResult(t, deadline), telnet.Answered)
 			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("answered: a write to a caller that does not read waits until the context's deadline", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			_ = pair.client.SetReadBuffer(4096)
-			deadline := time.Now().Add(2 * time.Second)
+			deadline := testrun.CaseDeadline()
 			call := negotiate(withDeadline(t, deadline), pair.server)
 			write(t, pair.client, answers)
-			call.patientResult(t, deadline)
+			expectOutcome(t, call.patientResult(t, deadline), telnet.Answered)
 			expectWriteDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("timed out at 3 seconds: a read waits until the deadline at 5", func(t *testing.T) {
@@ -964,16 +973,18 @@ func TestNegotiate(t *testing.T) {
 			}
 			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
-		t.Run("cancelled at 500 ms: a read waits until the deadline at 2 seconds", func(t *testing.T) {
+		t.Run("cancelled at 500 ms: a read waits until the context's deadline", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			deadline := time.Now().Add(2 * time.Second)
+			deadline := testrun.CaseDeadline()
 			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			defer cancel()
 			call := negotiate(ctx, pair.server)
 			wait(t.Context(), call.called.Add(500*time.Millisecond))
 			cancel()
-			call.patientResult(t, deadline)
+			if got := call.patientResult(t, deadline); !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("did not reach its case: Negotiate returned (%v, %v), want ErrDeadlineEnded for the cancel", got.outcome, got.err)
+			}
 			expectReadDeadlineAt(t, pair.server.TCPConn, deadline)
 		})
 		t.Run("the caller closed: a write to it waits until the context's deadline", func(t *testing.T) {

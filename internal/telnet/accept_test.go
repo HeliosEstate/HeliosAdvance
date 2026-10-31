@@ -331,10 +331,20 @@ func TestAcceptUrgent(t *testing.T) {
 			pair := connect(t)
 			keepUrgentInLine(t, pair.client)
 			deadline := testrun.CaseDeadline()
+			called := time.Now()
 			done := acceptOn(withDeadline(t, deadline), pair.server.TCPConn)
 			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			fill(t, pair.server.TCPConn)
 			write(t, pair.client, join(command(abortOutput), lateAnswers))
+			// Negotiation's own 3 seconds end a read that waits, so a setup that ends near them
+			// cannot tell whether the write it set up is what waits, as stallNegotiation does.
+			if late := time.Since(called); late > negotiationLimit-margin {
+				if testrun.Race {
+					t.Logf("under the race detector, timing is not judged: the setup took %v, too near negotiation's 3 seconds, so the row judges nothing", late)
+					return
+				}
+				t.Fatalf("cannot tell: the setup took %v, too near negotiation's 3 seconds for the write to be what waits", late)
+			}
 			testrun.ExpectCaseReached(t, deadline, margin)
 			got := waitAccepted(t, done, time.Until(deadline)+testrun.Patient(2*margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {

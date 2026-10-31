@@ -31,8 +31,10 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   measured on every runner. Each timed row logs how far into its window the event came.
 - A lower bound is read from when the caller's write began, an upper bound from when it
   returned: a write can return well after the engine has read it. The same holds for a cancel, a
-  close or a reset the row makes: the moment is read before it, never after, since a test paused
-  between the two sees the engine as early.
+  close or a reset the row makes, where the row judges the engine's own moment: that is read
+  before it, never after, since a test paused between the two sees the engine as early. A row
+  that judges its own clock, read after the result arrives, needs no early anchor: that moment
+  cannot come before the action.
 - Under the race detector, which slows the engine and the test by an amount nobody controls, no
   upper bound on time is judged: it is logged. A lower bound still is, since a slow engine cannot
   be early. `testrun.Race` says which build runs, and `testrun.Patient` stretches a wait there.
@@ -116,6 +118,8 @@ CI skips both. Green is `bash check.sh`, never `go test` alone.
 
 - A test binary that starts servers or programs calls `testrun.Enter` first in its TestMain and
   `testrun.Leave` last: everything it makes lands in its own folder, and nothing outlives the run.
+  One binary needs none: the Listener's, whose only child, on Linux alone, is the test binary run
+  again under a descriptor limit, which makes nothing on disk and ends when its input closes.
   A run killed or timed out leaves its folder, servers and programs, and the next run takes them.
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has

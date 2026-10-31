@@ -111,12 +111,17 @@ func readAll(caller *net.TCPConn) (last byte, count int, err error) {
 	}
 }
 
-// sendResult is WriteUrgent's result and when it came.
+// sendResult is WriteUrgent's result, when it was called and when it came.
 type sendResult struct {
 	count    int
 	err      error
+	began    time.Time
 	returned time.Time
 }
+
+// sendReach is how long before the moment that ends or opens it a send on a full connection must
+// have begun, to be waiting by then: such a send blocks at once.
+const sendReach = 100 * time.Millisecond
 
 // sendBounded calls WriteUrgent with DM alone on its own goroutine and waits for it no later than
 // until. Past until, the caller resets, which ends the send, and the row fails.
@@ -124,8 +129,9 @@ func sendBounded(t *testing.T, engine *acceptedConn, caller *net.TCPConn, until 
 	t.Helper()
 	done := make(chan sendResult, 1)
 	go func() {
+		began := time.Now()
 		count, err := engine.WriteUrgent([]byte{TelnetDM})
-		done <- sendResult{count: count, err: err, returned: time.Now()}
+		done <- sendResult{count: count, err: err, began: began, returned: time.Now()}
 	}()
 	timer := time.NewTimer(time.Until(until))
 	defer timer.Stop()
@@ -169,11 +175,12 @@ func TestUrgentSend(t *testing.T) {
 			name string
 			// full fills the connection first, so the urgent byte waits for room.
 			full bool
+			// sent is whether the byte is to be sent; otherwise the send is to be woken.
+			sent bool
 			// deadline is the write deadline, from when the row sets it.
 			deadline time.Duration
-			// arrange starts whatever is to end the send besides the deadline, and returns the
-			// moment the send is to be woken, a zero moment if it is to be sent, and what to check
-			// once it has returned.
+			// arrange starts whatever is to end or open the send besides the deadline, and returns
+			// the moment it comes and what to check once the send has returned.
 			arrange func(t *testing.T, engine *acceptedConn, caller *net.TCPConn, set time.Time) (time.Time, func(*testing.T))
 		}{
 			{
@@ -222,13 +229,15 @@ func TestUrgentSend(t *testing.T) {
 			{
 				name:     "the same, its deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens, DM the last byte read",
 				full:     true,
+				sent:     true,
 				deadline: testrun.Patient(10 * time.Second),
 				arrange: func(t *testing.T, _ *acceptedConn, caller *net.TCPConn, _ time.Time) (time.Time, func(*testing.T)) {
 					t.Helper()
 					read := make(chan struct{})
 					var last byte
 					var readErr error
-					reader := time.AfterFunc(500*time.Millisecond, func() {
+					readAt := time.Now().Add(500 * time.Millisecond)
+					reader := time.AfterFunc(time.Until(readAt), func() {
 						defer close(read)
 						last, _, readErr = readAll(caller)
 					})
@@ -237,7 +246,7 @@ func TestUrgentSend(t *testing.T) {
 							<-read
 						}
 					})
-					return time.Time{}, func(t *testing.T) {
+					return readAt, func(t *testing.T) {
 						t.Helper()
 						<-read
 						if readErr != nil || last != TelnetDM {
@@ -269,14 +278,27 @@ func TestUrgentSend(t *testing.T) {
 				if err := engine.SetWriteDeadline(set.Add(row.deadline)); err != nil {
 					t.Fatalf("setting the write deadline: %v", err)
 				}
-				wokenAt, after := row.arrange(t, engine, caller, set)
-				if wokenAt.IsZero() {
-					result := sendBounded(t, engine, caller, time.Now().Add(testrun.Patient(5*time.Second+sendBound)))
+				at, after := row.arrange(t, engine, caller, set)
+				until := at.Add(testrun.Patient(sendMargin + sendBound))
+				if row.sent {
+					until = time.Now().Add(testrun.Patient(testrun.HangBound))
+				}
+				result := sendBounded(t, engine, caller, until)
+				// The moment that ends or opens the send was fixed before the send began: a send begun
+				// too near it was not yet waiting when it came, and the row did not reach its case.
+				if row.full && !result.began.Before(at.Add(-sendReach)) {
+					if testrun.Race {
+						t.Logf("under the race detector, timing is not judged: the send began %v before the moment meant to find it waiting, so the row judges nothing", at.Sub(result.began))
+						return
+					}
+					t.Fatalf("did not reach its case: the send began %v before the moment meant to find it waiting", at.Sub(result.began))
+				}
+				if row.sent {
 					if result.err != nil || result.count != 1 {
 						t.Fatalf("WriteUrgent returned %d, %v, want 1 and no error", result.count, result.err)
 					}
 				} else {
-					expectWokenAt(t, sendBounded(t, engine, caller, wokenAt.Add(testrun.Patient(sendMargin+sendBound))), wokenAt)
+					expectWokenAt(t, result, at)
 				}
 				if after != nil {
 					after(t)
