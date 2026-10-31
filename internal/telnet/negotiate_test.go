@@ -571,9 +571,10 @@ func TestNegotiate(t *testing.T) {
 			// Which ends first, the 3 seconds or the context 500 ms after them, is two timers'
 			// race; under the race detector either may be late, so either outcome is only logged.
 			if testrun.Race && errors.Is(got.err, telnet.ErrDeadlineEnded) {
-				// Too soon still fails: the race detector cannot make a return early.
-				if got.returned.Before(limit.Add(-early)) {
-					t.Fatalf("Negotiate returned %v, %v before its 3 seconds ended", got.err, limit.Sub(got.returned))
+				// Too soon still fails: the race detector cannot make a return early, and
+				// ErrDeadlineEnded cannot come before the context's deadline.
+				if ended := before.Add(3500 * time.Millisecond); got.returned.Before(ended.Add(-early)) {
+					t.Fatalf("Negotiate returned %v, %v before the context's deadline", got.err, ended.Sub(got.returned))
 				}
 				t.Logf("under the race detector, the outcome is not judged: Negotiate returned %v, %v after the call", got.err, got.returned.Sub(call.called))
 				return
@@ -996,7 +997,12 @@ func TestNegotiate(t *testing.T) {
 			expectOpening(t, pair.client, call.called.Add(testrun.Patient(margin)))
 			_ = pair.client.CloseWrite()
 			got := call.patientResult(t, deadline)
-			if !errors.Is(got.err, telnet.ErrCallerClosed) {
+			// Under the race detector the engine's 3 seconds, counted from its opening, may end
+			// before the close reaches it: which comes first is its timing, so TimedOut is only
+			// logged there. Where the write deadline is left is judged either way.
+			if testrun.Race && got.err == nil && got.outcome == telnet.TimedOut {
+				t.Logf("under the race detector, the outcome is not judged: Negotiate returned TimedOut, %v after the call", got.returned.Sub(call.called))
+			} else if !errors.Is(got.err, telnet.ErrCallerClosed) {
 				t.Fatalf("Negotiate returned %v, want ErrCallerClosed", got.err)
 			}
 			expectWriteDeadlineAt(t, pair.server.TCPConn, deadline)

@@ -5,6 +5,7 @@ package testrun
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"path/filepath"
@@ -58,29 +59,39 @@ func mine(fs.FileInfo) bool {
 }
 
 // serverRunsIn is whether the process postmaster.pid names is the server that wrote it, started
-// in the second the file records. A server ended without its file, as by a restart of the
-// machine, leaves a number Windows may give to another process, another PostgreSQL server among
-// them, which pg_ctl would stop.
-func serverRunsIn(data string) bool {
+// when the file records. A server ended without its file, as by a restart of the machine,
+// leaves a number Windows may give to another process, another PostgreSQL server among them,
+// which pg_ctl would stop. Only a process that has ended reads as not running; anything that
+// cannot be told is an error, and the folder stays.
+func serverRunsIn(data string) (bool, error) {
 	text, err := readSmall(filepath.Join(data, "postmaster.pid"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	// Its first line is the server's number, its third the second it started.
 	lines := strings.Split(string(text), "\n")
 	if len(lines) < 3 {
-		return false
+		return false, fmt.Errorf("%s holds no start", data)
 	}
 	processID, idErr := strconv.Atoi(strings.TrimSpace(lines[0]))
 	written, writtenErr := strconv.ParseInt(strings.TrimSpace(lines[2]), 10, 64)
-	if idErr != nil || writtenErr != nil {
-		return false
+	if err := errors.Join(idErr, writtenErr); err != nil {
+		return false, fmt.Errorf("the server's number or start in %s: %w", data, err)
 	}
 	started, err := processStart(processID)
-	// The server writes its start inside its main, after Windows made the process, which on a
-	// loaded machine may be seconds later, and a live server judged stale is the worse mistake:
-	// so a minute is allowed. The other mistake needs a new PostgreSQL, the only process
-	// pg_ctl's signal reaches, to be given the number within that minute of the old start.
+	if processGone(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// A number given again belongs to a process made after its server ended, so after the start
+	// the file records: late is below zero. The minute allows for the server writing its start
+	// inside its main, after Windows made the process, which on a loaded machine may be seconds
+	// later; only a clock turned back could carry a number given again into it.
 	late := written - started/int64(time.Second)
-	return err == nil && late >= 0 && late <= 60
+	return late >= 0 && late <= 60, nil
 }

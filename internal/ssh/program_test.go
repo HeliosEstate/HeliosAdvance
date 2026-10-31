@@ -40,7 +40,9 @@ func TestMain(tests *testing.M) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
-		_ = testrun.Leave(runFolder)
+		if err := testrun.Leave(runFolder); err != nil {
+			fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+		}
 		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()

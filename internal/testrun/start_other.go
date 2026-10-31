@@ -27,6 +27,6 @@ func mine(fs.FileInfo) bool {
 }
 
 // serverRunsIn is not checked on a system the engine does not ship to.
-func serverRunsIn(string) bool {
-	return true
+func serverRunsIn(string) (bool, error) {
+	return true, nil
 }

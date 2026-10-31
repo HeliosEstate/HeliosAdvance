@@ -85,11 +85,20 @@ func remove(folder string) error {
 // removeOnce removes a run's folder with its owner last: a removal that fails partway, on a file
 // Windows still holds, leaves the owner, so the next run finds the rest and takes it.
 func removeOnce(folder string) error {
-	entries, err := os.ReadDir(folder)
+	// A folder swapped for a link to another, between one check and the next, would have that
+	// other folder's contents removed: only a folder itself is.
+	info, err := os.Lstat(folder)
 	// Binaries started together sweep together, so another may have taken a dead run's folder.
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is no longer a folder", folder)
+	}
+	entries, err := os.ReadDir(folder)
 	if err != nil {
 		return err
 	}
@@ -217,7 +226,12 @@ func stopServers(folder string) error {
 			return nil
 		}
 		data := filepath.Dir(path)
-		if !serverRunsIn(data) {
+		running, err := serverRunsIn(data)
+		if err != nil {
+			failures = append(failures, err)
+			return nil
+		}
+		if !running {
 			return nil
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

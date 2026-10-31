@@ -44,13 +44,33 @@ func mine(info fs.FileInfo) bool {
 
 // serverRunsIn is whether the process postmaster.pid names is the server of that data folder,
 // whose working folder it is. A server ended without its file leaves a number the kernel may
-// give to any other process, and pg_ctl would signal that one.
-func serverRunsIn(data string) bool {
+// give to any other process, and pg_ctl would signal that one. Only a process that has ended
+// reads as not running; anything that cannot be told is an error, and the folder stays.
+func serverRunsIn(data string) (bool, error) {
 	text, err := readSmall(filepath.Join(data, "postmaster.pid"))
-	if err != nil {
-		return false
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
 	}
-	processID, _, _ := strings.Cut(string(text), "\n")
-	working, err := os.Readlink(filepath.Join("/proc", strings.TrimSpace(processID), "cwd"))
-	return err == nil && working == data
+	if err != nil {
+		return false, err
+	}
+	line, _, _ := strings.Cut(string(text), "\n")
+	processID, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		return false, fmt.Errorf("the server's number in %s: %w", data, err)
+	}
+	// Compared as folders, not as names: the kernel names the working folder with every
+	// symbolic link resolved, and the temporary folder may be reached through one.
+	working, err := os.Stat(fmt.Sprintf("/proc/%d/cwd", processID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	folder, err := os.Stat(data)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(working, folder), nil
 }
