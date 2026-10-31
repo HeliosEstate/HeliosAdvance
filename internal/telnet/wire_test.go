@@ -472,7 +472,7 @@ type sending struct {
 // when the write began and when it returned.
 func write(t *testing.T, connection net.Conn, data []byte) sending {
 	t.Helper()
-	_ = connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+	_ = connection.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	began := time.Now()
 	if _, err := connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)

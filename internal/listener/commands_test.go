@@ -287,7 +287,7 @@ func TestCommands(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				t.Parallel()
-				call, stream, _ := answeredCall(t, row.answer, nil, testrun.Patient(5*time.Second))
+				call, stream, _ := answeredCall(t, row.answer, nil, testrun.Patient(testrun.HangBound))
 				stream.waitFor(t, bytes.Index(join(opening, sendsFor(row.answer), asked), asked)+len(asked), time.Now().Add(progressLimit))
 				call.send(t, row.typed)
 				stream.expectStream(t, join(opening, sendsFor(row.answer), asked, row.after))

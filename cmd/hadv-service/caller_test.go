@@ -77,7 +77,7 @@ type caller struct {
 // dial connects a caller, closed when the test ends.
 func dial(t *testing.T, address string) caller {
 	t.Helper()
-	opened, err := (&net.Dialer{Timeout: testrun.Patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
+	opened, err := (&net.Dialer{Timeout: testrun.Patient(testrun.HangBound)}).DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("dialing the engine at %s: %v", address, err)
 	}
@@ -92,7 +92,7 @@ func dial(t *testing.T, address string) caller {
 // send writes the caller's bytes.
 func (call caller) send(t *testing.T, data []byte) {
 	t.Helper()
-	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}

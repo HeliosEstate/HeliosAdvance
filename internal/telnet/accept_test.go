@@ -280,7 +280,7 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair, line := stalled(t)
 			deadline := time.Now().Add(500 * time.Millisecond)
-			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(testrun.Patient(5*time.Second)))
+			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want os.ErrDeadlineExceeded", err)
 			}
@@ -307,7 +307,7 @@ func TestAcceptUrgent(t *testing.T) {
 			returned, err := recvBounded(t, pair, func() error {
 				_, err := line.RecvChar(ctx, time.Now().Add(testrun.Patient(10*time.Second)))
 				return err
-			}, time.Now().Add(testrun.Patient(5*time.Second)))
+			}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("RecvChar returned %v, want context.Canceled", err)
 			}
@@ -320,7 +320,7 @@ func TestAcceptUrgent(t *testing.T) {
 			returned, err := recvBounded(t, pair, func() error {
 				_, err := line.RecvChar(endsLate(t, deadline), deadline.Add(testrun.Patient(5*time.Second)))
 				return err
-			}, time.Now().Add(testrun.Patient(5*time.Second)))
+			}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want context.DeadlineExceeded", err)
 			}

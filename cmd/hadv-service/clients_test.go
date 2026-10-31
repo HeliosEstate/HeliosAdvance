@@ -169,7 +169,7 @@ func startRelay(t *testing.T, address string) *relay {
 			return
 		}
 		defer func() { _ = client.Close() }()
-		engine, err := (&net.Dialer{Timeout: testrun.Patient(5 * time.Second)}).DialContext(context.Background(), "tcp", address)
+		engine, err := (&net.Dialer{Timeout: testrun.Patient(testrun.HangBound)}).DialContext(context.Background(), "tcp", address)
 		if err != nil {
 			return
 		}
@@ -196,7 +196,7 @@ func (link *relay) copy(destination, source net.Conn, record *[]byte) {
 			link.mutex.Lock()
 			*record = append(*record, chunk[:got]...)
 			link.mutex.Unlock()
-			_ = destination.SetWriteDeadline(time.Now().Add(testrun.Patient(5 * time.Second)))
+			_ = destination.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if _, writeErr := destination.Write(chunk[:got]); writeErr != nil {
 				return
 			}
@@ -222,7 +222,7 @@ type clientRun struct {
 // reads its output to its end.
 func runClient(t *testing.T, command *exec.Cmd) clientRun {
 	t.Helper()
-	command.WaitDelay = testrun.Patient(5 * time.Second)
+	command.WaitDelay = testrun.Patient(testrun.HangBound)
 	input, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)

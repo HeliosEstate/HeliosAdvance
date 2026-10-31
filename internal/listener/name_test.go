@@ -115,7 +115,7 @@ type nameRow struct {
 
 func runNameRow(t *testing.T, row nameRow) {
 	t.Helper()
-	call, stream, _ := answeredCall(t, row.answer, nil, testrun.Patient(5*time.Second))
+	call, stream, _ := answeredCall(t, row.answer, nil, testrun.Patient(testrun.HangBound))
 	stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 	call.send(t, row.typed)
 	stream.expectStream(t, join(opening, asked, row.after))
@@ -139,7 +139,7 @@ func TestName(t *testing.T) {
 		for _, row := range rows {
 			t.Run("answered "+row.name+": the greeting and the prompt at once, then nothing until a name", func(t *testing.T) {
 				t.Parallel()
-				call, stream, sent := answeredCall(t, row.answer, nil, testrun.Patient(5*time.Second))
+				call, stream, sent := answeredCall(t, row.answer, nil, testrun.Patient(testrun.HangBound))
 				stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 				wait(t, time.Now().Add(quietFor))
 				call.send(t, []byte("ann\r"))
@@ -157,7 +157,7 @@ func TestName(t *testing.T) {
 		t.Run("a silent caller: the greeting and the prompt at 3 seconds", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("ann\r"))
 			stream.expectStream(t, join(opening, asked, helloTo("ann")))
@@ -166,7 +166,7 @@ func TestName(t *testing.T) {
 		t.Run("seven answers, then silence: the greeting and the prompt at 3 seconds", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			call.send(t, answers[:21])
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("ann\r"))
@@ -176,7 +176,7 @@ func TestName(t *testing.T) {
 		t.Run("the eighth answer at 2 seconds: the greeting and the prompt then, not at 3", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			call.send(t, answers[:21])
 			wait(t, call.connected.Add(2*time.Second))
 			sent := call.send(t, answers[21:])
@@ -190,7 +190,7 @@ func TestName(t *testing.T) {
 		t.Run("the answers a byte at a time, 50 ms apart: the greeting and the prompt after the last", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(testrun.Patient(5 * time.Second)))
+			stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
 			var lastSent sending
 			for index := range answers {
 				wait(t, time.Now().Add(50*time.Millisecond))
@@ -223,7 +223,7 @@ func TestName(t *testing.T) {
 		}
 		t.Run("refused ECHO, the name a byte at a time, 20 ms apart", func(t *testing.T) {
 			t.Parallel()
-			call, stream, _ := answeredCall(t, refused, nil, testrun.Patient(5*time.Second))
+			call, stream, _ := answeredCall(t, refused, nil, testrun.Patient(testrun.HangBound))
 			for _, value := range []byte("bob\r") {
 				wait(t, time.Now().Add(20*time.Millisecond))
 				call.send(t, []byte{value})
@@ -232,13 +232,13 @@ func TestName(t *testing.T) {
 		})
 		t.Run("the name typed in the same write as the last answer", func(t *testing.T) {
 			t.Parallel()
-			_, stream, _ := answeredCall(t, answers, []byte("alice\r"), testrun.Patient(5*time.Second))
+			_, stream, _ := answeredCall(t, answers, []byte("alice\r"), testrun.Patient(testrun.HangBound))
 			stream.expectStream(t, join(opening, asked, echoed("alice")))
 		})
 		t.Run("the name typed before the prompt, during the 3 seconds after the one answer", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			call.readOpeningFrom(t, stream)
 			call.send(t, request(doVerb, echo))
 			wait(t, time.Now().Add(100*time.Millisecond))
@@ -264,7 +264,7 @@ func TestName(t *testing.T) {
 		}
 		t.Run("text and requests sent once Hello arrived: nothing more, and the engine takes them", func(t *testing.T) {
 			t.Parallel()
-			call, stream, _ := answeredCall(t, answers, []byte("bob\r"), testrun.Patient(5*time.Second))
+			call, stream, _ := answeredCall(t, answers, []byte("bob\r"), testrun.Patient(testrun.HangBound))
 			stream.expectStream(t, join(opening, asked, echoed("bob")))
 			call.send(t, join(request(doVerb, telnetTypeOption), request(will, windowSizeOption), []byte("text\r")))
 			wait(t, time.Now().Add(200*time.Millisecond))
@@ -276,7 +276,7 @@ func TestName(t *testing.T) {
 		for name, typed := range map[string]string{"CR": "bob\r", "LF": "bob\n"} {
 			t.Run("a name ended by "+name+": end of stream at once after Hello, and the engine still takes what the caller sends", func(t *testing.T) {
 				t.Parallel()
-				call, stream, _ := answeredCall(t, refused, []byte(typed), testrun.Patient(5*time.Second))
+				call, stream, _ := answeredCall(t, refused, []byte(typed), testrun.Patient(testrun.HangBound))
 				stream.expectStream(t, join(opening, asked, helloTo("bob")))
 				helloEnd := stream.arrivedAt(t, len(stream.received)-1)
 				expectWithin(t, "end of stream", stream.ended, helloEnd, helloEnd.Add(margin))
@@ -313,7 +313,7 @@ func TestName(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name+": closed at 60 seconds, nothing after the prompt", func(t *testing.T) {
 				t.Parallel()
-				call, stream, sent := answeredCall(t, row.answer, nil, nameLimit+testrun.Patient(10*time.Second))
+				call, stream, sent := answeredCall(t, row.answer, nil, nameLimit+testrun.Patient(testrun.HangBound))
 				stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 				if row.typing != nil {
 					go row.typing(call, sent.done)
@@ -325,7 +325,7 @@ func TestName(t *testing.T) {
 		}
 		t.Run("a caller with ECHO agreed typing ab, then silent: the echo of ab, then closed at 60 seconds", func(t *testing.T) {
 			t.Parallel()
-			_, stream, sent := answeredCall(t, answers, []byte("ab"), nameLimit+testrun.Patient(10*time.Second))
+			_, stream, sent := answeredCall(t, answers, []byte("ab"), nameLimit+testrun.Patient(testrun.HangBound))
 			stream.expectStream(t, join(opening, asked, []byte("ab")))
 			promptEnd := stream.arrivedAt(t, len(opening)+len(asked)-1)
 			expectWithin(t, "the close", stream.ended, sent.began.Add(nameLimit), promptEnd.Add(nameLimit+margin))
@@ -416,7 +416,7 @@ func TestName(t *testing.T) {
 		t.Run("a silent caller that answers all eight after the 3 seconds, mid-name, then DO 24: WONT 24 all the same", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			// ECHO was in WANTYES, so a is not echoed; the late DO ECHO starts the echo.
 			call.send(t, join([]byte("a"), answers, request(doVerb, telnetTypeOption), []byte("b\r")))
@@ -425,7 +425,7 @@ func TestName(t *testing.T) {
 		t.Run("a request split across negotiation's end: its last byte after the 3 seconds, answered once", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			call.send(t, join(request(doVerb, echo), []byte{iac, doVerb}))
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte{telnetTypeOption, 'k', '\r'})
@@ -434,7 +434,7 @@ func TestName(t *testing.T) {
 		t.Run("a request sent as the 3 seconds pass: answered once, whichever side of the end it falls", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			call.send(t, request(doVerb, echo))
 			wait(t, call.connected.Add(negotiationLimit-5*time.Millisecond))
 			call.send(t, request(doVerb, telnetTypeOption))
@@ -514,7 +514,7 @@ func TestName(t *testing.T) {
 		t.Run("a late yes: DO ECHO after the 3 seconds, no reply, the echo from the next character", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, join([]byte("a"), request(doVerb, echo), []byte("b\r")))
 			stream.expectStream(t, join(opening, asked, []byte("b\r\n"), helloTo("ab")))
@@ -536,7 +536,7 @@ func TestName(t *testing.T) {
 		t.Run("a caller silent through negotiation", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(5*time.Second)))
+			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			stream.waitFor(t, len(opening)+len(asked), call.connected.Add(negotiationLimit+progressLimit))
 			call.send(t, []byte("abc\x08d\r"))
 			stream.expectStream(t, join(opening, asked, helloTo("abd")))
@@ -563,7 +563,7 @@ func TestName(t *testing.T) {
 		for name, key := range map[string]byte{"BS": backspace, "DEL": del, "Ctrl-U": eraseLineKey, "CR": '\r', "LF": '\n'} {
 			t.Run(name+" alone, ECHO agreed: nothing written, then a CR: the echo and Hello a", func(t *testing.T) {
 				t.Parallel()
-				call, stream, sent := answeredCall(t, answers, nil, testrun.Patient(5*time.Second))
+				call, stream, sent := answeredCall(t, answers, nil, testrun.Patient(testrun.HangBound))
 				stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 				call.send(t, []byte{key})
 				wait(t, time.Now().Add(quietFor))
@@ -588,7 +588,7 @@ func TestName(t *testing.T) {
 		t.Parallel()
 		t.Run("ab, IAC, DM as urgent data, c CR, after negotiation: Hello abc", func(t *testing.T) {
 			t.Parallel()
-			call, stream, sent := answeredCall(t, refused, nil, testrun.Patient(5*time.Second))
+			call, stream, sent := answeredCall(t, refused, nil, testrun.Patient(testrun.HangBound))
 			stream.waitFor(t, len(opening)+len(asked), sent.done.Add(progressLimit))
 			call.send(t, []byte{'a', 'b', iac})
 			if err := sendUrgent(call.connection, dataMark); err != nil {
@@ -600,7 +600,7 @@ func TestName(t *testing.T) {
 		t.Run("a Synch during negotiation, before the answers: the answers read whole", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(testrun.Patient(5 * time.Second)))
+			stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
 			stream.waitFor(t, len(opening), call.connected.Add(progressLimit))
 			call.send(t, []byte{iac})
 			if err := sendUrgent(call.connection, dataMark); err != nil {
@@ -628,7 +628,7 @@ func TestName(t *testing.T) {
 		})
 		t.Run("a caller that stays: closed 3 seconds after the shutdown, not before, its bytes read meanwhile", func(t *testing.T) {
 			t.Parallel()
-			call, stream, sent := answeredCall(t, answers, []byte("n\r"), testrun.Patient(5*time.Second))
+			call, stream, sent := answeredCall(t, answers, []byte("n\r"), testrun.Patient(testrun.HangBound))
 			stream.expectStream(t, join(opening, asked, echoed("n")))
 			shutAt := stream.ended
 			// Bytes sent during the closing wait are read, so the close comes as no reset until it.
@@ -648,7 +648,7 @@ func TestName(t *testing.T) {
 		t.Run("a caller that closes during negotiation: nothing after the opening", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
-			stream := call.record(call.connected.Add(testrun.Patient(5 * time.Second)))
+			stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
 			call.send(t, request(doVerb, echo))
 			_ = call.connection.CloseWrite()
 			stream.expectStream(t, opening)
@@ -658,7 +658,7 @@ func TestName(t *testing.T) {
 			address := startEngine(t, 1)[0]
 			for range connectionCap {
 				call := dial(t, address)
-				stream := call.record(call.connected.Add(testrun.Patient(5 * time.Second)))
+				stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
 				call.send(t, join(refused, []byte("ab")))
 				stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 				_ = call.connection.CloseWrite()
@@ -684,7 +684,7 @@ func TestName(t *testing.T) {
 		})
 		t.Run("a caller that half-closes mid-name: closed at once, with no closing wait", func(t *testing.T) {
 			t.Parallel()
-			call, stream, _ := answeredCall(t, refused, []byte("ab"), testrun.Patient(5*time.Second))
+			call, stream, _ := answeredCall(t, refused, []byte("ab"), testrun.Patient(testrun.HangBound))
 			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 			closedAt := time.Now()
 			_ = call.connection.CloseWrite()
@@ -693,7 +693,7 @@ func TestName(t *testing.T) {
 		})
 		t.Run("NoName at 60 seconds: closed then, with no closing wait", func(t *testing.T) {
 			t.Parallel()
-			call, stream, _ := answeredCall(t, answers, nil, nameLimit+negotiationLimit+testrun.Patient(5*time.Second))
+			call, stream, _ := answeredCall(t, answers, nil, nameLimit+negotiationLimit+testrun.Patient(testrun.HangBound))
 			stream.waitFor(t, len(opening)+len(asked), time.Now().Add(progressLimit))
 			promptAt := stream.byteAt(t, len(opening)+len(asked)-1)
 			// Whatever the caller sends after the 60 seconds meets a closed connection, not a
@@ -710,7 +710,7 @@ func TestName(t *testing.T) {
 				return nil, nil
 			}
 			call := dial(t, startKind(t, 1, nilOpen)[0])
-			stream := call.record(call.connected.Add(testrun.Patient(5 * time.Second)))
+			stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
 			sent := call.send(t, answers)
 			stream.expectStream(t, opening)
 			expectWithin(t, "the engine's end", stream.ended, sent.began, sent.done.Add(margin))
@@ -722,14 +722,14 @@ func TestName(t *testing.T) {
 			t.Parallel()
 			engine, addresses := startListener(t, 1, openTelnet)
 			closing := dial(t, addresses[0])
-			closingStream := closing.record(closing.connected.Add(testrun.Patient(10 * time.Second)))
+			closingStream := closing.record(closing.connected.Add(testrun.Patient(testrun.HangBound)))
 			closingSent := closing.send(t, join(answers, []byte("n\r")))
 			// End of stream is the shutdown: the closing caller is now in Close's wait.
 			closingStream.expectStream(t, join(opening, asked, echoed("n")))
 			// The silent caller comes second, so that nothing it does can hold back the closing
 			// caller's call and start the closing wait later than its write.
 			silent := dial(t, addresses[0])
-			silentStream := silent.record(silent.connected.Add(testrun.Patient(10 * time.Second)))
+			silentStream := silent.record(silent.connected.Add(testrun.Patient(testrun.HangBound)))
 			silentStream.waitFor(t, len(opening), time.Now().Add(progressLimit))
 			stoppedAt := time.Now()
 			// The nearest fault leaves a call open until its closing wait's 3 seconds end, and
@@ -1020,7 +1020,7 @@ func clampCall(t *testing.T, index int) bool {
 	wait(t, call.connected.Add(time.Second))
 	call.flood(t)
 	wait(t, call.connected.Add(10*time.Second))
-	stream := call.recordBulk(call.connected.Add(ceilingLimit + testrun.Patient(5*time.Second)))
+	stream := call.recordBulk(call.connected.Add(ceilingLimit + testrun.Patient(testrun.HangBound)))
 	wait(t, call.connected.Add(68500*time.Millisecond))
 	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(time.Second)))
 	_, _ = call.connection.Write([]byte("a\r"))

@@ -47,7 +47,7 @@ func expectWrapped(t *testing.T, call string, err, want error) {
 // waitedError is the error a call running on its own goroutine returns, within a hang's bound.
 func waitedError(t *testing.T, call string, returned <-chan error) error {
 	t.Helper()
-	bound := testrun.Patient(10 * time.Second)
+	bound := testrun.Patient(testrun.HangBound)
 	select {
 	case err := <-returned:
 		return err
@@ -138,7 +138,7 @@ func TestLineWrapsTheContextsError(t *testing.T) {
 			done := closeOn(ctx, line)
 			expectEndOfStream(t, pair.client)
 			cancel()
-			expectWrapped(t, "Close", waitClosed(t, done, testrun.Patient(10*time.Second)).err, context.Canceled)
+			expectWrapped(t, "Close", waitClosed(t, done, testrun.Patient(testrun.HangBound)).err, context.Canceled)
 		})
 	})
 }

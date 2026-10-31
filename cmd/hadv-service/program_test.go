@@ -129,7 +129,7 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command.SysProcAttr = processAttributes()
-	command.WaitDelay = testrun.Patient(5 * time.Second)
+	command.WaitDelay = testrun.Patient(testrun.HangBound)
 	// A program built with the race detector sleeps a second at exit by default, waiting for late
 	// reports, which would read as a slow exit; a race it finds still reaches the log and fails
 	// the row.
@@ -544,7 +544,7 @@ func heldPort(t *testing.T) (port string, ipv4, ipv6 net.Listener) {
 // expectRefused checks a dial to the address is refused: nothing listens there.
 func expectRefused(t *testing.T, address string) {
 	t.Helper()
-	connection, err := (&net.Dialer{Timeout: testrun.Patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
+	connection, err := (&net.Dialer{Timeout: testrun.Patient(testrun.HangBound)}).DialContext(t.Context(), "tcp", address)
 	if err == nil {
 		_ = connection.Close()
 		t.Errorf("a caller reached %s, where the engine may not listen", address)
