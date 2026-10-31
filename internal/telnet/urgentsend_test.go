@@ -278,8 +278,8 @@ func TestUrgentSend(t *testing.T) {
 				if err := engine.SetWriteDeadline(set.Add(row.deadline)); err != nil {
 					t.Fatalf("setting the write deadline: %v", err)
 				}
-				at, after := row.arrange(t, engine, caller, set)
-				until := at.Add(testrun.Patient(sendMargin + sendBound))
+				moment, after := row.arrange(t, engine, caller, set)
+				until := moment.Add(testrun.Patient(sendMargin + sendBound))
 				if row.sent {
 					until = time.Now().Add(testrun.Patient(testrun.HangBound))
 				}
@@ -287,19 +287,19 @@ func TestUrgentSend(t *testing.T) {
 				// The moment that ends or opens the send was fixed before the send began: a send
 				// begun too near it was not yet waiting when it came, and the row did not reach its
 				// case.
-				if row.full && !result.began.Before(at.Add(-sendReach)) {
+				if row.full && !result.began.Before(moment.Add(-sendReach)) {
 					if testrun.Race {
-						t.Logf("under the race detector, timing is not judged: the send began %v from the moment meant to find it waiting, where it needs to begin %v before, so the row judges nothing", at.Sub(result.began), sendReach)
+						t.Logf("under the race detector, timing is not judged: the send began %v from the moment meant to find it waiting, where it needs to begin %v before, so the row judges nothing", moment.Sub(result.began), sendReach)
 						return
 					}
-					t.Fatalf("did not reach its case: the send began %v from the moment meant to find it waiting, a negative time after it, where it needs to begin %v before", at.Sub(result.began), sendReach)
+					t.Fatalf("did not reach its case: the send began %v from the moment meant to find it waiting, a negative time after it, where it needs to begin %v before", moment.Sub(result.began), sendReach)
 				}
 				if row.sent {
 					if result.err != nil || result.count != 1 {
 						t.Fatalf("WriteUrgent returned %d, %v, want 1 and no error", result.count, result.err)
 					}
 				} else {
-					expectWokenAt(t, result, at)
+					expectWokenAt(t, result, moment)
 				}
 				if after != nil {
 					after(t)
