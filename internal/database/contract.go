@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package database is the engine's side of the board's database: the connection file, signing in,
-// the checks made each time the lease is taken, and the server's lease.
+// Package database is the engine's side of the board's database: the connection settings the
+// bootstrap file seals, signing in, the checks made each time the lease is taken, and the server's
+// lease.
 //
-// It owns reading the connection file the sysop names; connecting to PostgreSQL over TLS and
+// It owns reading the connection settings, the JSON the bootstrap unit unseals; connecting to
+// PostgreSQL over TLS and
 // signing in by SCRAM-SHA-256 with channel binding, on github.com/jackc/pgx/v5 at v5.11.0 or
 // later; refusing a login that could change the schema; reading the schema version and the
 // server's row; and the lease: taking it, renewing it every RenewSeconds while it is held, telling
@@ -13,36 +15,36 @@
 //
 // It does not own waiting and trying again, the listeners, or the local log: the program decides
 // from each error whether to wait or to stop, opens and closes the listeners, and writes every log
-// line in its own words. The command line, which names the connection file, is the program's.
-// Creating the database, the owner, the server's login and row, and the connection file belong to
-// hadv-setup; acting on another server's ended lease, and the cleanup after a run whose lease
-// ended, to later layers.
+// line in its own words. The command line, which names the bootstrap folder, is the program's; the
+// bootstrap folder, its key file and the sealing are the bootstrap unit's. Creating the database,
+// the owner, the server's login and row, and the bootstrap file belong to hadv-setup; acting on
+// another server's ended lease, and the cleanup after a run whose lease ended, to later layers.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
 //
 // # Untrusted input
 //
 // The connection to the database crosses a trust boundary: until the database's certificate
-// chains to the connection file's certificate authority and names its host, the other end may be
+// chains to the Connection's certificate authority and names its host, the other end may be
 // anyone, and nothing is sent to it but the TLS handshake. After it, the library reads every reply
 // from the database: the sign-in, the rows and the errors, each message at most ReplyMostBytes.
 // This package reads one integer, one row of three columns and the login's rights from those
-// replies, and keeps none of the database's text in an error. The connection file is the sysop's,
-// not a caller's; it is read once, at most ConnectionFileMostBytes. No caller's byte reaches this
-// package. There is no fuzz target here: the standard library parses the file and the library the
-// wire.
+// replies, and keeps none of the database's text in an error. The connection settings are
+// hadv-setup's, sealed in the bootstrap file, not a caller's; they reach this package only once
+// the bootstrap unit has unsealed them, which bounds them. No caller's byte reaches this package.
+// There is no fuzz target here: the standard library parses the JSON and the library the wire.
 //
 // # Oracles
 //
 // PostgreSQL itself, a real server driven from outside: the tests create the database from Schema
-// as the owner, a server's login as a member of hadv_server, the row and the connection file, as
+// as the owner, a server's login as a member of hadv_server, the row and the bootstrap folder, as
 // hadv-setup will; read and write hadv.servers with SQL; stop and start the server; change its
 // sign-in rules; and make their own certificate authority, signing with ECDSA P-256 and SHA-256.
 // Tests run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user.
 //
 // # What it needs from its callers
 //
-// One ServerDatabase per run of the engine, made from the connection file once. One Take at a
+// One ServerDatabase per run of the engine, made from the Connection once. One Take at a
 // time, and a new Take only once the Lease it returned is lost or ended. A context that a stop
 // cancels.
 //
@@ -50,10 +52,10 @@
 //
 //   - The database package shall write nothing to the local log, standard output or standard
 //     error. [read]
-//   - No error the database package returns shall hold, in its text, the connection file's
-//     password or any text the database sent.
+//   - No error the database package returns shall hold, in its text, the Connection's password,
+//     any other part of the connection settings, or any text the database sent.
 //   - The database package shall take where it connects, its login and its password from the
-//     ConnectionFile alone, whatever PostgreSQL's environment variables, password file or service
+//     Connection alone, whatever PostgreSQL's environment variables, password file or service
 //     file give.
 //   - If a message from the database is longer than ReplyMostBytes, then the database package
 //     shall treat the connection as failed, ErrUnreachable at a take, without reading the rest.
@@ -69,9 +71,6 @@ import (
 )
 
 const (
-	// ConnectionFileMostBytes bounds the connection file: a longer one is refused, so what is
-	// read has a bound.
-	ConnectionFileMostBytes = 65536
 	// SchemaVersionMadeFor is the schema version this engine was made for. It also accepts the
 	// next, so servers one version apart share the database during a rolling update.
 	SchemaVersionMadeFor = 1
@@ -99,24 +98,16 @@ const (
 //go:embed schema.sql
 var Schema string
 
-// Why ReadConnectionFile refused the file. None holds any part of the file's contents, so the
+// Why ParseConnection refused the connection settings. None holds any part of them, so the
 // program can write it to the local log as it is.
 var (
-	// ErrFileMissing means no file is at the path given.
-	ErrFileMissing = errors.New("database: the connection file does not exist")
-	// ErrFileReadableByOthers means, on Linux, the file's mode lets its group or others read it.
-	ErrFileReadableByOthers = errors.New("database: the connection file's mode lets its group or others read it")
-	// ErrFileUnreadable means the file is there but cannot be read.
-	ErrFileUnreadable = errors.New("database: the connection file cannot be read")
-	// ErrFileTooLarge means the file is longer than ConnectionFileMostBytes.
-	ErrFileTooLarge = errors.New("database: the connection file is too large")
-	// ErrFileFormat means the file is not in the connection file's format: not one JSON object, a
+	// ErrFormat means the connection settings are not in their format: not one JSON object, a
 	// field given twice, or a field not of its kind.
-	ErrFileFormat = errors.New("database: the connection file is not in the connection file's format")
-	// ErrFileFieldUnknown means the file holds a field the format does not name.
-	ErrFileFieldUnknown = errors.New("database: the connection file holds a field the format does not name")
-	// ErrFileFieldMissing means the file lacks one of the format's seven fields.
-	ErrFileFieldMissing = errors.New("database: the connection file is missing a field")
+	ErrFormat = errors.New("database: the bootstrap file's connection settings are not in their format")
+	// ErrFieldUnknown means the connection settings hold a field the format does not name.
+	ErrFieldUnknown = errors.New("database: the bootstrap file's connection settings hold a field the format does not name")
+	// ErrFieldMissing means the connection settings lack one of the format's seven fields.
+	ErrFieldMissing = errors.New("database: the bootstrap file's connection settings are missing a field")
 )
 
 // Why Take failed. ErrUnreachable, ErrNotReady, ErrNoConnectionFree, ErrReadOnly and ErrLeaseHeld
@@ -138,7 +129,7 @@ var (
 	ErrRefused = errors.New("database: the database refuses")
 	// ErrLeaseHeld means the server's lease has not ended and its holder is not this run's own.
 	ErrLeaseHeld = errors.New("database: the server's lease is held by another run")
-	// ErrCertificate means the database's certificate does not chain to the connection file's
+	// ErrCertificate means the database's certificate does not chain to the Connection's
 	// certificate authority, does not name its host, or cannot be used for channel binding.
 	ErrCertificate = errors.New("database: the database's certificate fails its check")
 	// ErrSignInMethod means the database asked for a way of signing in other than SCRAM-SHA-256
@@ -149,7 +140,7 @@ var (
 	// ErrTooPowerful means the login holds a right beyond those schema.sql grants a server's
 	// login, or the power to take one.
 	ErrTooPowerful = errors.New("database: the login holds more rights than a server's login is granted")
-	// ErrNoServerRow means hadv.servers holds no row for the connection file's server ID.
+	// ErrNoServerRow means hadv.servers holds no row for the Connection's server ID.
 	ErrNoServerRow = errors.New("database: no row for this server's ID")
 	// ErrSchemaVersion is what a SchemaVersionError matches through errors.Is.
 	ErrSchemaVersion = errors.New("database: the schema version is not one this engine accepts")
@@ -175,10 +166,11 @@ func (failure *SchemaVersionError) Unwrap() error {
 	return ErrSchemaVersion
 }
 
-// ConnectionFile is what the connection file holds: where the database is and how this server
-// signs in. On disk it is one JSON object, its fields named server_id (an integer), host, port (an
-// integer), database, login, password and ca_certificate (PEM text), each required, no other.
-type ConnectionFile struct {
+// Connection is what the connection settings hold: where the database is and how this server signs
+// in. The bootstrap file seals them as one JSON object, its fields named server_id (an integer),
+// host, port (an integer), database, login, password and ca_certificate (PEM text), each required,
+// no other.
+type Connection struct {
 	// ServerID is this server's row in hadv.servers.
 	ServerID int64
 	// Host is the database's address, and the name its certificate carries.
@@ -196,33 +188,25 @@ type ConnectionFile struct {
 	CACertificate string
 }
 
-// ReadConnectionFile reads the connection file at path once and closes it. The checks run in the
-// order of the lines below, and the first that applies is the result.
+// ParseConnection reads the connection settings, the JSON the bootstrap unit unsealed. The checks
+// run in the order of the lines below, and the first that applies is the result. The caller wipes
+// contents once ParseConnection returns; nothing ParseConnection returns shares its memory.
 //
-//   - ReadConnectionFile shall check the file in the order of these lines and return the first
-//     refusal that applies.
-//   - If no file is at path, then ReadConnectionFile shall return ErrFileMissing.
-//   - If, on Linux, the file's mode lets its group or others read it, then ReadConnectionFile
-//     shall return ErrFileReadableByOthers without reading the file.
-//   - If the file cannot be read, then ReadConnectionFile shall return ErrFileUnreadable.
-//   - If the file is longer than ConnectionFileMostBytes, then ReadConnectionFile shall return
-//     ErrFileTooLarge.
-//   - If the file is not one JSON object, or gives a field twice, then ReadConnectionFile shall
-//     return ErrFileFormat.
+//   - ParseConnection shall check the connection settings in the order of these lines and return
+//     the first refusal that applies.
+//   - If the connection settings are not one JSON object, or give a field twice, then
+//     ParseConnection shall return ErrFormat.
 //   - If the object holds a field whose name is not exactly one of server_id, host, port,
-//     database, login, password and ca_certificate, then ReadConnectionFile shall return
-//     ErrFileFieldUnknown.
-//   - If the object lacks one of those seven fields, then ReadConnectionFile shall return
-//     ErrFileFieldMissing.
+//     database, login, password and ca_certificate, then ParseConnection shall return
+//     ErrFieldUnknown.
+//   - If the object lacks one of those seven fields, then ParseConnection shall return
+//     ErrFieldMissing.
 //   - If server_id is not an integer, port is not an integer from 1 to 65535, another field is
 //     not a non-empty string, or ca_certificate is not one or more PEM blocks of type CERTIFICATE,
-//     each an X.509 certificate, and nothing else, then ReadConnectionFile shall return
-//     ErrFileFormat.
-//   - ReadConnectionFile shall return an error whose text holds no part of the file's contents.
-//   - ReadConnectionFile shall read at most ConnectionFileMostBytes and one byte more from the
-//     file, and close it before it returns. [read]
-func ReadConnectionFile(path string) (ConnectionFile, error) {
-	return readConnectionFile(path)
+//     each an X.509 certificate, and nothing else, then ParseConnection shall return ErrFormat.
+//   - ParseConnection shall return an error whose text holds no part of the connection settings.
+func ParseConnection(contents []byte) (Connection, error) {
+	return parseConnection(contents)
 }
 
 // ServerDatabase is one run of the engine against its database. It remembers the lease holder it
@@ -232,22 +216,22 @@ type ServerDatabase struct {
 	state serverDatabaseState
 }
 
-// NewServerDatabase makes the run's ServerDatabase from the connection file. Nothing is connected
-// until Take.
+// NewServerDatabase makes the run's ServerDatabase from the Connection. Nothing is connected until
+// Take.
 //
 //   - NewServerDatabase shall connect to nothing.
-func NewServerDatabase(file ConnectionFile) *ServerDatabase {
-	return newServerDatabase(file)
+func NewServerDatabase(connection Connection) *ServerDatabase {
+	return newServerDatabase(connection)
 }
 
 // Take connects, signs in, makes the checks in the order below, and takes the server's lease,
 // waiting on the database at most TrySeconds. On an error it closes the connection it made and
 // returns a nil Lease. When the context ends, the context's error wins.
 //
-//   - Take shall connect to the ConnectionFile's host and port over TLS 1.2 or 1.3 only, and accept
-//     the database's certificate only when it chains to the ConnectionFile's certificate authority
+//   - Take shall connect to the Connection's host and port over TLS 1.2 or 1.3 only, and accept
+//     the database's certificate only when it chains to the Connection's certificate authority
 //     and names its host.
-//   - Take shall sign in as the ConnectionFile's login, to its database, only by SCRAM-SHA-256
+//   - Take shall sign in as the Connection's login, to its database, only by SCRAM-SHA-256
 //     with channel binding.
 //   - Take shall make the checks in the order of the lines below, and return the first failure;
 //     until it has signed in, the first failure is the one the connection meets first.
@@ -277,7 +261,7 @@ func NewServerDatabase(file ConnectionFile) *ServerDatabase {
 //   - If hadv.schema_version is missing, holds no row, holds anything but one integer, or holds a
 //     version other than SchemaVersionMadeFor and the next, then Take shall return a
 //     *SchemaVersionError naming the version found, or Missing.
-//   - If hadv.servers holds no row for the ConnectionFile's server ID, then Take shall return
+//   - If hadv.servers holds no row for the Connection's server ID, then Take shall return
 //     ErrNoServerRow.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase
 //     last sent, Take shall write a new random lease holder and a lease end LeaseSeconds after
