@@ -38,6 +38,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The superuser the tests set a server up as, and the one address every server listens at.
@@ -60,17 +62,30 @@ var (
 	oracleFailure     error
 )
 
-// TestMain makes the template cluster and the shared server before the rows run, and removes both
-// after. A failure fails every row that needs a server, with its reason: the oracle is required.
+// TestMain makes this run's own folder, taking what dead runs left, then the template cluster and
+// the shared server inside it, before the rows run, and removes them all after. A failure of the
+// oracle fails every row that needs a server, with its reason: the oracle is required.
 func TestMain(tests *testing.M) {
+	runFolder, swept, err := testrun.Enter()
+	if swept != nil {
+		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+		if err := testrun.Leave(runFolder); err != nil {
+			fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+		}
+		os.Exit(1)
+	}
 	oracleFailure = prepareOracle()
 	code := tests.Run()
 	if shared != nil {
 		_, _ = shared.pgctl("stop", "-m", "immediate", "-w", "-t", "60")
-		_ = os.RemoveAll(shared.directory)
 	}
-	if templateDirectory != "" {
-		_ = os.RemoveAll(templateDirectory)
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
 	}
 	os.Exit(code)
 }
@@ -981,7 +996,7 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 		return
 	}
 	if moment.After(notAfter) {
-		if raceBuild {
+		if testrun.Race {
 			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
 			return
 		}
@@ -996,25 +1011,12 @@ func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Ti
 // there is right: neither bound is judged, and the moment is only logged.
 func expectEngineWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
-	if raceBuild {
+	if testrun.Race {
 		t.Logf("under the race detector, timing is not judged: %s came %v into its window of %v, which opens from an earlier event of the engine's",
 			what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 		return
 	}
 	expectWithin(t, what, moment, notBefore, notAfter)
-}
-
-// raceStretch is how much longer a wait may take under the race detector, which slows the engine
-// and the test by an amount nobody controls: generous, since a stretched wait still fails a
-// hang, and no upper bound on time is judged there.
-const raceStretch = 4
-
-// patient stretches a wait under the race detector; without it the wait is unchanged.
-func patient(wait time.Duration) time.Duration {
-	if raceBuild {
-		return raceStretch * wait
-	}
-	return wait
 }
 
 var errNotUsed = errors.New("")

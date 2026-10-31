@@ -36,6 +36,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The option that names the connection file, the superuser the tests set a server up as, and
@@ -93,14 +95,10 @@ func prepareOracle() error {
 	return err
 }
 
-// removeOracle stops the shared server and removes it and the template.
-func removeOracle() {
+// stopOracle stops the shared server; its folder and the template's go with the run's own.
+func stopOracle() {
 	if shared != nil {
 		_, _ = shared.pgctl("stop", "-m", "immediate", "-w", "-t", "60")
-		_ = os.RemoveAll(shared.directory)
-	}
-	if templateDirectory != "" {
-		_ = os.RemoveAll(templateDirectory)
 	}
 }
 
@@ -468,7 +466,7 @@ func replaceFile(path string, contents []byte) error {
 	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(patient(5 * time.Second))
+	deadline := time.Now().Add(testrun.Patient(5 * time.Second))
 	for {
 		err := os.Rename(temporary, path)
 		if err == nil || time.Now().After(deadline) {

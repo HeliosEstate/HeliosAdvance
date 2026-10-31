@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/ssh"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The page's limits and texts, as the lines state them; never the package's constants.
@@ -46,35 +48,22 @@ const (
 // early is how far before its deadline a runner's clock may wake a wait, Part 1's measure.
 const early = 20 * time.Millisecond
 
-// raceStretch is how much longer a wait may take under the race detector, which slows the engine
-// and the test by an amount nobody controls: generous, since a stretched wait still fails a
-// hang, and no upper bound on time is judged there.
-const raceStretch = 4
-
-// patient stretches a wait under the race detector; without it the wait is unchanged.
-func patient(wait time.Duration) time.Duration {
-	if raceBuild {
-		return raceStretch * wait
-	}
-	return wait
-}
-
 // expectWithin checks a moment falls in its window and logs how far into it it came. Under the
 // race detector only the window's opening is judged: the race detector slows the engine by an
 // amount nobody controls, so lateness there is logged, never failed.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
+	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
 	if moment.After(notAfter) {
-		if raceBuild {
+		if testrun.Race {
 			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
 		} else {
 			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
 		}
 	}
-	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
 
 // isEnd is a read the engine ended: end of stream, or a reset.

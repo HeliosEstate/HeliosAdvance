@@ -24,6 +24,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The loopback addresses and the port option, as the page and the issue name them.
@@ -35,7 +37,7 @@ const (
 
 // startLimit bounds how long the program may take to name its listeners or to exit after a
 // refusal. The page gives it no limit; this one only keeps a hung program from hanging the run.
-var startLimit = patient(30 * time.Second)
+var startLimit = testrun.Patient(30 * time.Second)
 
 var (
 	programPath  string
@@ -44,8 +46,21 @@ var (
 
 // TestMain builds the program the rows run, under the race detector when the tests run under
 // it, and prepares the database every run needs. A build or a database that fails fails every
-// row with its reason, rather than stopping before any runs.
+// row with its reason, rather than stopping before any runs. First it makes this run's own
+// folder, taking what dead runs left, so that everything the run makes, the program included,
+// lands there.
 func TestMain(tests *testing.M) {
+	runFolder, swept, err := testrun.Enter()
+	if swept != nil {
+		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+		if err := testrun.Leave(runFolder); err != nil {
+			fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+		}
+		os.Exit(1)
+	}
 	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-test-")
 	if err != nil {
@@ -57,7 +72,7 @@ func TestMain(tests *testing.M) {
 		}
 		programPath = filepath.Join(directory, name)
 		arguments := []string{"build", "-o", programPath}
-		if raceBuild {
+		if testrun.Race {
 			arguments = append(arguments, "-race")
 		}
 		arguments = append(arguments, ".")
@@ -67,10 +82,12 @@ func TestMain(tests *testing.M) {
 		}
 	}
 	code := tests.Run()
-	if directory != "" {
-		_ = os.RemoveAll(directory)
+	stopOracle()
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
 	}
-	removeOracle()
 	os.Exit(code)
 }
 
@@ -114,11 +131,11 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command.SysProcAttr = processAttributes()
-	command.WaitDelay = patient(5 * time.Second)
+	command.WaitDelay = testrun.Patient(5 * time.Second)
 	// A program built with the race detector sleeps a second at exit by default, waiting for late
 	// reports, which would read as a slow exit; a race it finds still reaches the log and fails
 	// the row.
-	if raceBuild {
+	if testrun.Race {
 		if command.Env == nil {
 			command.Env = os.Environ()
 		}
@@ -529,7 +546,7 @@ func heldPort(t *testing.T) (port string, ipv4, ipv6 net.Listener) {
 // expectRefused checks a dial to the address is refused: nothing listens there.
 func expectRefused(t *testing.T, address string) {
 	t.Helper()
-	connection, err := (&net.Dialer{Timeout: patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
+	connection, err := (&net.Dialer{Timeout: testrun.Patient(10 * time.Second)}).DialContext(t.Context(), "tcp", address)
 	if err == nil {
 		_ = connection.Close()
 		t.Errorf("a caller reached %s, where the engine may not listen", address)

@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 const (
@@ -53,7 +55,7 @@ func makeKey(t *testing.T, keyType, passphrase string, extra ...string) string {
 func expectSSHServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, []byte(sshVersionLine), call.connected.Add(patient(margin)))
+	call.readExactly(t, []byte(sshVersionLine), call.connected.Add(testrun.Patient(margin)))
 	return call
 }
 
@@ -262,7 +264,7 @@ func TestSSHProgram(t *testing.T) {
 				t.Fatalf("a Telnet caller was served with %d connections open", connectionCap)
 			}
 			call := dial(t, ssh[0])
-			received, err := readAll(call, call.connected.Add(patient(margin)))
+			received, err := readAll(call, call.connected.Add(testrun.Patient(margin)))
 			if len(received) != 0 || !(isEnd(err)) {
 				t.Fatalf("an SSH caller with %d connections open got %q and %v, want a close with nothing written", connectionCap, received, err)
 			}
@@ -315,7 +317,7 @@ func TestSSHProgram(t *testing.T) {
 			_, ssh := program.kinds(t)
 			silent := expectSSHServed(t, ssh[0])
 			from, sentBy := send(t, program)
-			notAfter := sentBy.Add(patient(margin))
+			notAfter := sentBy.Add(testrun.Patient(margin))
 			_, err := readAll(silent, notAfter)
 			if !isEnd(err) {
 				t.Fatalf("the silent SSH caller's read ended with %v, want the engine's close", err)
