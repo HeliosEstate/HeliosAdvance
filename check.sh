@@ -288,14 +288,18 @@ if [ -n "$pkgs" ]; then
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
   # every failure from load on record came with every package at once (HeliosDesign #258).
   if [ -n "${TIMED:-}" ]; then
-    # CI keeps every timed row's place in its window (#258): a passing test's log shows only in
-    # Go's -json stream, so its "into its window of" lines go to $TIMED, a few KB. The console gets
-    # each package's result, and a failed package's whole output, so a crash or a hang that Go
-    # does not pin on one test still shows its cause.
+    # CI keeps every timed row's place in its window (#258), and every skipped row's reason, since a
+    # skipped row proves nothing (HeliosDesign #217): a passing run's logs show only in Go's -json
+    # stream, so those lines go to $TIMED, a few KB. The console gets each package's result, and a
+    # failed package's whole output, so a crash or a hang that Go does not pin on one test still
+    # shows its cause.
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
     go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
     jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep 'into its window of' > "$TIMED" || true
+    jq -sj '[.[] | select(.Action == "skip" and .Test) | .Package + " " + .Test] as $skipped
+      | .[] | select(.Action == "output" and .Test) | select((.Package + " " + .Test) as $k | any($skipped[]; . == $k))
+      | .Package + ":" + .Output' "$stream" >> "$TIMED"
     jq -sj '[.[] | select(.Action == "fail" and (.Test | not)) | .Package] as $failed
       | .[] | select(.Action == "build-output" or .Action == "output")
       | select((.Package as $p | any($failed[]; . == $p))
