@@ -74,6 +74,10 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   package into Go's test timeout, where every other row's verdict is lost with it.
 - A goroutine a row starts hands its result back over a channel, and only the row's own goroutine
   reports. A goroutine that reports after its subtest has ended panics the whole package.
+- A wait that gives up at a moment takes a result already in first: a test that came late to the
+  wait finds its give-up already run out, and a select between the two picks either by chance. A
+  check that nothing has returned by a moment fails only a return made before it, and hands a
+  later one back for the row to read.
 - A cleanup that waits on the engine, such as a Stop, is registered so that it runs after the
   row has let go of anything it holds back, such as a held Open; otherwise a fault that fails
   the row first leaves the cleanup waiting for good.

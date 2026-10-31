@@ -35,7 +35,8 @@ type negotiated struct {
 type negotiating struct {
 	// called is a moment before Negotiate was called, so before its opening write began.
 	called time.Time
-	done   <-chan negotiated
+	// done holds Negotiate's result; a check that takes it early hands it back for the row.
+	done chan negotiated
 }
 
 // negotiate calls Negotiate on its own goroutine, as the Listener does, and returns at once.

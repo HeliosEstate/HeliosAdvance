@@ -284,8 +284,9 @@ func TestUrgentSend(t *testing.T) {
 					until = time.Now().Add(testrun.Patient(testrun.HangBound))
 				}
 				result := sendBounded(t, engine, caller, until)
-				// The moment that ends or opens the send was fixed before the send began: a send begun
-				// too near it was not yet waiting when it came, and the row did not reach its case.
+				// The moment that ends or opens the send was fixed before the send began: a send
+				// begun too near it was not yet waiting when it came, and the row did not reach its
+				// case.
 				if row.full && !result.began.Before(at.Add(-sendReach)) {
 					if testrun.Race {
 						t.Logf("under the race detector, timing is not judged: the send began %v from the moment meant to find it waiting, where it needs to begin %v before, so the row judges nothing", at.Sub(result.began), sendReach)

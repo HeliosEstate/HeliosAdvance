@@ -41,6 +41,13 @@ func acceptOn(ctx context.Context, connection *net.TCPConn) <-chan accepted {
 
 func waitAccepted(t *testing.T, done <-chan accepted, limit time.Duration) accepted {
 	t.Helper()
+	// A result already in wins over a give-up already run out: a test that came late to wait
+	// would otherwise get either, by chance.
+	select {
+	case got := <-done:
+		return got
+	default:
+	}
 	select {
 	case got := <-done:
 		return got

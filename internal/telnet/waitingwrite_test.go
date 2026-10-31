@@ -134,7 +134,12 @@ func expectNotReturned(t *testing.T, call negotiating, until time.Time) {
 	defer timer.Stop()
 	select {
 	case got := <-call.done:
-		t.Fatalf("Negotiate returned (%v, %v) %v after it was called, while its write waited", got.outcome, got.err, got.returned.Sub(call.called))
+		// A test that came late may find a return made after the moment: that one is the
+		// row's to read next, so it is handed back. Only a return before the moment fails.
+		if got.returned.Before(until) {
+			t.Fatalf("Negotiate returned (%v, %v) %v after it was called, while its write waited", got.outcome, got.err, got.returned.Sub(call.called))
+		}
+		call.done <- got
 	case <-timer.C:
 	}
 }

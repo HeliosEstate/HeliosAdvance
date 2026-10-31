@@ -1063,6 +1063,13 @@ func watchClose(t *testing.T, call caller, address string, deadline time.Time) f
 		closed <- closedAt
 	}()
 	return func() time.Time {
+		// A close already seen wins over a give-up already run out: a test that came late to
+		// wait would otherwise get either, by chance.
+		select {
+		case closedAt := <-closed:
+			return closedAt
+		default:
+		}
 		timer := time.NewTimer(time.Until(deadline.Add(testrun.Patient(margin))))
 		defer timer.Stop()
 		select {

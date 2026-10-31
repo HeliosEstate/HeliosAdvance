@@ -352,12 +352,18 @@ func (program *run) firstLine(t *testing.T) string {
 // exit waits for the program to exit, by the deadline, and returns its exit code and when.
 func (program *run) exit(t *testing.T, deadline time.Time) (int, time.Time) {
 	t.Helper()
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
+	// An exit already made wins over a give-up already run out: a test that came late to wait
+	// would otherwise get either, by chance.
 	select {
 	case <-program.exited:
-	case <-timer.C:
-		t.Fatalf("the program had not exited by the deadline; its log so far:\n%s", program.text())
+	default:
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-program.exited:
+		case <-timer.C:
+			t.Fatalf("the program had not exited by the deadline; its log so far:\n%s", program.text())
+		}
 	}
 	program.mutex.Lock()
 	defer program.mutex.Unlock()

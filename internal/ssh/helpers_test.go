@@ -151,6 +151,13 @@ func listenLoopback(t *testing.T) *net.TCPListener {
 
 func waitAccept(t *testing.T, results <-chan acceptResult, limit time.Duration) acceptResult {
 	t.Helper()
+	// A result already in wins over a give-up already run out: a test that came late to wait
+	// would otherwise get either, by chance.
+	select {
+	case result := <-results:
+		return result
+	default:
+	}
 	select {
 	case result := <-results:
 		return result
