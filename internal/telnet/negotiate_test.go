@@ -53,21 +53,21 @@ func negotiate(ctx context.Context, connection telnet.Conn) negotiating {
 // result waits for Negotiate to return, failing the test if it has not by the deadline.
 func (call negotiating) result(t *testing.T, deadline time.Time) negotiated {
 	t.Helper()
-	// A result already in wins over a give-up already run out: a test that came late to wait
-	// would otherwise get either, by chance.
-	select {
-	case got := <-call.done:
-		return got
-	default:
-	}
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
 	case got := <-call.done:
 		return got
 	case <-timer.C:
-		t.Fatalf("Negotiate had not returned %v after it was called", time.Since(call.called))
-		return negotiated{}
+		// For a test that came late, both may be ready and the select picks either: a result
+		// already in wins.
+		select {
+		case got := <-call.done:
+			return got
+		default:
+			t.Fatalf("Negotiate had not returned %v after it was called", time.Since(call.called))
+			return negotiated{}
+		}
 	}
 }
 

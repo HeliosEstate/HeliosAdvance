@@ -1063,21 +1063,21 @@ func watchClose(t *testing.T, call caller, address string, deadline time.Time) f
 		closed <- closedAt
 	}()
 	return func() time.Time {
-		// A close already seen wins over a give-up already run out: a test that came late to
-		// wait would otherwise get either, by chance.
-		select {
-		case closedAt := <-closed:
-			return closedAt
-		default:
-		}
 		timer := time.NewTimer(time.Until(deadline.Add(testrun.Patient(margin))))
 		defer timer.Stop()
 		select {
 		case closedAt := <-closed:
 			return closedAt
 		case <-timer.C:
-			t.Errorf("the engine's close was not seen by %v", deadline)
-			return deadline.Add(margin)
+			// For a test that came late, both may be ready and the select picks either: a
+			// close already seen wins.
+			select {
+			case closedAt := <-closed:
+				return closedAt
+			default:
+				t.Errorf("the engine's close was not seen by %v", deadline)
+				return deadline.Add(margin)
+			}
 		}
 	}
 }

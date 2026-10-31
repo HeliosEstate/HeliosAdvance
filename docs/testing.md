@@ -123,7 +123,8 @@ CI skips both. Green is `bash check.sh`, never `go test` alone.
 - A test binary that starts servers or programs calls `testrun.Enter` first in its TestMain and
   `testrun.Leave` last: everything it makes lands in its own folder, and nothing outlives the run.
   One binary needs none: the Listener's, whose only child, on Linux alone, is the test binary run
-  again under a descriptor limit, which makes nothing on disk and ends when its input closes.
+  again under a descriptor limit, which makes nothing on disk but, under `-cover`, the coverage
+  counters written where the parent's go, and ends when its input closes.
   A run killed or timed out leaves its folder, servers and programs, and the next run takes them.
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has

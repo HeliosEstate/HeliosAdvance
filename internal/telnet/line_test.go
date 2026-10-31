@@ -60,21 +60,21 @@ func openOn(ctx context.Context, connection telnet.Conn) openCall {
 // result waits for Open to return, failing the test if it has not by the deadline.
 func (call openCall) result(t *testing.T, deadline time.Time) opened {
 	t.Helper()
-	// A result already in wins over a give-up already run out: a test that came late to wait
-	// would otherwise get either, by chance.
-	select {
-	case got := <-call.done:
-		return got
-	default:
-	}
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
 	case got := <-call.done:
 		return got
 	case <-timer.C:
-		t.Fatalf("Open had not returned %v after it was called", time.Since(call.called))
-		return opened{}
+		// For a test that came late, both may be ready and the select picks either: a result
+		// already in wins.
+		select {
+		case got := <-call.done:
+			return got
+		default:
+			t.Fatalf("Open had not returned %v after it was called", time.Since(call.called))
+			return opened{}
+		}
 	}
 }
 

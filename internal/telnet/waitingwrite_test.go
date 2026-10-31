@@ -134,14 +134,26 @@ func expectNotReturned(t *testing.T, call negotiating, until time.Time) {
 	defer timer.Stop()
 	select {
 	case got := <-call.done:
-		// A test that came late may find a return made after the moment: that one is the
-		// row's to read next, so it is handed back. Only a return before the moment fails.
-		if got.returned.Before(until) {
-			t.Fatalf("Negotiate returned (%v, %v) %v after it was called, while its write waited", got.outcome, got.err, got.returned.Sub(call.called))
-		}
-		call.done <- got
+		expectReturnedAfter(t, call, got, until)
 	case <-timer.C:
+		// For a test that came late, a return may be in as well, and the select picks either:
+		// it is looked at all the same.
+		select {
+		case got := <-call.done:
+			expectReturnedAfter(t, call, got, until)
+		default:
+		}
 	}
+}
+
+// expectReturnedAfter fails a return Negotiate made before the moment, and hands one made after it
+// back for the row to read next, since a test that came late may find it.
+func expectReturnedAfter(t *testing.T, call negotiating, got negotiated, until time.Time) {
+	t.Helper()
+	if got.returned.Before(until) {
+		t.Fatalf("Negotiate returned (%v, %v) %v after it was called, while its write waited", got.outcome, got.err, got.returned.Sub(call.called))
+	}
+	call.done <- got
 }
 
 func TestNegotiateWaitingWrite(t *testing.T) {

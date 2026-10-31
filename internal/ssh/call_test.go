@@ -946,13 +946,13 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 			t.Logf("a caller's service came %v into its window of %v", served.Sub(called), deadline.Sub(called))
 			// Judged as the Listener's is: a try that began before the deadline and was served
 			// after it does not pass, or a place freed late would. Served is the test's own clock
-			// after the read, so a try the test began past the deadline and a margin cannot tell
-			// the engine's lateness from its own.
+			// after the read, so a try the test began past the deadline cannot tell the engine's
+			// lateness from its own.
 			switch {
 			case !served.After(deadline):
 			case testrun.Race:
 				t.Logf("under the race detector, timing is not judged: a caller was served %v past the deadline", served.Sub(deadline))
-			case dialing.After(deadline.Add(margin)):
+			case dialing.After(deadline):
 				t.Fatalf("cannot tell: the try that was served began %v past the deadline", dialing.Sub(deadline))
 			default:
 				t.Fatalf("no caller was served until %v past the deadline", served.Sub(deadline))

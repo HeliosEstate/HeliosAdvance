@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -288,11 +289,15 @@ func TestUrgentSend(t *testing.T) {
 				// begun too near it was not yet waiting when it came, and the row did not reach its
 				// case.
 				if row.full && !result.began.Before(moment.Add(-sendReach)) {
+					when := fmt.Sprintf("%v after", result.began.Sub(moment))
+					if lead := moment.Sub(result.began); lead > 0 {
+						when = fmt.Sprintf("only %v before", lead)
+					}
 					if testrun.Race {
-						t.Logf("under the race detector, timing is not judged: the send began %v from the moment meant to find it waiting, where it needs to begin %v before, so the row judges nothing", moment.Sub(result.began), sendReach)
+						t.Logf("under the race detector, timing is not judged: the send began %s the moment meant to find it waiting, where it needs to begin %v before it, so the row judges nothing", when, sendReach)
 						return
 					}
-					t.Fatalf("did not reach its case: the send began %v from the moment meant to find it waiting, a negative time after it, where it needs to begin %v before", moment.Sub(result.began), sendReach)
+					t.Fatalf("did not reach its case: the send began %s the moment meant to find it waiting, where it needs to begin %v before it", when, sendReach)
 				}
 				if row.sent {
 					if result.err != nil || result.count != 1 {
