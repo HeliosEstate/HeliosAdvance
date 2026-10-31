@@ -250,7 +250,7 @@ if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
   echo "Go gates checked by another job of this run; tests only"
 elif [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
-  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
+  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck at the version in .github/tool-versions"
   need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
   go mod verify
   # Every module the engine is built from, indirect ones included, carries a licence that can
