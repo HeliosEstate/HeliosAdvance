@@ -35,10 +35,9 @@ const (
 	holderPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 )
 
-// leaseMargin is how late an event may come past its moment on every runner. Measured on CI at its
-// own load (development's run 41175459065): no lease row's event, here or in the database
-// package's, came more than 65 ms past its moment, and the least room was 1935 ms. That is one
-// run, too few to set a tighter margin on.
+// leaseMargin is how late an event may come past its moment: the same margin as the database
+// package's timingMargin, whose comment says how this package's lease rows and that one's
+// measured against it.
 const leaseMargin = 2 * time.Second
 
 // foreignHolder is another run's lease holder, which the tests write into a row.
