@@ -236,16 +236,12 @@ func TestSSHProgram(t *testing.T) {
 				expectSSHStarts(t)
 			})
 		}
-		t.Run("SSH's port taken at both addresses while Telnet's is free: one start_failed line, a non-zero exit, and no listener left, where a free port starts", func(t *testing.T) {
+		t.Run("SSH's port taken at both addresses while Telnet's is free: one start_failed line and a non-zero exit, where a free port starts", func(t *testing.T) {
 			t.Parallel()
 			sshPort, _, _ := heldPort(t)
-			telnetPort, ipv4, ipv6 := heldPort(t)
-			_ = ipv4.Close()
-			_ = ipv6.Close()
-			startProgram(t, portOption, telnetPort, hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, sshPort).expectRefusal(t)
-			for _, address := range []string{net.JoinHostPort(ipv4Loopback, telnetPort), net.JoinHostPort(ipv6Loopback, telnetPort)} {
-				expectRefused(t, address)
-			}
+			// Telnet's port is one the system picks, so it is free and the refusal is SSH's: a
+			// port freed for the program could be taken by anything in the gap.
+			startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, sshPort).expectRefusal(t)
 			expectSSHStarts(t)
 		})
 	})
