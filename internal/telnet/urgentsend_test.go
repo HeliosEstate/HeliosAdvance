@@ -165,90 +165,123 @@ func TestUrgentSend(t *testing.T) {
 	t.Parallel()
 	t.Run("While a Synch's write on a Line Accept made waits for room, a passed write deadline or the context ending shall wake it, as it wakes every other write, on Linux and on Windows.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the urgent byte alone on a full connection, its write deadline 500 ms away: os.ErrDeadlineExceeded at that deadline, nothing sent", func(t *testing.T) {
-			t.Parallel()
-			engine, caller := sendPair(t)
-			fillConnection(t, engine)
-			deadline := time.Now().Add(500 * time.Millisecond)
-			if err := engine.SetWriteDeadline(deadline); err != nil {
-				t.Fatalf("setting the write deadline: %v", err)
-			}
-			expectWokenAt(t, sendBounded(t, engine, caller, deadline.Add(testrun.Patient(sendMargin+sendBound))), deadline)
-		})
-		t.Run("the same, its deadline 10 seconds away, a long-passed deadline set from another goroutine at 500 ms: os.ErrDeadlineExceeded then", func(t *testing.T) {
-			t.Parallel()
-			engine, caller := sendPair(t)
-			fillConnection(t, engine)
-			if err := engine.SetWriteDeadline(time.Now().Add(testrun.Patient(10 * time.Second))); err != nil {
-				t.Fatalf("setting the write deadline: %v", err)
-			}
-			wakeAt := time.Now().Add(500 * time.Millisecond)
-			woken := make(chan struct{})
-			wake := time.AfterFunc(time.Until(wakeAt), func() {
-				defer close(woken)
-				_ = engine.SetWriteDeadline(time.Unix(1, 0))
-			})
-			t.Cleanup(func() {
-				if !wake.Stop() {
-					<-woken
+		for _, row := range []struct {
+			name string
+			// full fills the connection first, so the urgent byte waits for room.
+			full bool
+			// deadline is the write deadline, from when the row sets it.
+			deadline time.Duration
+			// arrange starts whatever is to end the send besides the deadline, and returns the
+			// moment the send is to be woken, a zero moment if it is to be sent, and what to check
+			// once it has returned.
+			arrange func(t *testing.T, engine *acceptedConn, caller *net.TCPConn, set time.Time) (time.Time, func(*testing.T))
+		}{
+			{
+				name:     "the urgent byte alone on a full connection, its write deadline 500 ms away: os.ErrDeadlineExceeded at that deadline, nothing sent",
+				full:     true,
+				deadline: 500 * time.Millisecond,
+				arrange: func(_ *testing.T, _ *acceptedConn, _ *net.TCPConn, set time.Time) (time.Time, func(*testing.T)) {
+					return set.Add(500 * time.Millisecond), nil
+				},
+			},
+			{
+				name:     "the same, its deadline 10 seconds away, a long-passed deadline set from another goroutine at 500 ms: os.ErrDeadlineExceeded then",
+				full:     true,
+				deadline: testrun.Patient(10 * time.Second),
+				arrange: func(t *testing.T, engine *acceptedConn, _ *net.TCPConn, _ time.Time) (time.Time, func(*testing.T)) {
+					t.Helper()
+					wakeAt := time.Now().Add(500 * time.Millisecond)
+					woken := make(chan struct{})
+					wake := time.AfterFunc(time.Until(wakeAt), func() {
+						defer close(woken)
+						_ = engine.SetWriteDeadline(time.Unix(1, 0))
+					})
+					t.Cleanup(func() {
+						if !wake.Stop() {
+							<-woken
+						}
+					})
+					return wakeAt, nil
+				},
+			},
+			{
+				name:     "the same, its deadline 10 seconds away, the context the wake is registered with cancelled at 500 ms: os.ErrDeadlineExceeded then",
+				full:     true,
+				deadline: testrun.Patient(10 * time.Second),
+				arrange: func(t *testing.T, engine *acceptedConn, _ *net.TCPConn, _ time.Time) (time.Time, func(*testing.T)) {
+					t.Helper()
+					ctx, cancel := context.WithCancel(t.Context())
+					release := wakeOnEnd(ctx, engine)
+					t.Cleanup(release)
+					cancelAt := time.Now().Add(500 * time.Millisecond)
+					stop := time.AfterFunc(time.Until(cancelAt), cancel)
+					t.Cleanup(func() { stop.Stop(); cancel() })
+					return cancelAt, nil
+				},
+			},
+			{
+				name:     "the same, its deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens, DM the last byte read",
+				full:     true,
+				deadline: testrun.Patient(10 * time.Second),
+				arrange: func(t *testing.T, _ *acceptedConn, caller *net.TCPConn, _ time.Time) (time.Time, func(*testing.T)) {
+					t.Helper()
+					read := make(chan struct{})
+					var last byte
+					var readErr error
+					reader := time.AfterFunc(500*time.Millisecond, func() {
+						defer close(read)
+						last, _, readErr = readAll(caller)
+					})
+					t.Cleanup(func() {
+						if !reader.Stop() {
+							<-read
+						}
+					})
+					return time.Time{}, func(t *testing.T) {
+						t.Helper()
+						<-read
+						if readErr != nil || last != TelnetDM {
+							t.Fatalf("the caller's last byte was %#x (error %v), want DM %#x", last, readErr, TelnetDM)
+						}
+					}
+				},
+			},
+			{
+				name:     "the urgent byte alone on an empty connection, its write deadline already passed: os.ErrDeadlineExceeded at once, nothing sent",
+				deadline: -time.Second,
+				arrange: func(_ *testing.T, _ *acceptedConn, caller *net.TCPConn, set time.Time) (time.Time, func(*testing.T)) {
+					return set, func(t *testing.T) {
+						t.Helper()
+						if _, count, err := readAll(caller); err != nil || count != 0 {
+							t.Fatalf("the caller received %d bytes (error %v), want none", count, err)
+						}
+					}
+				},
+			},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				engine, caller := sendPair(t)
+				if row.full {
+					fillConnection(t, engine)
+				}
+				set := time.Now()
+				if err := engine.SetWriteDeadline(set.Add(row.deadline)); err != nil {
+					t.Fatalf("setting the write deadline: %v", err)
+				}
+				wokenAt, after := row.arrange(t, engine, caller, set)
+				if wokenAt.IsZero() {
+					result := sendBounded(t, engine, caller, time.Now().Add(testrun.Patient(5*time.Second+sendBound)))
+					if result.err != nil || result.count != 1 {
+						t.Fatalf("WriteUrgent returned %d, %v, want 1 and no error", result.count, result.err)
+					}
+				} else {
+					expectWokenAt(t, sendBounded(t, engine, caller, wokenAt.Add(testrun.Patient(sendMargin+sendBound))), wokenAt)
+				}
+				if after != nil {
+					after(t)
 				}
 			})
-			expectWokenAt(t, sendBounded(t, engine, caller, wakeAt.Add(testrun.Patient(sendMargin+sendBound))), wakeAt)
-		})
-		t.Run("the same, its deadline 10 seconds away, the context the wake is registered with cancelled at 500 ms: os.ErrDeadlineExceeded then", func(t *testing.T) {
-			t.Parallel()
-			engine, caller := sendPair(t)
-			fillConnection(t, engine)
-			if err := engine.SetWriteDeadline(time.Now().Add(testrun.Patient(10 * time.Second))); err != nil {
-				t.Fatalf("setting the write deadline: %v", err)
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			release := wakeOnEnd(ctx, engine)
-			t.Cleanup(release)
-			cancelAt := time.Now().Add(500 * time.Millisecond)
-			stop := time.AfterFunc(time.Until(cancelAt), cancel)
-			t.Cleanup(func() { stop.Stop(); cancel() })
-			expectWokenAt(t, sendBounded(t, engine, caller, cancelAt.Add(testrun.Patient(sendMargin+sendBound))), cancelAt)
-		})
-		t.Run("the same, its deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens, DM the last byte read", func(t *testing.T) {
-			t.Parallel()
-			engine, caller := sendPair(t)
-			fillConnection(t, engine)
-			if err := engine.SetWriteDeadline(time.Now().Add(testrun.Patient(10 * time.Second))); err != nil {
-				t.Fatalf("setting the write deadline: %v", err)
-			}
-			read := make(chan struct{})
-			var last byte
-			var readErr error
-			reader := time.AfterFunc(500*time.Millisecond, func() {
-				defer close(read)
-				last, _, readErr = readAll(caller)
-			})
-			t.Cleanup(func() {
-				if !reader.Stop() {
-					<-read
-				}
-			})
-			result := sendBounded(t, engine, caller, time.Now().Add(testrun.Patient(5*time.Second+sendBound)))
-			if result.err != nil || result.count != 1 {
-				t.Fatalf("WriteUrgent returned %d, %v, want 1 and no error", result.count, result.err)
-			}
-			<-read
-			if readErr != nil || last != TelnetDM {
-				t.Fatalf("the caller's last byte was %#x (error %v), want DM %#x", last, readErr, TelnetDM)
-			}
-		})
-		t.Run("the urgent byte alone on an empty connection, its write deadline already passed: os.ErrDeadlineExceeded at once, nothing sent", func(t *testing.T) {
-			t.Parallel()
-			engine, caller := sendPair(t)
-			if err := engine.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
-				t.Fatalf("setting the write deadline: %v", err)
-			}
-			called := time.Now()
-			expectWokenAt(t, sendBounded(t, engine, caller, called.Add(testrun.Patient(sendMargin+sendBound))), called)
-			if _, count, err := readAll(caller); err != nil || count != 0 {
-				t.Fatalf("the caller received %d bytes (error %v), want none", count, err)
-			}
-		})
+		}
 	})
 }
