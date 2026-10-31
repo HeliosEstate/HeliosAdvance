@@ -91,6 +91,7 @@ linters:
             - "!**/internal/textio/**"
             - "!**/internal/timeup/**"
             - "!**/internal/ssh/**"
+            - "!**/internal/telnets/**"
             - "!**/internal/listener/**"
             - "!**/internal/database/**"
             - "!**/cmd/hadv-service/**"
@@ -171,6 +172,19 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/ssh$
             # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
+        # Telnet over TLS: crypto/tls is the standard library's, so no module is added; Telnet's
+        # Open serves the call inside the encrypted connection (docs/architecture.md, Part 8's
+        # shape, a wrapper around Telnet's object).
+        telnets:
+          files: ["**/internal/telnets/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/heliosestate/heliosadvance/internal/telnet$
+            # The rule for a call's end and the wake, written once (docs/architecture.md).
+            - github.com/heliosestate/heliosadvance/internal/timeup$
+            # Its own path, so its black-box tests in package telnets_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/telnets$
         listener:
           files: ["**/internal/listener/**", "!$test"]
           list-mode: strict
@@ -222,6 +236,9 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/listener$
             - github.com/heliosestate/heliosadvance/internal/telnet$
             - github.com/heliosestate/heliosadvance/internal/ssh$
+            # It reads the TLS certificate and key and pairs the Telnet over TLS listener's
+            # sockets with its way in (Part 8).
+            - github.com/heliosestate/heliosadvance/internal/telnets$
             # It reads the connection file and takes the lease before it listens, and closes the
             # listeners when the lease is lost (database Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
