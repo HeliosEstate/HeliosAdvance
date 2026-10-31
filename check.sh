@@ -85,10 +85,13 @@ if [ "$MUTATION" = 0 ]; then
     git merge-base --is-ancestor "$merge^2" "$BASE" ||
       fail "the loop's merge ${merge:0:7} merges a commit the base does not have"
     parted=$(git merge-base "$merge^1" "$merge^2")
-    while read -r path; do
-      git diff --quiet "$parted" "$merge^2" -- "$path" && git diff --quiet "$merge^1" "$merge" -- "$path" ||
+    # Each name whole and taken literally (a leading : or a wildcard is part of the name), with no
+    # rename hiding the old name; a git that fails here fails the gate too.
+    while IFS= read -r -d '' path; do
+      git diff --quiet "$parted" "$merge^2" -- ":(literal)$path" && git diff --quiet "$merge^1" "$merge" -- ":(literal)$path" ||
         fail "the loop's merge ${merge:0:7} has $path as no clean merge leaves it"
-    done < <(git diff --name-only "$merge^2" "$merge" -- "${owned[@]}")
+    done < <(git diff -z --no-renames --name-only "$merge^2" "$merge" -- "${owned[@]}")
+    wait $! || fail "git could not list the owned paths the loop's merge ${merge:0:7} touched"
   done <<< "$merges"
 fi
 
