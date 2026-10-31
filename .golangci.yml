@@ -93,6 +93,7 @@ linters:
             - "!**/internal/ssh/**"
             - "!**/internal/listener/**"
             - "!**/internal/database/**"
+            - "!**/internal/bootstrap/**"
             - "!**/cmd/hadv-service/**"
             - "!**/tools/**"
             - "!**/internal/testrun/*_windows.go"
@@ -212,6 +213,18 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/database$
             # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
+        bootstrap:
+          files: ["**/internal/bootstrap/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # The key file's owner and access list on Windows, which the standard library cannot
+            # read (bootstrap Part 1).
+            - golang.org/x/sys/windows$
+            # Its own path, so its black-box tests in package bootstrap_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/bootstrap$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         hadv-service:
           files: ["**/cmd/hadv-service/**"]
           list-mode: strict
@@ -225,6 +238,9 @@ linters:
             # It reads the connection file and takes the lease before it listens, and closes the
             # listeners when the lease is lost (database Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
+            # It opens the bootstrap folder the command line names and hands the unsealed
+            # connection settings to the database unit (bootstrap Part 1).
+            - github.com/heliosestate/heliosadvance/internal/bootstrap$
             # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         # The test support's Windows files, which find and end a dead run's programs (the
