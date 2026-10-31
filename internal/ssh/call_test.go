@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 const asked = greeting + prompt
@@ -44,7 +46,7 @@ func callAtPrompt(t *testing.T, program *engine, terminal bool) *rawClient {
 	t.Helper()
 	client := readyClient(t, program.ssh, "anyone")
 	client.toShell(terminal)
-	client.readUntil(asked, time.Now().Add(5*time.Second))
+	client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	return client
 }
 
@@ -59,7 +61,7 @@ func (client *rawClient) expectStream(want string) {
 // expectNameEnd reads until the Hello that ends want, and checks the whole stream.
 func (client *rawClient) expectNameEnd(want string) {
 	client.t.Helper()
-	client.readUntil(want[strings.LastIndex(want, "Hello "):], time.Now().Add(5*time.Second))
+	client.readUntil(want[strings.LastIndex(want, "Hello "):], time.Now().Add(testrun.Patient(testrun.HangBound)))
 	client.expectStream(want)
 }
 
@@ -102,7 +104,7 @@ func (client *rawClient) expectOpen() {
 // exactly want, as channel data and no other message, and the end came within margin of from.
 func (client *rawClient) expectClosedAfter(from time.Time, want string) {
 	client.t.Helper()
-	kinds, ended := client.expectEnd(from.Add(margin + time.Second))
+	kinds, ended := client.expectEnd(from.Add(testrun.Patient(margin + time.Second)))
 	for _, kind := range kinds {
 		if kind != messageChannelData {
 			client.t.Fatalf("the engine sent messages %v before the close, want channel data alone", kinds)
@@ -116,7 +118,7 @@ func (client *rawClient) expectClosedAfter(from time.Time, want string) {
 // the engine sent one channel close and nothing else, and the end came within margin of from.
 func (client *rawClient) expectOneCloseAfter(from time.Time) {
 	client.t.Helper()
-	kinds, ended := client.expectEnd(from.Add(margin + time.Second))
+	kinds, ended := client.expectEnd(from.Add(testrun.Patient(margin + time.Second)))
 	closes, others := 0, 0
 	for _, kind := range kinds {
 		switch kind {
@@ -161,7 +163,7 @@ func TestCall(t *testing.T) {
 			}
 			client.expectQuiet()
 			client.toShell(false)
-			client.readData(len(asked), time.Now().Add(5*time.Second))
+			client.readData(len(asked), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.expectQuiet()
 			client.expectStream(asked)
 		})
@@ -170,7 +172,7 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := readyClient(t, program.ssh, "anyone")
 			client.toShell(false)
-			client.readData(len(asked), time.Now().Add(5*time.Second))
+			client.readData(len(asked), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.expectQuiet()
 			client.expectStream(asked)
 		})
@@ -236,11 +238,11 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := callAtPrompt(t, program, false)
 			client.sendData(typedBob)
-			client.readUntil(helloTo("bob"), time.Now().Add(5*time.Second))
+			client.readUntil(helloTo("bob"), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			expectClosingMessages(t, client, "")
 			client.expectStream(asked + helloTo("bob"))
 			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
-			if kinds, _ := client.expectEnd(time.Now().Add(closingWait + margin + time.Second)); len(kinds) != 0 {
+			if kinds, _ := client.expectEnd(time.Now().Add(closingWait + testrun.Patient(margin+time.Second))); len(kinds) != 0 {
 				t.Fatalf("after the close the engine sent messages %v, want none", kinds)
 			}
 		})
@@ -255,7 +257,7 @@ func TestCall(t *testing.T) {
 				t.Parallel()
 				program := startEngine(t)
 				client := callAfterEnd(t, program, terminal, typedBob)
-				client.readUntil(helloTo("bob"), time.Now().Add(5*time.Second))
+				client.readUntil(helloTo("bob"), time.Now().Add(testrun.Patient(testrun.HangBound)))
 				expectClosingMessages(t, client, "")
 				client.expectStream(want)
 				// The engine's close waits up to 3 seconds for the caller's.
@@ -295,10 +297,10 @@ func TestCall(t *testing.T) {
 			client := callAtPrompt(t, program, false)
 			nameSent := time.Now()
 			client.sendData(typedBob)
-			client.readUntil(helloTo("bob"), time.Now().Add(5*time.Second))
+			client.readUntil(helloTo("bob"), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			expectClosingMessages(t, client, "")
 			closeReceived := time.Now()
-			_, ended := client.expectEnd(closeReceived.Add(closingWait + 2*margin))
+			_, ended := client.expectEnd(closeReceived.Add(closingWait + testrun.Patient(2*margin)))
 			// The window opens 3 seconds after the name's CR went, a moment provably before the
 			// engine's channel close, and shuts 3 seconds and the margin after the caller saw it.
 			expectWithin(t, "the engine's close", ended, nameSent.Add(closingWait), closeReceived.Add(closingWait+margin))
@@ -313,15 +315,15 @@ func TestCall(t *testing.T) {
 			// at 68.3 gets its Hello after 68 seconds and inside the ceiling.
 			waitUntil(t, dialed.Add(9*time.Second))
 			client.toShell(false)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			waitUntil(t, dialed.Add(68300*time.Millisecond))
 			client.sendData("a\r")
-			client.readUntil(helloTo("a"), time.Now().Add(5*time.Second))
+			client.readUntil(helloTo("a"), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			helloAt := time.Now()
 			if helloAt.Before(dialed.Add(68 * time.Second)) {
 				t.Fatalf("Hello came %v after the dial, before 68 seconds: the row proves nothing", helloAt.Sub(dialed))
 			}
-			_, ended := client.expectEnd(connected.Add(ceilingLimit + closingWait + margin))
+			_, ended := client.expectEnd(connected.Add(ceilingLimit + closingWait + testrun.Patient(margin)))
 			expectWithin(t, "the engine's close", ended, dialed.Add(ceilingLimit), connected.Add(ceilingLimit+margin))
 		})
 	})
@@ -332,7 +334,7 @@ func TestCall(t *testing.T) {
 			t.Parallel()
 			program := startEngine(t)
 			client := dialRaw(t, program.ssh)
-			if err := client.fill(len(versionLine), time.Now().Add(5*time.Second)); err != nil {
+			if err := client.fill(len(versionLine), time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil {
 				t.Fatalf("reading the version line: %v", err)
 			}
 			if got := string(client.take(len(versionLine))); got != versionLine {
@@ -356,7 +358,7 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := dialRaw(t, program.ssh)
 			client.sendVersion()
-			expectKexInit(t, client.readServerKexInit(time.Now().Add(5*time.Second)))
+			expectKexInit(t, client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound))))
 		})
 		for _, option := range []string{"KexAlgorithms=diffie-hellman-group14-sha256", "KexAlgorithms=ecdh-sha2-nistp256",
 			"Ciphers=aes128-ctr", "Ciphers=aes256-cbc", "HostKeyAlgorithms=rsa-sha2-256", "HostKeyAlgorithms=ecdsa-sha2-nistp256"} {
@@ -383,7 +385,7 @@ func TestCall(t *testing.T) {
 			client.signIn("anyone")
 			client.openChannel("session", 0, nil)
 			client.toShell(false)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 		})
 	})
 
@@ -394,12 +396,12 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := dialRaw(t, program.ssh)
 			client.sendVersion()
-			client.readServerKexInit(time.Now().Add(5 * time.Second))
+			client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendKexInit(defaultOffer("curve25519-sha256", strict))
 			client.sendPacket(message(messageIgnore).text("strict").data)
 			exchange := curveExchange(t, "curve25519-sha256")
 			client.sendPacket(message(messageKexInit30).bytesValue(exchange.initial).data)
-			return client.nextIgnoring(time.Now().Add(margin + time.Second))
+			return client.nextIgnoring(time.Now().Add(testrun.Patient(margin + time.Second)))
 		}
 		t.Run("strict offered, an IGNORE before the key exchange's first message: the connection ends with no reply", func(t *testing.T) {
 			t.Parallel()
@@ -436,7 +438,7 @@ func TestCall(t *testing.T) {
 				program := startEngine(t)
 				client := readyClient(t, program.ssh, user.user)
 				client.toShell(false)
-				client.readUntil(asked, time.Now().Add(5*time.Second))
+				client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			})
 		}
 		t.Run("the OpenSSH client as anyone: the call", func(t *testing.T) {
@@ -467,7 +469,7 @@ func TestCall(t *testing.T) {
 				out.data = append(out.data, method.extra...)
 				client.sendPacket(out.data)
 				sent := time.Now()
-				kinds, ended := client.expectEnd(sent.Add(margin + time.Second))
+				kinds, ended := client.expectEnd(sent.Add(testrun.Patient(margin + time.Second)))
 				if len(kinds) > 1 || (len(kinds) == 1 && kinds[0] != messageDisconnect) {
 					t.Fatalf("the engine sent messages %v before the close, want at most a DISCONNECT", kinds)
 				}
@@ -493,7 +495,7 @@ func TestCall(t *testing.T) {
 				t.Fatalf("a second session: message %d, want OPEN_FAILURE", reply[0])
 			}
 			client.toShell(false)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if reply := client.openChannel("session", 2, nil); reply[0] != messageChannelOpenFailure {
 				t.Fatalf("a session after the shell: message %d, want OPEN_FAILURE", reply[0])
 			}
@@ -551,7 +553,7 @@ func TestCall(t *testing.T) {
 					t.Fatalf("the %s request: message %d, want FAILURE", request, reply[0])
 				}
 				client.toShell(false)
-				client.readUntil(asked, time.Now().Add(5*time.Second))
+				client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			})
 		}
 		t.Run("a second shell after the first: refused, and no second greeting", func(t *testing.T) {
@@ -581,7 +583,7 @@ func TestCall(t *testing.T) {
 				program := startEngine(t)
 				client := callAtPrompt(t, program, false)
 				client.sendPacket(message(messageGlobalRequest).text(request).boolean(true).text("127.0.0.1").uint32Value(0).data)
-				if reply, err := client.next(time.Now().Add(5 * time.Second)); err != nil || reply[0] != messageRequestFailure {
+				if reply, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || reply[0] != messageRequestFailure {
 					t.Fatalf("the %s request: %v, %v, want REQUEST_FAILURE", request, reply, err)
 				}
 			})
@@ -608,7 +610,7 @@ func TestCall(t *testing.T) {
 			}
 			failures := map[byte]int{}
 			for range 2000 {
-				payload, err := client.next(time.Now().Add(10 * time.Second))
+				payload, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound)))
 				if err != nil {
 					t.Fatalf("after %v replies: %v", failures, err)
 				}
@@ -618,7 +620,7 @@ func TestCall(t *testing.T) {
 				t.Fatalf("the replies were %v, want 1000 OPEN_FAILURE and 1000 FAILURE", failures)
 			}
 			client.toShell(false)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.expectStream(asked)
 		})
 		for _, row := range []struct {
@@ -646,7 +648,7 @@ func TestCall(t *testing.T) {
 			client := readyClient(t, program.ssh, "anyone")
 			client.sendExtended("XYZ")
 			client.toShell(true)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendData("a")
 			client.sendExtended("XYZ")
 			client.sendData("b\r")
@@ -661,7 +663,7 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := callAtPrompt(t, program, true)
 			client.sendData("ab")
-			client.readUntil("ab", time.Now().Add(5*time.Second))
+			client.readUntil("ab", time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
 			client.expectOneCloseAfter(time.Now())
 			client.expectStream(asked + "ab")
@@ -739,7 +741,7 @@ func TestCall(t *testing.T) {
 					message(messageChannelEOF).uint32Value(client.engineChannel).data,
 					message(messageChannelRequest).uint32Value(client.engineChannel).text("shell").boolean(true).data)
 				client.sendTogether(together...)
-				if reply, err := client.next(time.Now().Add(5 * time.Second)); err != nil || reply[0] != messageChannelSuccess {
+				if reply, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || reply[0] != messageChannelSuccess {
 					t.Fatalf("the shell's reply: %v, %v, want SUCCESS", reply, err)
 				}
 				client.expectClosedAfter(time.Now(), row.want)
@@ -750,7 +752,7 @@ func TestCall(t *testing.T) {
 			program := startEngine(t)
 			client := callAtPrompt(t, program, true)
 			client.sendData("ab")
-			client.readUntil("ab", time.Now().Add(5*time.Second))
+			client.readUntil("ab", time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
 			client.expectClosedAfter(time.Now(), asked+"ab")
 		})
@@ -800,7 +802,7 @@ func TestCall(t *testing.T) {
 				t.Fatalf("the pty-req: message %d", reply[0])
 			}
 			client.toShell(false)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendData(typedBob)
 			client.expectNameEnd(asked + echoOf("bob") + helloTo("bob"))
 			program.expectOnlyStarted(t)
@@ -860,7 +862,7 @@ func TestCall(t *testing.T) {
 			client := readyClient(t, program.ssh, "anyone")
 			client.sendData("ab")
 			client.toShell(false)
-			client.readUntil(asked, time.Now().Add(5*time.Second))
+			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.sendData("c\r")
 			client.expectNameEnd(asked + helloTo("abc"))
 		})
@@ -875,8 +877,8 @@ func TestCall(t *testing.T) {
 			client := dialRaw(t, program.ssh)
 			connected := time.Now()
 			client.sendVersion()
-			client.readServerKexInit(time.Now().Add(5 * time.Second))
-			_, ended := client.expectEnd(connected.Add(ceilingLimit + 2*margin))
+			client.readServerKexInit(time.Now().Add(testrun.Patient(testrun.HangBound)))
+			_, ended := client.expectEnd(connected.Add(ceilingLimit + testrun.Patient(2*margin)))
 			expectWithin(t, "the engine's close", ended, dialed.Add(ceilingLimit), connected.Add(ceilingLimit+margin))
 		})
 		t.Run("an SSH caller that sends end of file before the shell and never asks for one: nothing written, closed at the ceiling, not before", func(t *testing.T) {
@@ -892,7 +894,7 @@ func TestCall(t *testing.T) {
 			}
 			client.sendPacket(message(messageChannelEOF).uint32Value(client.engineChannel).data)
 			// The ceiling's nearest fault is one 900 ms too long, so the window keeps margin.
-			kinds, ended := client.expectEnd(connected.Add(ceilingLimit + 2*margin))
+			kinds, ended := client.expectEnd(connected.Add(ceilingLimit + testrun.Patient(2*margin)))
 			if len(kinds) != 0 || len(client.received) != 0 {
 				t.Fatalf("the engine sent messages %v and %q before the close, want nothing", kinds, client.received)
 			}
@@ -906,11 +908,11 @@ func closingCaller(t *testing.T, program *engine) {
 	t.Helper()
 	client := readyClient(t, program.ssh, "anyone")
 	client.toShell(false)
-	client.readUntil(asked, time.Now().Add(10*time.Second))
+	client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	client.sendData("n\r")
-	client.readUntil(helloTo("n"), time.Now().Add(10*time.Second))
+	client.readUntil(helloTo("n"), time.Now().Add(testrun.Patient(testrun.HangBound)))
 	for {
-		payload, err := client.next(time.Now().Add(10 * time.Second))
+		payload, err := client.next(time.Now().Add(testrun.Patient(testrun.HangBound)))
 		if err != nil {
 			t.Fatalf("waiting for the channel's close: %v", err)
 		}
@@ -921,17 +923,48 @@ func closingCaller(t *testing.T, program *engine) {
 	}
 }
 
-// expectServedBy dials until a caller is sent the version line, by deadline.
+// expectServedBy dials until a caller is sent the version line, by deadline. Under the race
+// detector it dials on for a stretched margin past the deadline, or past now where the test
+// itself came late, so only a place that is never freed fails, as a hang would.
 func expectServedBy(t *testing.T, address string, deadline time.Time) {
 	t.Helper()
+	// Its window runs from the call to the deadline, so a margin can be read from any run.
+	called := time.Now()
+	giveUp := deadline
+	if testrun.Race {
+		giveUp = time.Now()
+		if deadline.After(giveUp) {
+			giveUp = deadline
+		}
+		giveUp = giveUp.Add(testrun.Patient(margin))
+	}
 	for {
+		dialing := time.Now()
 		client := dialRaw(t, address)
-		if version, err := client.readVersion(time.Now().Add(margin)); err == nil && string(version) == versionLine {
+		if version, err := client.readVersion(time.Now().Add(testrun.Patient(margin))); err == nil && string(version) == versionLine {
+			served := time.Now()
+			t.Logf("a caller's service came %v into its window of %v", served.Sub(called), deadline.Sub(called))
+			// Judged as the Listener's is: a try that began before the deadline and was served
+			// after it does not pass, or a place freed late would. Served is the test's own clock
+			// after the read, so a try the test began past the deadline cannot tell the engine's
+			// lateness from its own.
+			switch {
+			case !served.After(deadline):
+			case testrun.Race:
+				t.Logf("under the race detector, timing is not judged: a caller was served %v past the deadline", served.Sub(deadline))
+			case dialing.After(deadline):
+				t.Fatalf("cannot tell: the try that was served began %v past the deadline", dialing.Sub(deadline))
+			default:
+				t.Fatalf("no caller was served until %v past the deadline", served.Sub(deadline))
+			}
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no caller was served by the deadline")
+		if time.Now().After(giveUp) {
+			t.Fatalf("no caller was served by %v, %v past the deadline", giveUp.Format(time.RFC3339Nano), giveUp.Sub(deadline))
 		}
+		// A pause between refused callers, so that on a slow runner they do not pile up while
+		// the engine frees a place.
+		waitUntil(t, time.Now().Add(20*time.Millisecond))
 	}
 }
 

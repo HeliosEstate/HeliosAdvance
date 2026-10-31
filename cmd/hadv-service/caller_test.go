@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 const (
@@ -75,7 +77,7 @@ type caller struct {
 // dial connects a caller, closed when the test ends.
 func dial(t *testing.T, address string) caller {
 	t.Helper()
-	opened, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(t.Context(), "tcp", address)
+	opened, err := (&net.Dialer{Timeout: testrun.Patient(testrun.HangBound)}).DialContext(t.Context(), "tcp", address)
 	if err != nil {
 		t.Fatalf("dialing the engine at %s: %v", address, err)
 	}
@@ -90,7 +92,7 @@ func dial(t *testing.T, address string) caller {
 // send writes the caller's bytes.
 func (call caller) send(t *testing.T, data []byte) {
 	t.Helper()
-	_ = call.connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = call.connection.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if _, err := call.connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
@@ -100,7 +102,7 @@ func (call caller) send(t *testing.T, data []byte) {
 func expectServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, opening, call.connected.Add(margin))
+	call.readExactly(t, opening, call.connected.Add(testrun.Patient(margin)))
 	return call
 }
 
@@ -109,7 +111,7 @@ func expectServed(t *testing.T, address string) caller {
 func served(t *testing.T, address string) bool {
 	t.Helper()
 	call := dial(t, address)
-	_ = call.connection.SetReadDeadline(call.connected.Add(margin))
+	_ = call.connection.SetReadDeadline(call.connected.Add(testrun.Patient(margin)))
 	received := make([]byte, len(opening))
 	got, err := io.ReadFull(call.connection, received)
 	switch {
@@ -141,7 +143,15 @@ func (call caller) readExactly(t *testing.T, want []byte, deadline time.Time) {
 // more sent, and returns when.
 func (call caller) expectEnd(t *testing.T, notBefore, notAfter time.Time) time.Time {
 	t.Helper()
-	_ = call.connection.SetReadDeadline(notAfter)
+	// A test that comes here past its window cannot tell when the engine closed: a close already
+	// made is read at once, but its moment is gone. It still reads, briefly, so a close never
+	// made stays the engine's fault.
+	readBy := notAfter
+	late := time.Since(notAfter)
+	if late > 0 {
+		readBy = time.Now().Add(testrun.Patient(margin))
+	}
+	_ = call.connection.SetReadDeadline(readBy)
 	chunk := make([]byte, 256)
 	got, err := call.connection.Read(chunk)
 	ended := time.Now()
@@ -149,9 +159,16 @@ func (call caller) expectEnd(t *testing.T, notBefore, notAfter time.Time) time.T
 	case got > 0:
 		t.Fatalf("the caller got % x where the engine was to close the connection", chunk[:got])
 	case errors.Is(err, os.ErrDeadlineExceeded):
-		t.Fatalf("the engine had not closed the connection %v after the window opened", notAfter.Sub(notBefore))
+		t.Fatalf("the engine had not closed the connection %v after the window opened", readBy.Sub(notBefore))
 	case !errors.Is(err, io.EOF) && !isReset(err):
 		t.Fatalf("the caller's read failed other than by the engine closing: %v", err)
+	}
+	if late > 0 {
+		if testrun.Race {
+			t.Logf("under the race detector, timing is not judged: the test came %v past its window to read the close", late)
+			return ended
+		}
+		t.Fatalf("cannot tell when the engine closed the connection: the test came %v past its window to read it", late)
 	}
 	expectWithin(t, "the close", ended, notBefore, notAfter)
 	return ended
@@ -191,16 +208,21 @@ func pause(t *testing.T, length time.Duration) {
 	}
 }
 
-// expectWithin checks a moment falls in its window and logs how far into it it came.
+// expectWithin checks a moment falls in its window and logs how far into it it came. Under the
+// race detector, which slows the engine by an amount nobody controls, only too soon fails.
 func expectWithin(t *testing.T, what string, moment, notBefore, notAfter time.Time) {
 	t.Helper()
+	t.Logf("%s came %v into its window of %v", what, moment.Sub(notBefore), notAfter.Sub(notBefore))
 	if moment.Before(notBefore.Add(-early)) {
 		t.Fatalf("%s came %v too soon", what, notBefore.Sub(moment))
 	}
 	if moment.After(notAfter) {
-		t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
+		if testrun.Race {
+			t.Logf("under the race detector, timing is not judged: %s came %v late", what, moment.Sub(notAfter))
+		} else {
+			t.Fatalf("%s came %v too late", what, moment.Sub(notAfter))
+		}
 	}
-	t.Logf("%s: %v after the window opened", what, moment.Sub(notBefore))
 }
 
 // isReset tells a connection reset or abort, as Linux and Windows report it.

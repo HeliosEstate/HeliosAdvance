@@ -14,9 +14,10 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The command codes, from RFC 854 and RFC 885, not from the package.
@@ -459,14 +460,23 @@ func expectSynchs(t *testing.T, client *net.TCPConn, before []byte, count int, d
 	}
 }
 
-// write sends bytes from the scripted caller and fails the test if they do not go.
-func write(t *testing.T, connection net.Conn, data []byte) time.Time {
+// sending is when a caller's write began and when it returned. The engine can read the bytes and
+// act on them before the writer's goroutine reads the clock again, so a window on what the
+// engine does with them opens from began and closes from done.
+type sending struct {
+	began, done time.Time
+}
+
+// write sends bytes from the scripted caller and fails the test if they do not go. It returns
+// when the write began and when it returned.
+func write(t *testing.T, connection net.Conn, data []byte) sending {
 	t.Helper()
-	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = connection.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
+	began := time.Now()
 	if _, err := connection.Write(data); err != nil {
 		t.Fatalf("the caller's write failed: %v", err)
 	}
-	return time.Now()
+	return sending{began: began, done: time.Now()}
 }
 
 // writeUrgent sends bytes from the scripted caller with the last one as TCP urgent data, as a
@@ -477,26 +487,6 @@ func writeUrgent(t *testing.T, connection *net.TCPConn, data []byte) time.Time {
 		t.Fatalf("the caller's urgent write failed: %v", err)
 	}
 	return time.Now()
-}
-
-// flood sends option requests and never reads, until its writes stop going through: the
-// engine's replies have filled the caller's receive buffer and the engine's send buffer, so a
-// write of the engine's waits. It returns once it has seen its own writes block.
-func flood(t *testing.T, connection *net.TCPConn) {
-	t.Helper()
-	_ = connection.SetReadBuffer(4096)
-	requests := repeated(request(doVerb, telnetTypeOption), 1024)
-	for {
-		_ = connection.SetWriteDeadline(time.Now().Add(300 * time.Millisecond))
-		_, err := connection.Write(requests)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			_ = connection.SetWriteDeadline(time.Time{})
-			return
-		}
-		if err != nil {
-			t.Fatalf("flooding: %v", err)
-		}
-	}
 }
 
 // reset closes the caller's end abortively, so the engine's next read or write fails with a

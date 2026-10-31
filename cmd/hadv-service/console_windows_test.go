@@ -7,6 +7,7 @@ package main_test
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // processAttributes puts each program in a process group of its own, so that a console break
@@ -40,7 +43,10 @@ while ($null -ne ($line = [Console]::In.ReadLine())) { $r = $k::GenerateConsoleC
 // program a console break and gives a moment before it was sent and one after.
 func prepareBreak(t *testing.T) func(*testing.T, *run) (time.Time, time.Time) {
 	t.Helper()
-	sender := exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", breakScript)
+	// Not the row's context, which ends, and so kills the sender, before the cleanup below runs:
+	// killed that way it left an empty folder in Temp each time on CI, where closing its input
+	// first ends it whole.
+	sender := exec.CommandContext(context.WithoutCancel(t.Context()), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", breakScript)
 	input, err := sender.StdinPipe()
 	if err != nil {
 		t.Fatalf("the break sender's input: %v", err)
@@ -54,7 +60,18 @@ func prepareBreak(t *testing.T) func(*testing.T, *run) (time.Time, time.Time) {
 	}
 	t.Cleanup(func() {
 		_ = input.Close()
-		_ = sender.Wait()
+		exited := make(chan struct{})
+		go func() {
+			_ = sender.Wait()
+			close(exited)
+		}()
+		// A sender that does not end with its input is killed, so a stuck one cannot hang the run.
+		select {
+		case <-exited:
+		case <-time.After(testrun.Patient(30 * time.Second)):
+			_ = sender.Process.Kill()
+			<-exited
+		}
 	})
 	lines := make(chan string, 4)
 	go func() {
@@ -101,8 +118,8 @@ func nextLine(t *testing.T, lines chan string, limit time.Duration) string {
 // that wrongly listened at 22 or 992 would hold it in their engines too, and the row would skip
 // the very fault it is there to see.
 func TestWindowsDefaultPort(t *testing.T) { //nolint:paralleltest // it must run alone
-	t.Run("When it starts with no command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("with no option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) { //nolint:paralleltest // it must run alone
+	t.Run("When it starts with a connection file and no other command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("with a connection file and no other option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			// Port 23 is one port for every user of the machine: one held by anything else is
 			// a fault of the machine the test runs on, named as one.
 			for _, address := range []string{"127.0.0.1:23", "[::1]:23"} {
