@@ -288,10 +288,10 @@ func TestUrgentSend(t *testing.T) {
 				// too near it was not yet waiting when it came, and the row did not reach its case.
 				if row.full && !result.began.Before(at.Add(-sendReach)) {
 					if testrun.Race {
-						t.Logf("under the race detector, timing is not judged: the send began %v before the moment meant to find it waiting, so the row judges nothing", at.Sub(result.began))
+						t.Logf("under the race detector, timing is not judged: the send began %v from the moment meant to find it waiting, where it needs to begin %v before, so the row judges nothing", at.Sub(result.began), sendReach)
 						return
 					}
-					t.Fatalf("did not reach its case: the send began %v before the moment meant to find it waiting", at.Sub(result.began))
+					t.Fatalf("did not reach its case: the send began %v from the moment meant to find it waiting, a negative time after it, where it needs to begin %v before", at.Sub(result.began), sendReach)
 				}
 				if row.sent {
 					if result.err != nil || result.count != 1 {
