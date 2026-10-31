@@ -21,10 +21,19 @@ on:
 permissions:
   contents: read
 
+# A new push to the same pull request supersedes the run in flight, whose report would be stale.
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   mutation:
+    # Pull requests from this repository's own branches only: the loop's and QA's.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    # An hour on a pull request, the limit the developer agreed on 2026-10-16; the whole engine at
+    # a milestone takes longer.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 60 || 300 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,7 +46,9 @@ jobs:
       # What to mutate, or nothing. A push to a build branch that changes only tests or a
       # contract's declarations starts nothing; nor does a QA change that only adds rows. The
       # engine's code is internal/, but for the test support; cmd/'s tests run the built program,
-      # which mutation testing cannot see into.
+      # which mutation testing cannot see into. A QA change counts a renamed test, or a changed file
+      # its rows read from testdata/, as a changed test. A milestone mutates the whole module, which
+      # check.sh's exclusions bring down to the engine's code.
       - name: What to mutate
         id: scope
         env:
@@ -47,7 +58,7 @@ jobs:
         run: |
           engine() { grep -E '^internal/' | grep -vE '^internal/testrun(/|$)' || true; }
           if [ "$EVENT" != pull_request ]; then
-            echo "packages=$(go list -f '{{.Dir}}' ./internal/... | sed "s|^$PWD/||" | engine | sed 's|^|./|' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+            echo "packages=." >> "$GITHUB_OUTPUT"
             echo "base=HEAD" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -61,7 +72,7 @@ jobs:
                 echo "diff=1" >> "$GITHUB_OUTPUT"
               fi ;;
             qa/*)
-              echo "packages=$(git diff --name-only --diff-filter=MD "$base" HEAD -- '*_test.go' | xargs -r -n1 dirname | sort -u | engine | sed 's|^|./|' | tr '\n' ' ')" >> "$GITHUB_OUTPUT" ;;
+              echo "packages=$(git diff --name-only --no-renames --diff-filter=MD "$base" HEAD -- '*_test.go' '*/testdata/*' | sed 's|/testdata/.*|/x|' | xargs -r -n1 dirname | sort -u | engine | sed 's|^|./|' | tr '\n' ' ')" >> "$GITHUB_OUTPUT" ;;
           esac
       # The version is pinned in .github/tool-versions, one place for every workflow.
       - name: Install gremlins
