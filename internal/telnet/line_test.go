@@ -742,13 +742,16 @@ func TestLine(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- line.Flush(ctx) }()
 			expectStillWaiting(t, done)
+			// The window opens before the cancel and closes from after it, so a test paused between
+			// the two cannot see the engine as early.
+			cancelling := time.Now()
 			cancel()
 			cancelledAt := time.Now()
 			err := <-done
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("Flush returned %v, want context.Canceled", err)
 			}
-			expectWithin(t, "Flush's return", time.Now(), cancelledAt, cancelledAt.Add(margin))
+			expectWithin(t, "Flush's return", time.Now(), cancelling, cancelledAt.Add(margin))
 			expectNothingMore(t, pair, line, queued)
 		})
 		t.Run("its deadline passes while it waits: context.DeadlineExceeded at the deadline", func(t *testing.T) {
@@ -1160,12 +1163,14 @@ func TestLine(t *testing.T) {
 				done <- err
 			}()
 			expectStillWaiting(t, done)
+			// The window opens before the cancel and closes from after it, as Flush's does.
+			cancelling := time.Now()
 			cancel()
 			cancelledAt := time.Now()
 			if err := <-done; !errors.Is(err, context.Canceled) {
 				t.Fatalf("RecvChar returned %v, want context.Canceled", err)
 			}
-			expectWithin(t, "RecvChar's return", time.Now(), cancelledAt, cancelledAt.Add(margin))
+			expectWithin(t, "RecvChar's return", time.Now(), cancelling, cancelledAt.Add(margin))
 		})
 		t.Run("the context's deadline before RecvChar's own: context.DeadlineExceeded at the context's", func(t *testing.T) {
 			t.Parallel()
