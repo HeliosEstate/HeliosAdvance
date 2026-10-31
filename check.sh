@@ -4,7 +4,8 @@
 # Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER,
 #   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
 #   PKGS (CI, the packages one job tests; default all), GATES=0 (CI, a job whose Go gates another
-#   job of the same run checks)
+#   job of the same run checks), TIMED (CI, a file for the timed rows' place-in-window lines),
+#   MUTATE (CI, with --mutation: whole packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -37,7 +38,8 @@ fi
 # reads the same file, so the commit lock and the edit lock cannot disagree. The loops are the
 # App logins in loop-identities; the interactive session's App is not one, and its changes to
 # owned paths land by pull request on the developer's code-owner review.
-# Gates 3 and 4a judge a branch's commits before it merges; --mutation's range is already merged.
+# Gates 3 and 4a judge a branch's commits before it merges; --mutation is a report, never the
+# required check, so it skips them.
 # Both lists are read from the base when it has them, never from the branch being judged: a loop
 # commit that edits a list would otherwise judge itself by its own copy (the codebase review,
 # 2026-10-24). The tree's copy serves only where the base has none, as on a first branch.
@@ -285,13 +287,31 @@ if [ -n "$pkgs" ]; then
   [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
   # every failure from load on record came with every package at once (HeliosDesign #258).
-  go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
+  if [ -n "${TIMED:-}" ]; then
+    # CI keeps every timed row's place in its window (#258): a passing test's log shows only in
+    # Go's -json stream, so its "into its window of" lines go to $TIMED, a few KB. The console gets
+    # each package's result, and a failed package's whole output, so a crash or a hang that Go
+    # does not pin on one test still shows its cause.
+    need jq "jq, from the system's packages"
+    stream=$(mktemp); status=0
+    go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
+    jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep 'into its window of' > "$TIMED" || true
+    jq -sj '[.[] | select(.Action == "fail" and (.Test | not)) | .Package] as $failed
+      | .[] | select(.Action == "build-output" or .Action == "output")
+      | select((.Package as $p | any($failed[]; . == $p))
+          or (.Test == null and (.Output | test("^(PASS|coverage: .*)\n$") | not)))
+      | .Output' "$stream"
+    rm -f "$stream"
+    [ "$status" = 0 ] || exit "$status"
+  else
+    go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
+  fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
     # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
-  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; then
+  elif [ "$MUTATION" = 1 ] && { [ -n "${MUTATE:-}" ] || git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; }; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
@@ -301,15 +321,22 @@ if [ -n "$pkgs" ]; then
     # cmd/ is left out: its tests run the built program as its own process, which gremlins'
     # coverage cannot see, so every mutant there reads "Not covered". The rows and QA's broken
     # copies prove it instead (the developer, 2026-10-22). internal/testrun/ is left out too: it is
-    # test support, proved by the rows that use it.
+    # test support, proved by the rows that use it; so is tools/, the gates' own tools.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
     # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
     # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
-    # The run stays at the repository root (.): a package path matches no diff entry (its 278).
-    mutants=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^(cmd|internal/testrun)/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
-    echo "$mutants"
-    grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$mutants" || fail "mutation testing: no result lines, so there is nothing to report"
+    # The run on a diff stays at the repository root (.): a package path matches no diff entry (its
+    # 278). MUTATE names whole packages instead (a QA change to existing rows, a milestone), each
+    # mutated in full.
+    if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
+    mutants=
+    for target in "${targets[@]}"; do
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      echo "$out"
+      grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
+      mutants+="$out"$'\n'
+    done
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       { echo "## Mutation testing, a report"; echo '```'
         grep -E 'LIVED|NOT COVERED|Killed:|Timed out:|Test efficacy|Mutator coverage' <<< "$mutants"
