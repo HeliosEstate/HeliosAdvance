@@ -146,6 +146,8 @@ var (
 	// ErrKeyMismatch means the key does not match the certificate.
 	ErrKeyMismatch = errors.New("telnets: the key does not match the certificate")
 	// ErrKeyType means the key is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519.
+	// An RSA-PSS key is not one of the RSA keys the engine takes: it is refused as a key of the
+	// wrong type, since crypto/tls cannot serve it.
 	ErrKeyType = errors.New(
 		"telnets: the key is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519")
 	// ErrKeyReadableByOthers means, on Linux, the key file's mode lets its group or others read it.
