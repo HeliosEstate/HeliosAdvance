@@ -37,8 +37,9 @@
 //
 // # Untrusted input
 //
-// The bootstrap file is untrusted until its tag verifies: its first HeaderBytes are read and
-// checked before anything else, and nothing after them is used before the tag verifies. The key
+// The bootstrap file is untrusted until its tag verifies: its size is bounded, its first
+// HeaderBytes are checked before anything after them is used, and nothing after them is used
+// before the tag verifies. The key
 // file is untrusted until its form is checked. Both come from the bootstrap folder, which only
 // hadv-setup and administrators should write; the key file's owner and permissions are checked
 // because a key file someone else can write or replace could point the engine at a database of
@@ -48,7 +49,7 @@
 // # Oracles
 //
 // The bootstrap file reference, oracle/bootstrap-file (Free Pascal, with its own AES and GCM, its
-// self-test running the published vectors; HeliosDesign #284), which the tests make every
+// self-test running the published vectors), which the tests make every
 // bootstrap file with, good and broken; RFC 4648's test vectors for the key file's reader; and the
 // real file systems, whose owners, modes and access lists the tests set from outside on Linux
 // x86-64, Linux ARM64 and Windows x86-64.
@@ -91,15 +92,17 @@ const (
 	TagBytes = 16
 	// KeyBytes is the key: 256 bits.
 	KeyBytes = 32
-	// FileMostBytes bounds the bootstrap file: a larger one is refused, so what is read has a bound.
+	// FileMostBytes bounds the bootstrap file: a larger one is refused, so what is read has a
+	// bound.
 	FileMostBytes = 65536
 	// KeyFileMostBytes bounds the key file: 44 characters and a line ending of two; a longer one is
 	// refused.
 	KeyFileMostBytes = 46
 )
 
-// Why Open refused, one error for each check, in the order the checks run. None holds the key or
-// any part of either file's contents, so the program can write it to the local log as it is.
+// Why Open refused, one error for each kind of refusal; the order of the checks is Open's. None
+// holds the key or any part of either file's contents, so the program can write it to the local
+// log as it is.
 var (
 	// ErrFolderMissing means the bootstrap folder is not there.
 	ErrFolderMissing = errors.New("bootstrap: the bootstrap folder does not exist")
@@ -107,8 +110,8 @@ var (
 	ErrFolderUnreadable = errors.New("bootstrap: the bootstrap folder cannot be opened")
 	// ErrFileMissing means the bootstrap folder holds no bootstrap file.
 	ErrFileMissing = errors.New("bootstrap: the bootstrap file does not exist")
-	// ErrFileUnreadable means the bootstrap file is there but will not open or read, or is a link
-	// leading out of the bootstrap folder.
+	// ErrFileUnreadable means the bootstrap file is there but will not open or read, is not a
+	// regular file, or is a link leading out of the bootstrap folder.
 	ErrFileUnreadable = errors.New("bootstrap: the bootstrap file cannot be read")
 	// ErrFileTooLarge means the bootstrap file is longer than FileMostBytes.
 	ErrFileTooLarge = errors.New("bootstrap: the bootstrap file is too large")
@@ -117,8 +120,8 @@ var (
 	ErrHeader = errors.New("bootstrap: the bootstrap file's header is not one this engine reads")
 	// ErrKeyFileMissing means the bootstrap folder holds no key file.
 	ErrKeyFileMissing = errors.New("bootstrap: the key file does not exist")
-	// ErrKeyFileUnreadable means the key file is there but will not open or read, or is a link
-	// leading out of the bootstrap folder.
+	// ErrKeyFileUnreadable means the key file is there but will not open or read, is not a regular
+	// file, or is a link leading out of the bootstrap folder.
 	ErrKeyFileUnreadable = errors.New("bootstrap: the key file cannot be read")
 	// ErrKeyFilePermissions means the key file's owner or permissions could not be read.
 	ErrKeyFilePermissions = errors.New("bootstrap: the key file's owner or permissions cannot be read")
@@ -141,19 +144,21 @@ var (
 //   - If the bootstrap folder exists but will not open, then Open shall return
 //     ErrFolderUnreadable.
 //   - If the bootstrap folder holds no bootstrap file, then Open shall return ErrFileMissing.
-//   - If the bootstrap file will not open or read, or is a link leading out of the bootstrap
-//     folder, then Open shall return ErrFileUnreadable.
+//   - If the bootstrap file will not open or read, is not a regular file, or is a link leading out
+//     of the bootstrap folder, then Open shall return ErrFileUnreadable.
+//   - Open shall open each file without waiting on it, so a file that is not a regular file, such
+//     as a named pipe, is refused and never waited on.
 //   - If the bootstrap file is longer than FileMostBytes, then Open shall return ErrFileTooLarge,
 //     having read at most FileMostBytes and one byte more of it.
 //   - If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its
 //     first HeaderBytes are not Magic, FormatVersion, KeyHolderKeyFile and a sealed-key length of
 //     0, then Open shall return ErrHeader before it opens the key file.
 //   - If the bootstrap folder holds no key file, then Open shall return ErrKeyFileMissing.
-//   - If the key file will not open, or is a link leading out of the bootstrap folder, then Open
-//     shall return ErrKeyFileUnreadable.
+//   - If the key file will not open, is not a regular file, or is a link leading out of the
+//     bootstrap folder, then Open shall return ErrKeyFileUnreadable.
 //   - If reading the key file's owner or permissions fails, or the engine runs on a system other
 //     than Linux or Windows, then Open shall return ErrKeyFilePermissions.
-//   - If, on Linux, the key file's owner is not the user the engine runs as, or its mode gives
+//   - If, on Linux, the key file's owner is not the engine's effective user ID, or its mode gives
 //     its group or others any access, then Open shall return ErrKeyFileReachable.
 //   - If, on Windows, the key file's owner, or any entry of its access list that allows access,
 //     whether the file's own or inherited, names anyone but SYSTEM (S-1-5-18), Administrators
@@ -168,8 +173,9 @@ var (
 //   - If the bootstrap file's tag does not verify under the key, then Open shall return ErrUnseal
 //     and no bytes.
 //   - When it returns, Open shall have closed the bootstrap folder and both files.
-//   - Open shall wipe the key, the key file's text and the bootstrap file's bytes before it
-//     returns, keeping only the JSON it returns. [read]
+//   - Open shall wipe each buffer it allocates for the key, the key file's text and the bootstrap
+//     file's bytes before it returns, keeping only the JSON it returns; the copies Go's AES and GCM
+//     keep inside the cipher are out of its reach. [read]
 func Open(folder string) ([]byte, error) {
 	return open(folder)
 }

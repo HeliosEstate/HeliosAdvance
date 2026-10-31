@@ -235,8 +235,8 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/listener$
             - github.com/heliosestate/heliosadvance/internal/telnet$
             - github.com/heliosestate/heliosadvance/internal/ssh$
-            # It reads the connection file and takes the lease before it listens, and closes the
-            # listeners when the lease is lost (database Part 1).
+            # It parses the connection settings and takes the lease before it listens, and closes
+            # the listeners when the lease is lost (database Part 1, bootstrap Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
             # It opens the bootstrap folder the command line names and hands the unsealed
             # connection settings to the database unit (bootstrap Part 1).
