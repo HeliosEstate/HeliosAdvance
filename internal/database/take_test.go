@@ -356,6 +356,9 @@ func TestTake(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			created.server.sql(t, superuser, "ALTER ROLE "+created.login+" CONNECTION LIMIT 0")
+			started := time.Now()
+			// Windows lost the server's refusal on this row once: a failure shows the log.
+			defer func() { showLogIfFailed(t, created.server, &created.login, started) }()
 			lease, err := take(t, created.file())
 			expectTakeError(t, lease, err, database.ErrNoConnectionFree, created.password)
 		})

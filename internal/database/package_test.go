@@ -121,6 +121,9 @@ func TestPackage(t *testing.T) {
 			created := sharedServer(t).newBoard(t)
 			contents := created.file()
 			contents.Password = "wrong-" + canary
+			started := time.Now()
+			// Windows lost the server's refusal on this row once: a failure shows the log.
+			defer func() { showLogIfFailed(t, created.server, &contents.Login, started) }()
 			lease, err := take(t, contents)
 			expectTakeError(t, lease, err, database.ErrSignInRefused, contents.Password)
 		})
