@@ -6,12 +6,12 @@
 // lease.
 //
 // It owns reading the connection settings, the JSON the bootstrap unit unseals; connecting to
-// PostgreSQL over TLS and
-// signing in by SCRAM-SHA-256 with channel binding, on github.com/jackc/pgx/v5 at v5.11.0 or
-// later; refusing a login that could change the schema; reading the schema version and the
-// server's row; and the lease: taking it, renewing it every RenewSeconds while it is held, telling
-// the program once it is lost, and ending it at a stop. The schema and what a server's login may
-// do with it are schema.sql, beside this file, and Schema holds it.
+// PostgreSQL over TLS and signing in by SCRAM-SHA-256 with channel binding, on
+// github.com/jackc/pgx/v5 at v5.11.0 or later; refusing a login that could change the schema;
+// reading the schema version and the server's row; and the lease: taking it, renewing it every
+// RenewSeconds while it is held, telling the program once it is lost, and ending it at a stop. The
+// schema and what a server's login may do with it are schema.sql, beside this file, and Schema
+// holds it.
 //
 // It does not own waiting and trying again, the listeners, or the local log: the program decides
 // from each error whether to wait or to stop, opens and closes the listeners, and writes every log
