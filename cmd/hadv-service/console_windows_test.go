@@ -135,12 +135,10 @@ func TestWindowsDefaultPort(t *testing.T) { //nolint:paralleltest // it must run
 			// without a certificate.
 			var freeOtherKinds []string
 			for _, address := range []string{"127.0.0.1:22", "[::1]:22", "127.0.0.1:992", "[::1]:992"} {
-				held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
-				if err != nil {
-					t.Logf("%s is held on this machine, so this row cannot tell whether the engine listens there", address)
+				if err := listenError(t, address); err != nil {
+					t.Logf("%s cannot be opened on this machine (%v), so this row cannot tell whether the engine listens there", address, err)
 					continue
 				}
-				_ = held.Close()
 				freeOtherKinds = append(freeOtherKinds, address)
 			}
 			program := startProgram(t)
@@ -159,6 +157,11 @@ func TestWindowsDefaultPort(t *testing.T) { //nolint:paralleltest // it must run
 	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.", func(t *testing.T) { //nolint:paralleltest // it must run alone
 		t.Run("with a host key and no SSH port: at 22 where it is free at both addresses; else refused, where an SSH port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			defaultSSHPortRow(t)
+		})
+	})
+	t.Run("When the sysop passes a TLS certificate file and its key file on the command line, the engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on port 992, beside its other listeners.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("with a certificate and a key and no TLS port: at 992 where it opens at each address; refused where it opens at neither, where a TLS port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
+			defaultTLSPortRow(t)
 		})
 	})
 }

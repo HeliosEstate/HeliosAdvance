@@ -46,7 +46,6 @@ func accept(ctx context.Context, connection *net.TCPConn) (*Line, error) {
 	if err != nil {
 		return nil, err
 	}
-	line.state.accepted = connection
 	return line, nil
 }
 
