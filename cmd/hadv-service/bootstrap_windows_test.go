@@ -49,15 +49,25 @@ func protectKeyFile(t *testing.T, path string) {
 }
 
 // makeUnopenable holds a file or folder open with no sharing until the row ends, so the program
-// cannot open it, whatever its account. An access list cannot do this on CI: its elevated runner
-// opens a file or folder whose access list is empty (seen on CI, 2026-11-03).
+// cannot open it. An access list cannot do this on CI: its elevated runner opens a file or folder
+// whose access list is empty. Its token holds the backup privilege, enabled, and Go opens every
+// file with backup intent, which gets past a hold that only reads; a hold that reads and writes
+// refuses it. A folder held for reading refuses os.OpenRoot there (all seen on CI, 2026-11-03).
 func makeUnopenable(t *testing.T, path string) {
 	t.Helper()
 	name, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		t.Fatalf("naming %s: %v", path, err)
 	}
-	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil, syscall.OPEN_EXISTING,
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("reading what %s is: %v", path, err)
+	}
+	var access uint32 = syscall.GENERIC_READ
+	if !info.IsDir() {
+		access |= syscall.GENERIC_WRITE
+	}
+	handle, err := syscall.CreateFile(name, access, 0, nil, syscall.OPEN_EXISTING,
 		syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		t.Fatalf("holding %s open with no sharing: %v", path, err)

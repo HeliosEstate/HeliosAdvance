@@ -113,8 +113,11 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   all, which fails while any other handle is open, however that handle shares.
 - CI's elevated Windows runner opens a file or folder whatever its access list says, an empty one
   included, and reads past a deny entry: on Windows, no access list makes a file or folder that
-  will not open. A row that needs one holds it open with no sharing until it ends; every other
-  open of it then fails, whatever the account, while it still shows as there.
+  will not open. Its token holds the backup privilege, enabled, and Go opens every file with
+  backup intent, which gets past another handle that holds the file with no sharing but only
+  reads it. A row that needs a file that will not open holds it with no sharing, for reading and
+  writing, until it ends; one that needs a folder holds it with no sharing for reading, which
+  `os.OpenRoot` cannot get past. Either still shows as there.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
 - A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on
