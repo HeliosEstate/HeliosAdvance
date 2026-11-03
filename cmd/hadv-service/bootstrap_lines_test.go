@@ -358,7 +358,7 @@ func TestBootstrapProgram(t *testing.T) {
 
 	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the old -database and a connection file, beside a good bootstrap folder: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("the old -database and a connection file, beside a good bootstrap folder: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			settings := sharedRowSettings(t)
 			old := filepath.Join(t.TempDir(), "connection.json")
@@ -366,8 +366,9 @@ func TestBootstrapProgram(t *testing.T) {
 				t.Fatalf("writing the old connection file: %v", err)
 			}
 			program := startWithFile(t, settings.write(t), nil, portOption, "0", "-database", old)
-			program.expectRefusal(t)
+			reason := program.expectRefusal(t)
 			expectNoPassword(t, program)
+			expectOwnReason(t, reason, keyMissingReason(t), "a missing key file")
 		})
 	})
 }
