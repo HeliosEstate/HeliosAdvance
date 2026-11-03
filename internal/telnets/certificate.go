@@ -28,8 +28,8 @@ import (
 const (
 	certificateFile = "the certificate file"
 	keyFile         = "the key file"
-	// othersReadBits are the group and other read bits of a file's mode.
-	othersReadBits = 0o044
+	// othersAccessBits are the group and other read and write bits of a file's mode.
+	othersAccessBits = 0o066
 	// rsaLeastBits is the shortest RSA key the engine takes.
 	rsaLeastBits = 2048
 
@@ -105,7 +105,7 @@ func readOpened(opened *os.File, file string, privateMode bool) ([]byte, error) 
 	if !info.Mode().IsRegular() {
 		return nil, refusal(file, ErrTLSFileNotRegular)
 	}
-	if privateMode && runtime.GOOS == "linux" && info.Mode().Perm()&othersReadBits != 0 {
+	if privateMode && runtime.GOOS == "linux" && info.Mode().Perm()&othersAccessBits != 0 {
 		return nil, refusal(file, ErrKeyOpenToOthers)
 	}
 	// One byte more than the most, so that a longer file shows as a full buffer.

@@ -19,9 +19,9 @@ import (
 
 const (
 	hostKeyPEMType = "OPENSSH PRIVATE KEY"
-	// othersReadBits are the group and other read bits of a file's mode.
-	othersReadBits = 0o044
-	pemWhiteSpace  = " \t\r\n"
+	// othersAccessBits are the group and other read and write bits of a file's mode.
+	othersAccessBits = 0o066
+	pemWhiteSpace    = " \t\r\n"
 )
 
 // readHostKey returns only the package's sentinels, never the os or library error, since the
@@ -35,7 +35,7 @@ func readHostKey(path string) (*HostKey, error) {
 		}
 		return nil, ErrHostKeyUnreadable
 	}
-	if runtime.GOOS == "linux" && info.Mode().Perm()&othersReadBits != 0 {
+	if runtime.GOOS == "linux" && info.Mode().Perm()&othersAccessBits != 0 {
 		return nil, ErrHostKeyOpenToOthers
 	}
 	file, err := os.Open(cleaned)
