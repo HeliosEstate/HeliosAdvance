@@ -22,11 +22,11 @@
 // the caller's bytes, read in stream order, each option request and command answered by the same
 // rules and tables, EC handed on as BS and EL as Ctrl-U; a send buffer written with the data byte
 // 255 doubled, which also carries those answers and what negotiation still owed the caller; the
-// Synch, IAC DM with DM sent as TCP urgent data; and whether the board echoes, which is whether the
-// caller has agreed to ECHO as of the byte just read. On an accepted connection it owns keeping TCP
-// urgent data in line and writing it, and, once the call is answered, Telnet's own close: shutting
-// down the sending side, and reading and discarding until the caller closes or 3 seconds pass. It
-// writes nothing to the local log.
+// Synch, IAC DM with DM sent by the connection's urgent write; and whether the board echoes, which
+// is whether the caller has agreed to ECHO as of the byte just read. On an accepted connection it
+// owns keeping TCP urgent data in line and writing it. Once the call is answered, it owns Telnet's
+// own close: shutting down the sending side through the connection, and reading and discarding
+// until the caller closes or 3 seconds pass. It writes nothing to the local log.
 //
 // It does not own accepting, the cap of 100, the ceiling on a whole call or closing the
 // connection: the listeners and the shared execution path own those. It does not own reading a
@@ -82,15 +82,24 @@
 //
 // # What it needs from its callers
 //
-// A connection with read and write deadlines that also writes urgent data. For Open and the Line
-// it makes, a connection that keeps TCP urgent data in line (SO_OOBINLINE), as RFC 6093 section 6
-// requires of Telnet: without it a Synch's DM byte leaves the stream and the lone IAC before it
-// would swallow the caller's next character; Accept sets it itself. A context carrying the call's
-// ceiling, cancelled by a stop. One Negotiate, one Open or one Accept per connection, never two,
-// from that connection's own goroutine, before anything else is written to it. After any of them
-// returns an error, the shared execution path closes the connection without writing to it, and it
-// closes the connection after Close. One goroutine per Negotiation and per Line: neither is safe
-// for use from two at once.
+// A connection with read and write deadlines, an urgent write, and a way to shut down its sending
+// side. For Open and the Line it makes, a connection that keeps TCP urgent data in line
+// (SO_OOBINLINE), as RFC 6093 section 6 requires of Telnet: without it a Synch's DM byte leaves
+// the stream and the lone IAC before it would swallow the caller's next character; Accept sets it
+// itself. A connection that carries no urgent data, as TLS carries none, needs no such setting.
+// A context carrying the call's ceiling, cancelled by a stop. One Negotiate, one Open or one
+// Accept per connection, never two, from that connection's own goroutine, before anything else is
+// written to it. After any of them returns an error, the shared execution path closes the
+// connection without writing to it, and it closes the connection after Close, or at once when the
+// call's context ends. One goroutine per Negotiation and per Line: neither is safe for use from
+// two at once.
+//
+// Every time these lines pin, NegotiationSeconds, a call's own deadline, ClosingWaitSeconds and a
+// context ending waking a waiting call at once, holds for the Telnet bytes this package reads and
+// writes. A message the connection sends on its own, over TLS a reply to a caller's key update
+// during a read or close_notify during Close, is bounded only by the call's ceiling, and not pinned
+// finer; a stop still ends the call at once, since the shared execution path closes the connection
+// when the call's context ends.
 //
 // # The wire format
 //
@@ -108,10 +117,11 @@
 // BINARY, IAC DO TTYPE, IAC DO NAWS, IAC DO NEW-ENVIRON and IAC DO TSPEED, in that order. The
 // SENDs: TTYPE's is IAC SB 24 1 IAC SE; TSPEED's is IAC SB 32 1 IAC SE; NEW-ENVIRON's is IAC SB 39
 // 1 0 85 83 69 82 IAC SE, SEND, then VAR, then the name USER. AYT's answer is the 9 bytes CR LF
-// "[Yes]" CR LF. The Synch is IAC DM, written with DM as TCP urgent data. The commands Receive and
-// Strip read by name are IAC 255, DONT 254, DO 253, WONT 252, WILL 251, SB 250, EL 248, EC 247,
-// AYT 246, AO 245, IP 244 and SE 240; a subnegotiation runs from IAC SB to IAC SE (RFC 855). The
-// tables on Receive give how every byte is read and answered.
+// "[Yes]" CR LF. The Synch is IAC DM, written by the connection's urgent write: on a connection
+// Accept made, with DM as TCP urgent data. The commands Receive and Strip read by name are IAC
+// 255, DONT 254, DO 253, WONT 252, WILL 251, SB 250, EL 248, EC 247, AYT 246, AO 245, IP 244 and
+// SE 240; a subnegotiation runs from IAC SB to IAC SE (RFC 855). The tables on Receive give how
+// every byte is read and answered.
 //
 // # Calls
 //
@@ -230,14 +240,16 @@ const (
 	TimedOut
 )
 
-// Conn is the connection as Negotiate needs it; Accept makes one of an accepted TCP connection.
-// Declared here, where it is used.
+// Conn is the connection as Negotiate, Open and the Line need it, CloseWrite for the Line's Close
+// alone; Accept makes one of an accepted TCP connection. Declared here, where it is used.
 type Conn interface {
 	// Read returns end of file, a passed deadline and any other failure as its error.
 	Read(buffer []byte) (int, error)
 	// Write may have written part of buffer when it fails on a passed deadline.
 	Write(buffer []byte) (int, error)
-	// WriteUrgent writes buffer with its last byte as TCP urgent data. Like Write, a passed write
+	// WriteUrgent writes buffer with its last byte as urgent data, where the connection carries
+	// urgent data: as TCP urgent data on a connection Accept made. A connection that carries none,
+	// as TLS carries none, writes the last byte as an ordinary byte. Like Write, a passed write
 	// deadline wakes it, a deadline set while it waits included, and it may have written part of
 	// buffer when it fails.
 	WriteUrgent(buffer []byte) (int, error)
@@ -246,6 +258,13 @@ type Conn interface {
 	// SetWriteDeadline wakes a write that is waiting when the deadline has passed; zero clears
 	// it.
 	SetWriteDeadline(deadline time.Time) error
+	// CloseWrite shuts down the sending side of the TCP connection beneath, for the Line's Close:
+	// on a connection Accept made, the TCP connection's own. A connection with its own close
+	// message, as TLS has close_notify, may send it first, and then shuts down the TCP connection's
+	// sending side; how long that message may wait for room is the connection's own, and no
+	// deadline the Line sets is promised to wake it. It returns an error when the close message or
+	// the shutdown fails.
+	CloseWrite() error
 }
 
 var (
@@ -256,8 +275,9 @@ var (
 	// ErrConnectionFailed means any other read or write failure on the connection, a reset
 	// included.
 	ErrConnectionFailed = errors.New("telnet: the connection failed")
-	// ErrDeadlineEnded means Negotiate's context ended first: the call's ceiling or a forced stop,
-	// also when it had ended before anything was written. It is returned wrapping
+	// ErrDeadlineEnded means the call's context ended first, in Negotiate or, for Telnet over TLS,
+	// in its handshake: the call's ceiling or a forced stop, also when it had ended before anything
+	// was written. It is returned wrapping
 	// context.DeadlineExceeded or context.Canceled, so errors.Is matches it and the one wrapped.
 	ErrDeadlineEnded = errors.New("telnet: the deadline ended first")
 )
@@ -545,9 +565,8 @@ const SendBufferSize = 2048
 // SendBufferSize, and the negotiation, whose option states go on changing as the caller asks.
 // It reads in stream order, so an option request is answered, a command acted on, and ECHO
 // changes, exactly where it falls among the caller's characters. A Line not made by Open or
-// Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes returns false. Close
-// needs a Line made by Accept: on one made by Open it fails with ErrConnectionFailed. One goroutine
-// per Line.
+// Accept, or nil, fails every call with ErrConnectionFailed, and its Echoes returns false. One
+// goroutine per Line.
 //
 // Its calls report as the textio package's table has it: os.ErrDeadlineExceeded when the
 // deadline given passed first; io.EOF when the caller closed its side; the context's error,
@@ -555,11 +574,12 @@ const SendBufferSize = 2048
 // failure. When two happen at once, the context ending wins, then a failure, then a passed
 // deadline. Each is judged by the clock: a context whose deadline has passed has ended, with
 // context.DeadlineExceeded, whether or not it reports it yet. A context ending wakes a waiting
-// call at once, a Synch's write included. A call sets the connection's deadline itself before
-// each read or write, the earlier of its own deadline and the context's, or none when neither has
-// one, and leaves nothing of its own running when it returns. Once a write fails, whatever it
-// wrote, the Line writes nothing more, for the reason given on Negotiate: what a write cut short
-// sent cannot be known.
+// call at once, a Synch's write included, except a message the connection sends on its own, as
+// the package's description gives. A call sets the connection's deadline itself before each read
+// or write, the earlier of its own deadline and the context's, or none when neither has one, and
+// leaves nothing of its own running when it returns. Once a write fails, whatever it wrote, the
+// Line writes nothing more, for the reason given on Negotiate: what a write cut short sent cannot
+// be known.
 type Line struct {
 	state lineState
 }
@@ -599,8 +619,9 @@ const (
 )
 
 // Accept makes one accepted TCP connection Telnet's object for the shared execution path: it keeps
-// urgent data in line, makes the connection a Conn whose WriteUrgent writes TCP urgent data, then
-// negotiates and returns the Line exactly as Open does, whichever Outcome negotiation ends with.
+// urgent data in line, makes the connection a Conn whose WriteUrgent writes TCP urgent data and
+// whose CloseWrite is the TCP connection's own, then negotiates and returns the Line exactly as
+// Open does, whichever Outcome negotiation ends with.
 // Urgent data is kept in line (SO_OOBINLINE) because RFC 6093 section 6 requires it of an
 // application that still uses urgent data, as Telnet's Synch does. The standard library has no
 // call for either, so both go through the connection's SyscallConn: SO_OOBINLINE with
@@ -705,15 +726,19 @@ func (line *Line) Echoes() bool {
 }
 
 // Close is Telnet's own close, called once the call is answered: it shuts down the sending side
-// of the Line's connection, then reads and discards what the caller sends until the caller closes
-// or ClosingWaitSeconds pass, no later than the context's deadline. It writes nothing, what is
-// still queued included, and leaves closing the connection to the shared execution path. A close
-// with the caller's bytes still unread may reach the caller as a reset rather than an orderly end
-// of stream; either is the close these lines ask for.
+// of the Line's connection with the Conn's CloseWrite, then reads and discards what the caller
+// sends until the caller closes or ClosingWaitSeconds pass, no later than the context's deadline.
+// It writes nothing itself, what is still queued included, and leaves closing the connection to
+// the shared execution path. A close with the caller's bytes still unread may reach the caller as
+// a reset rather than an orderly end of stream; either is the close these lines ask for. Shutting
+// down the sending side takes as long as the Conn's CloseWrite: no wait on a connection Accept
+// made, and over TLS as long as the connection lets its close_notify wait, which these lines do
+// not pin.
 //
-//   - Close shall shut down the sending side of the Line's connection, then read and discard until
-//     the caller closes or ClosingWaitSeconds pass, no later than the context's deadline.
-//   - Close shall write nothing to the connection.
+//   - Close shall shut down the sending side of the Line's connection with the Conn's CloseWrite,
+//     then read and discard until the caller closes or ClosingWaitSeconds pass, no later than the
+//     context's deadline.
+//   - Close shall write nothing to the connection but what the Conn's CloseWrite sends.
 //   - Close shall set the read deadline for its wait itself, and rely on no deadline an earlier
 //     call left. [read]
 //   - Close shall read only into a buffer of DiscardBufferSize bytes, and keep no copy of what it
@@ -724,9 +749,10 @@ func (line *Line) Echoes() bool {
 //   - If the context ends while Close waits, then Close shall return the context's error,
 //     wrapped.
 //   - If shutting down the sending side or setting the read deadline fails, then Close shall
-//     return ErrConnectionFailed at once.
-//   - If the Line was not made by Accept, or is nil, then Close shall return ErrConnectionFailed
-//     without touching the connection.
+//     return the context's error, wrapped, when the context has ended, and otherwise
+//     ErrConnectionFailed, at once.
+//   - If the Line was made by neither Open nor Accept, or is nil, then Close shall return
+//     ErrConnectionFailed without touching the connection.
 func (line *Line) Close(ctx context.Context) error {
 	return line.close(ctx)
 }
