@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The program run from outside: TestMain builds cmd/hadv-service once and prepares its database,
-// and each row starts the built program with its own options and a connection file for a row of
+// and each row starts the built program with its own options and a bootstrap folder for a row of
 // its own, reads its standard error as the local log, drives it with the scripted Telnet caller
 // over loopback, and waits for it to exit.
 package main_test
@@ -60,6 +60,7 @@ func TestMain(tests *testing.M) {
 		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()
+	bootstrapOraclePath, bootstrapOracleFailure = buildBootstrapOracle(runFolder)
 	directory, err := os.MkdirTemp("", "hadv-service-test-")
 	if err != nil {
 		buildFailure = err
@@ -109,7 +110,7 @@ type logEntry struct {
 	read time.Time
 }
 
-// startProgram starts the built program with a connection file for a row of its own on the
+// startProgram starts the built program with a bootstrap folder for a row of its own on the
 // shared board, then the given options, killed when the test ends.
 func startProgram(t *testing.T, options ...string) *run {
 	t.Helper()

@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -52,14 +53,25 @@ var takeErrors = []error{database.ErrUnreachable, database.ErrNotReady, database
 
 var holderPattern = regexp.MustCompile(versionPattern)
 
-// serverDatabase reads the contents as a connection file and makes a ServerDatabase from it.
+// serverDatabase makes a ServerDatabase from the contents, given as a Connection built by hand:
+// never through ParseConnection, a sibling these rows do not prove.
 func serverDatabase(t *testing.T, contents connectionFile) *database.ServerDatabase {
 	t.Helper()
-	file, err := database.ReadConnectionFile(writeFile(t, contents.text(t)))
-	if err != nil {
-		t.Fatalf("the test's connection file was refused: %v", err)
+	port, ok := portOf(contents.Port)
+	if !ok {
+		t.Fatalf("the test's port %d is not a port: a fault in the test", contents.Port)
 	}
-	return database.NewServerDatabase(file)
+	return database.NewServerDatabase(database.Connection{ServerID: contents.ServerID, Host: contents.Host,
+		Port: port, Database: contents.Database, Login: contents.Login, Password: contents.Password,
+		CACertificate: contents.CACertificate})
+}
+
+// portOf is the port number as a Connection holds it, and false when it is not a port.
+func portOf(number int) (uint16, bool) {
+	if number < 1 || number > math.MaxUint16 {
+		return 0, false
+	}
+	return uint16(number), true
 }
 
 // take makes a ServerDatabase from the contents and takes the lease once, bounded by takeLimit.
@@ -223,7 +235,7 @@ func TestNewServerDatabase(t *testing.T) {
 func TestTake(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Take shall connect to the ConnectionFile's host and port over TLS 1.2 or 1.3 only, and accept the database's certificate only when it chains to the ConnectionFile's certificate authority and names its host.", func(t *testing.T) {
+	t.Run("Take shall connect to the Connection's host and port over TLS 1.2 or 1.3 only, and accept the database's certificate only when it chains to the Connection's certificate authority and names its host.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a certificate from the file's authority naming 127.0.0.1: taken, the server's log shows the sign-in over TLS", func(t *testing.T) {
 			t.Parallel()
@@ -246,7 +258,7 @@ func TestTake(t *testing.T) {
 		})
 	})
 
-	t.Run("Take shall sign in as the ConnectionFile's login, to its database, only by SCRAM-SHA-256 with channel binding.", func(t *testing.T) {
+	t.Run("Take shall sign in as the Connection's login, to its database, only by SCRAM-SHA-256 with channel binding.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the server's log shows the file's login authenticated by SCRAM-SHA-256", func(t *testing.T) {
 			t.Parallel()
@@ -660,7 +672,7 @@ func TestTake(t *testing.T) {
 		}
 	})
 
-	t.Run("If hadv.servers holds no row for the ConnectionFile's server ID, then Take shall return ErrNoServerRow.", func(t *testing.T) {
+	t.Run("If hadv.servers holds no row for the Connection's server ID, then Take shall return ErrNoServerRow.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a server ID with no row: ErrNoServerRow", func(t *testing.T) {
 			t.Parallel()

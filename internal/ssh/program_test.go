@@ -46,6 +46,7 @@ func TestMain(tests *testing.M) {
 		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()
+	bootstrapOraclePath, bootstrapOracleFailure = buildBootstrapOracle(runFolder)
 	directory, err := os.MkdirTemp("", "hadv-service-ssh-test-")
 	if err != nil {
 		buildFailure = err

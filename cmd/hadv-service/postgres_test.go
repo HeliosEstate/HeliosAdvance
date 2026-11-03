@@ -29,7 +29,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,10 +39,10 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
-// The option that names the connection file, the superuser the tests set a server up as, and
-// the one address every server listens at.
+// The option that names the bootstrap folder, where the program finds its database, the
+// superuser the tests set a server up as, and the one address every server listens at.
 const (
-	databaseOption = "-database"
+	databaseOption = "-bootstrap"
 	superuser      = "postgres"
 	databaseHost   = "127.0.0.1"
 )
@@ -672,7 +671,7 @@ func (created *board) sqlAsOwner(t *testing.T, statements string) string {
 	return created.server.sql(t, created.database, "SET ROLE "+created.owner+";\n"+statements)
 }
 
-// connectionFile is the connection file's contents, as the tests write it.
+// connectionFile is the connection settings a bootstrap file seals, as the tests write them.
 type connectionFile struct {
 	ServerID      int64
 	Host          string
@@ -683,45 +682,48 @@ type connectionFile struct {
 	CACertificate string
 }
 
-// file is the board's connection file's contents, for its own row.
+// file is the board's connection settings, for its own row.
 func (created *board) file() connectionFile {
 	return connectionFile{ServerID: created.serverID, Host: databaseHost, Port: created.server.port,
 		Database: created.database, Login: created.login, Password: created.password,
 		CACertificate: created.server.authority.pemText}
 }
 
-// write writes the contents as a connection file only its owner may read, and returns its path.
-func (contents connectionFile) write(t *testing.T) string {
+// text is the settings as one JSON object, its seven fields named as the format names them.
+func (contents connectionFile) text(t *testing.T) string {
 	t.Helper()
 	text, err := json.Marshal(map[string]any{
 		"server_id": contents.ServerID, "host": contents.Host, "port": contents.Port, "database": contents.Database,
 		"login": contents.Login, "password": contents.Password, "ca_certificate": contents.CACertificate,
 	})
 	if err != nil {
-		t.Fatalf("writing the connection file's JSON: %v", err)
+		t.Fatalf("writing the connection settings' JSON: %v", err)
 	}
-	return writeConnectionFile(t, string(text))
+	return string(text)
 }
 
-// writeConnectionFile writes text as a connection file only its owner may read, and returns its
-// path.
-func writeConnectionFile(t *testing.T, text string) string {
+// seal makes a good bootstrap folder sealing the settings, and returns it.
+func (contents connectionFile) seal(t *testing.T) *bootstrapFolder {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "connection.json")
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-		t.Fatalf("writing the connection file: %v", err)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			t.Fatalf("protecting the connection file: %v", err)
-		}
-	}
-	return path
+	return makeBootstrapFolder(t, []byte(contents.text(t)), "")
+}
+
+// write makes a good bootstrap folder sealing the settings, and returns its path.
+func (contents connectionFile) write(t *testing.T) string {
+	t.Helper()
+	return contents.seal(t).path
 }
 
 // sharedRowFile adds a row to the shared board for one run of the program, and returns the path
-// of a connection file naming it.
+// of a bootstrap folder naming it.
 func sharedRowFile(t *testing.T) string {
+	t.Helper()
+	return sharedRowSettings(t).write(t)
+}
+
+// sharedRowSettings adds a row to the shared board for one run of the program, and returns the
+// connection settings naming it.
+func sharedRowSettings(t *testing.T) connectionFile {
 	t.Helper()
 	if oracleFailure != nil {
 		t.Fatalf("the oracle could not be prepared: %v", oracleFailure)
@@ -732,7 +734,7 @@ func sharedRowFile(t *testing.T) string {
 	}
 	contents := sharedBoard.file()
 	contents.ServerID = identifier
-	return contents.write(t)
+	return contents
 }
 
 // lease is the board's row as the database holds it.

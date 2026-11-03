@@ -361,7 +361,7 @@ func TestLinuxRoot(t *testing.T) {
 	t.Run("If the engine is started as root on Linux, then the engine shall write one `start_failed` line to the local log saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, options := range [][]string{nil, {portOption, "0"}} {
-			t.Run(fmt.Sprintf("as root with a connection file and the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
+			t.Run(fmt.Sprintf("as root with a bootstrap folder and the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
 				t.Parallel()
 				if buildFailure != nil {
 					t.Fatalf("the program did not build: %v", buildFailure)
@@ -409,7 +409,7 @@ func TestLinuxLowPort(t *testing.T) {
 	t.Parallel()
 	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with a connection file and no other option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("with a bootstrap folder and no other option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			if os.Geteuid() == 0 {
 				t.Fatalf("this row needs an ordinary user, not root")

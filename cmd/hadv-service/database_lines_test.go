@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The program and its database, driven from outside: the connection file on the command line,
+// The program and its database, driven from outside: the bootstrap folder on the command line,
 // signing in, the checks made before it listens, waiting for the database or the lease, taking,
 // renewing and losing the lease, and ending it at a stop. The program is the built one; the
 // database is a real PostgreSQL the tests make; the lease is read from the tests' record of every
@@ -43,10 +43,10 @@ const leaseMargin = 2 * time.Second
 // foreignHolder is another run's lease holder, which the tests write into a row.
 const foreignHolder = "11111111-2222-4333-8444-555555555555"
 
-// noFileKey names, among the reasons a row compares, the one for no connection file at all.
-const noFileKey = "no connection file"
+// noFileKey names, among the reasons a row compares, the one for no bootstrap folder at all.
+const noFileKey = "no bootstrap folder"
 
-// startWithFile starts the program with the connection file at path, the options given and
+// startWithFile starts the program with the bootstrap folder at path, the options given and
 // PostgreSQL's own variables taken out of its environment, the extra entries added.
 func startWithFile(t *testing.T, path string, extra []string, options ...string) *run {
 	t.Helper()
@@ -82,10 +82,19 @@ func expectNotListening(t *testing.T, program *run) {
 }
 
 // noFileReason is the start_failed reason the program gives when it is started with no
-// connection file, a Telnet port the system picks and nothing else.
+// bootstrap folder, a Telnet port the system picks and nothing else.
 func noFileReason(t *testing.T) string {
 	t.Helper()
 	return startBare(t, portOption, "0").expectRefusal(t)
+}
+
+// expectNamesBootstrap checks a reason for no bootstrap folder says so: it names the bootstrap
+// folder, or the option that names it.
+func expectNamesBootstrap(t *testing.T, reason string) {
+	t.Helper()
+	if !strings.Contains(strings.ToLower(reason), "bootstrap") {
+		t.Fatalf("the reason %q does not name the bootstrap folder it lacks", reason)
+	}
 }
 
 // expectDifferent checks the reasons are pairwise different, each naming its own case.
@@ -163,24 +172,33 @@ func waitForStarted(t *testing.T, program *run, index int, deadline time.Time) t
 func TestDatabaseProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If it starts without a connection file on the command line, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If it starts without a bootstrap folder on the command line, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -port 0 and no connection file: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("with -port 0 and no bootstrap folder: one start_failed line naming the bootstrap folder, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			noFileReason(t)
+			expectNamesBootstrap(t, noFileReason(t))
 		})
 		t.Run("with no option at all: one start_failed line saying the same, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			want := noFileReason(t)
+			expectNamesBootstrap(t, want)
 			if reason := startBare(t).expectRefusal(t); reason != want {
-				t.Fatalf("with no option the reason was %q, want the one for no connection file, %q", reason, want)
+				t.Fatalf("with no option the reason was %q, want the one for no bootstrap folder, %q", reason, want)
+			}
+		})
+		t.Run("with -bootstrap given an empty value: one start_failed line saying the same, and a non-zero exit", func(t *testing.T) {
+			t.Parallel()
+			want := noFileReason(t)
+			expectNamesBootstrap(t, want)
+			if reason := startBare(t, databaseOption, "", portOption, "0").expectRefusal(t); reason != want {
+				t.Fatalf("with an empty folder named the reason was %q, want the one for no bootstrap folder, %q", reason, want)
 			}
 		})
 	})
 
-	t.Run("If the connection file is missing, unreadable, over 64 KiB, not in the connection file's format, or missing a field or holding one the format does not name, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the JSON object the bootstrap file seals is not in its format, or is missing a field or holds one the format does not name, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("missing, unreadable, 70 KiB, not JSON, without port, with sslmode: six start_failed lines, six reasons, none the password", func(t *testing.T) {
+		t.Run("not JSON, without port, with sslmode, each sealed in a good folder: three start_failed lines, three reasons, none the password", func(t *testing.T) {
 			t.Parallel()
 			valid := sharedBoard.file()
 			text := func(change func(map[string]any)) string {
@@ -197,16 +215,10 @@ func TestDatabaseProgram(t *testing.T) {
 				}
 				return "{" + strings.Join(parts, ", ") + "}"
 			}
-			unreadable := writeConnectionFile(t, text(func(map[string]any) {}))
-			keepFromReading(t, unreadable)
-			large := text(func(map[string]any) {})
 			files := map[string]string{
-				"missing":         unreadable + ".missing",
-				"unreadable":      unreadable,
-				"over 64 KiB":     writeConnectionFile(t, large[:len(large)-1]+strings.Repeat(" ", 70<<10)+"}"),
-				"not JSON":        writeConnectionFile(t, "password="+valid.Password),
-				"missing a field": writeConnectionFile(t, text(func(fields map[string]any) { delete(fields, "port") })),
-				"an unknown field": writeConnectionFile(t, text(func(fields map[string]any) {
+				"not JSON":        writeBootstrapFolder(t, "password="+valid.Password),
+				"missing a field": writeBootstrapFolder(t, text(func(fields map[string]any) { delete(fields, "port") })),
+				"an unknown field": writeBootstrapFolder(t, text(func(fields map[string]any) {
 					fields["sslmode"] = "disable"
 				})),
 			}
@@ -220,7 +232,7 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall take where it connects, its login and its password from the connection file alone.", func(t *testing.T) {
+	t.Run("The engine shall take where it connects, its login and its password from the bootstrap file alone.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("PostgreSQL's variables, a password file and a service file naming a decoy board: it starts on the file's board, the decoy left alone", func(t *testing.T) {
 			t.Parallel()
@@ -238,13 +250,14 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall not write the connection file's password to the local log.", func(t *testing.T) {
+	t.Run("The engine shall not write the bootstrap file's password, or the key in the key file, to the local log.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a run that starts, loses its lease to another run, waits and starts again, then stops: the password nowhere in its log", func(t *testing.T) {
+		t.Run("a run that starts, loses its lease to another run, waits and starts again, then stops: neither the password nor the key anywhere in its log", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
 			created := sharedServer(t).newBoard(t)
-			program := startOnBoard(t, created)
+			folder := created.file().seal(t)
+			program := startWithFile(t, folder.path, nil, portOption, "0")
 			program.listening(t)
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
 			program.expectLine(t, 1, "lease_lost", time.Now().Add(renewEvery+testrun.Patient(leaseMargin)))
@@ -255,10 +268,11 @@ func TestDatabaseProgram(t *testing.T) {
 			program.exit(t, sentBy.Add(endLeaseWait+testrun.Patient(margin)))
 			program.expectLog(t, "started", "lease_lost", "waiting", "started")
 			expectNoPassword(t, program)
+			folder.expectKeyNotIn(t, program.text())
 		})
 	})
 
-	t.Run("The engine shall connect to the database only over TLS, and sign in only by SCRAM-SHA-256 with channel binding, under the login the connection file names.", func(t *testing.T) {
+	t.Run("The engine shall connect to the database only over TLS, and sign in only by SCRAM-SHA-256 with channel binding, under the login the bootstrap file names.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("started: the server's log shows the file's login signed in by SCRAM-SHA-256 over TLS", func(t *testing.T) {
 			t.Parallel()
@@ -272,7 +286,7 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the database's certificate does not chain to the certificate authority in the connection file or does not name the file's host, the database asks for any other way of signing in, or it refuses the sign-in, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the database's certificate does not chain to the certificate authority in the bootstrap file or does not name the file's host, the database asks for any other way of signing in, or it refuses the sign-in, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("another authority, the sign-in rule password, a wrong password: three start_failed lines, three reasons", func(t *testing.T) {
 			t.Parallel()
@@ -363,13 +377,13 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If `hadv.servers` holds no row for the connection file's server ID, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If `hadv.servers` holds no row for the bootstrap file's server ID, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a server ID with no row: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("a server ID with no row: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			contents := sharedServer(t).newBoard(t).file()
 			contents.ServerID += 1000
-			reasons := map[string]string{noFileKey: noFileReason(t)}
+			reasons := map[string]string{noFileKey: noFileReason(t), "a missing key file": keyMissingReason(t)}
 			reasons["no row"] = startWithFile(t, contents.write(t), nil, portOption, "0").expectRefusal(t)
 			expectDifferent(t, reasons)
 		})
@@ -703,24 +717,6 @@ func TestDatabaseProgram(t *testing.T) {
 	})
 }
 
-// TestLinuxDatabaseProgram is Linux's alone: the line checks the file's mode on Linux only.
-func TestLinuxDatabaseProgram(t *testing.T) {
-	t.Parallel()
-	t.Run("If, on Linux, the connection file's mode lets its group or others read it, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("mode 0644: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
-			t.Parallel()
-			created := sharedServer(t).newBoard(t)
-			path := created.file().write(t)
-			setMode(t, path, 0o644)
-			reasons := map[string]string{noFileKey: noFileReason(t)}
-			reasons["mode"] = startWithFile(t, path, nil, portOption, "0").expectRefusal(t)
-			reasons["missing"] = startWithFile(t, path+".missing", nil, portOption, "0").expectRefusal(t)
-			expectDifferent(t, reasons)
-		})
-	})
-}
-
 // decoyEnvironment is every one of PostgreSQL's variables the library reads, pointing at the
 // decoy board or at a setting that would break the file's sign-in.
 func decoyEnvironment(t *testing.T, decoy *board) []string {
@@ -745,7 +741,7 @@ func decoyEnvironment(t *testing.T, decoy *board) []string {
 	return slices.Clip(environment)
 }
 
-// jsonValue writes one of the connection file's values as JSON.
+// jsonValue writes one of the connection settings' values as JSON.
 func jsonValue(value any) (string, error) {
 	switch typed := value.(type) {
 	case string:

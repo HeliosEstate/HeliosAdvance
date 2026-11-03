@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -34,10 +33,10 @@ import (
 	"time"
 )
 
-// The option that names the connection file, the superuser the tests set the server up as, and
-// the one address it listens at.
+// The option that names the bootstrap folder, where the program finds its database, the superuser
+// the tests set the server up as, and the one address it listens at.
 const (
-	databaseOption = "-database"
+	databaseOption = "-bootstrap"
 	superuser      = "postgres"
 	databaseHost   = "127.0.0.1"
 )
@@ -343,8 +342,8 @@ func (server *postgres) makeBoard() (*board, error) {
 }
 
 // sharedRowFile adds a row to the board for one run of the program, its lease ended an hour ago
-// and never held, and returns the path of a connection file naming it, which only its owner may
-// read.
+// and never held, and returns the path of a bootstrap folder naming it, whose key file only its
+// owner may reach.
 func sharedRowFile(t *testing.T) string {
 	t.Helper()
 	if oracleFailure != nil {
@@ -365,16 +364,7 @@ func sharedRowFile(t *testing.T) string {
 		"login": sharedBoard.login, passwordField: sharedBoard.password, "ca_certificate": shared.authorityPEM,
 	})
 	if err != nil {
-		t.Fatalf("writing the connection file's JSON: %v", err)
+		t.Fatalf("writing the connection settings' JSON: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "connection.json")
-	if err := os.WriteFile(path, text, 0o600); err != nil {
-		t.Fatalf("writing the connection file: %v", err)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			t.Fatalf("protecting the connection file: %v", err)
-		}
-	}
-	return path
+	return writeBootstrapFolder(t, text)
 }

@@ -94,7 +94,7 @@ func TestPackage(t *testing.T) {
 		})
 	})
 
-	t.Run("No error the database package returns shall hold, in its text, the connection file's password or any text the database sent.", func(t *testing.T) {
+	t.Run("No error the database package returns shall hold, in its text, the Connection's password, any other part of the connection settings, or any text the database sent.", func(t *testing.T) {
 		t.Parallel()
 		for _, entry := range []struct {
 			code string
@@ -116,7 +116,7 @@ func TestPackage(t *testing.T) {
 				expectTakeError(t, lease, err, entry.want, "password-"+canary)
 			})
 		}
-		t.Run("a real refusal of the sign-in, the password holding the canary: the error's text holds neither", func(t *testing.T) {
+		t.Run("a real refusal of the sign-in, the password holding the canary: the error's text holds neither, nor the login, the database's name or its port", func(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			contents := created.file()
@@ -126,6 +126,12 @@ func TestPackage(t *testing.T) {
 			defer func() { showLogIfFailed(t, created.server, &contents.Login, started) }()
 			lease, err := take(t, contents)
 			expectTakeError(t, lease, err, database.ErrSignInRefused, contents.Password)
+			for name, part := range map[string]string{"login": contents.Login, "database's name": contents.Database,
+				"port": strconv.Itoa(contents.Port)} {
+				if strings.Contains(err.Error(), part) {
+					t.Fatalf("the error's text holds the %s %q: %q", name, part, err.Error())
+				}
+			}
 		})
 	})
 }
@@ -133,7 +139,7 @@ func TestPackage(t *testing.T) {
 // TestFileAlone sets PostgreSQL's own environment variables in this process, which no test may do
 // while another runs, so it and its rows run before the parallel tests resume.
 func TestFileAlone(t *testing.T) {
-	t.Run("The database package shall take where it connects, its login and its password from the ConnectionFile alone, whatever PostgreSQL's environment variables, password file or service file give.", func(t *testing.T) {
+	t.Run("The database package shall take where it connects, its login and its password from the Connection alone, whatever PostgreSQL's environment variables, password file or service file give.", func(t *testing.T) {
 		t.Run("every variable, a password file and a service file naming a decoy board: the file's board is taken, the decoy left alone", func(t *testing.T) { //nolint:paralleltest // it sets the process's environment, through setDecoyEnvironment
 			created := sharedServer(t).newBoard(t)
 			decoy := sharedServer(t).newBoard(t)
