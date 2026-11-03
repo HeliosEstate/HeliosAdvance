@@ -111,7 +111,7 @@ func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey
 	if hostKey != nil {
 		sshListener, sshAddresses, err := newSSHListener(ctx, options.sshPort, hostKey, count)
 		if err != nil {
-			telnetListener.Stop()
+			stopAll(listeners)
 			return nil, nil, errors.New("ssh listeners: " + err.Error())
 		}
 		listeners = append(listeners, sshListener)

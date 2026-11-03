@@ -46,6 +46,8 @@ var (
 	oidRSA     = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 1}
 	oidECDSA   = asn1.ObjectIdentifier{1, 2, 840, 10045, 2, 1}
 	oidEd25519 = asn1.ObjectIdentifier{1, 3, 101, 112}
+	oidP256    = asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7}
+	oidP384    = asn1.ObjectIdentifier{1, 3, 132, 0, 34}
 )
 
 // refusal is the only error text ReadCertificate gives: the file it is about and the sentinel,
@@ -77,8 +79,8 @@ func readCertificate(certificatePath, keyPath string) (*Certificate, error) {
 
 // readFile returns the file's contents, which the caller clears. The file is opened non-blocking
 // so that a named pipe opens at once on Linux, and every check after the open is on the opened
-// file.
-func readFile(path, file string) ([]byte, error) {
+// file. A private key's file passes privateMode, so that its mode is checked.
+func readFile(path, file string, privateMode bool) ([]byte, error) {
 	opened, err := os.OpenFile(filepath.Clean(path), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -86,7 +88,7 @@ func readFile(path, file string) ([]byte, error) {
 		}
 		return nil, refusal(file, ErrTLSFileUnreadable)
 	}
-	contents, err := readOpened(opened, file)
+	contents, err := readOpened(opened, file, privateMode)
 	closeErr := opened.Close()
 	if err == nil && closeErr != nil {
 		clear(contents)
@@ -95,7 +97,7 @@ func readFile(path, file string) ([]byte, error) {
 	return contents, err
 }
 
-func readOpened(opened *os.File, file string) ([]byte, error) {
+func readOpened(opened *os.File, file string, privateMode bool) ([]byte, error) {
 	info, err := opened.Stat()
 	if err != nil {
 		return nil, refusal(file, ErrTLSFileUnreadable)
@@ -103,7 +105,7 @@ func readOpened(opened *os.File, file string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, refusal(file, ErrTLSFileNotRegular)
 	}
-	if file == keyFile && runtime.GOOS == "linux" && info.Mode().Perm()&othersReadBits != 0 {
+	if privateMode && runtime.GOOS == "linux" && info.Mode().Perm()&othersReadBits != 0 {
 		return nil, refusal(file, ErrKeyReadableByOthers)
 	}
 	// One byte more than the most, so that a longer file shows as a full buffer.
@@ -120,10 +122,10 @@ func readOpened(opened *os.File, file string) ([]byte, error) {
 	return contents[:count], nil
 }
 
-// readChain returns the DER of the certificate file's CERTIFICATE blocks in the file's order, and
-// the first one parsed.
+// readChain refuses a certificate file that holds a private key, so that a key put there by
+// mistake is named before the key file is read.
 func readChain(path string) ([][]byte, *x509.Certificate, error) {
-	contents, err := readFile(path, certificateFile)
+	contents, err := readFile(path, certificateFile, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -161,9 +163,8 @@ func readChain(path string) ([][]byte, *x509.Certificate, error) {
 	return chain, leaf, nil
 }
 
-// readKey returns the key file's first private key block as a key of a type the engine serves.
 func readKey(path string) (crypto.Signer, error) {
-	contents, err := readFile(path, keyFile)
+	contents, err := readFile(path, keyFile, true)
 	if err != nil {
 		return nil, err
 	}
@@ -197,11 +198,14 @@ func parseKey(block *pem.Block) (crypto.Signer, error) {
 	switch block.Type {
 	case pkcs8Block:
 		parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil && wrapsOtherAlgorithm(block.Bytes) {
+		if err != nil && wrapsUnservedKey(block.Bytes) {
 			return nil, refusal(keyFile, ErrKeyType)
 		}
 	case ecBlock:
 		parsed, err = x509.ParseECPrivateKey(block.Bytes)
+		if err != nil && unservedSEC1Curve(block.Bytes) {
+			return nil, refusal(keyFile, ErrKeyType)
+		}
 	case rsaBlock:
 		parsed, err = x509.ParsePKCS1PrivateKey(block.Bytes)
 	default:
@@ -225,10 +229,10 @@ func parseKey(block *pem.Block) (crypto.Signer, error) {
 	return nil, refusal(keyFile, ErrKeyType)
 }
 
-// wrapsOtherAlgorithm is true for a PKCS#8 key that names an algorithm other than RSA, ECDSA or
-// Ed25519, such as RSA-PSS, which crypto/x509 refuses as unknown and the engine refuses as a
-// key of the wrong type.
-func wrapsOtherAlgorithm(der []byte) bool {
+// wrapsUnservedKey is true for a well formed PKCS#8 key that crypto/x509 refuses as unknown: an
+// algorithm other than RSA, ECDSA or Ed25519, such as RSA-PSS, or an ECDSA curve other than P-256
+// and P-384. The engine refuses it as the wrong type of key, not as a damaged file.
+func wrapsUnservedKey(der []byte) bool {
 	var wrapper struct {
 		Version   int
 		Algorithm pkix.AlgorithmIdentifier
@@ -239,11 +243,43 @@ func wrapsOtherAlgorithm(der []byte) bool {
 		return false
 	}
 	algorithm := wrapper.Algorithm.Algorithm
-	return !algorithm.Equal(oidRSA) && !algorithm.Equal(oidECDSA) && !algorithm.Equal(oidEd25519)
+	if algorithm.Equal(oidECDSA) {
+		return unservedCurve(wrapper.Algorithm.Parameters.FullBytes)
+	}
+	return !algorithm.Equal(oidRSA) && !algorithm.Equal(oidEd25519)
 }
 
-// newConfig is the TLS table. TLS 1.3's suites cannot be set and are crypto/tls's own; the
-// engine sets nothing else.
+// unservedSEC1Curve is true for a well formed SEC 1 key that crypto/x509 refuses as unknown
+// because its curve is not P-256 or P-384, so that it is refused as the wrong type of key.
+func unservedSEC1Curve(der []byte) bool {
+	var key struct {
+		Version    int
+		PrivateKey []byte
+		Parameters asn1.RawValue `asn1:"optional,explicit,tag:0"`
+	}
+	defer func() { clear(key.PrivateKey) }()
+	if _, err := asn1.Unmarshal(der, &key); err != nil {
+		return false
+	}
+	return unservedCurve(key.Parameters.Bytes)
+}
+
+// unservedCurve is true for a named curve other than P-256 and P-384, and for explicit
+// parameters, which the engine does not take as a curve it serves.
+func unservedCurve(parameters []byte) bool {
+	if len(parameters) == 0 {
+		return false
+	}
+	var curve asn1.ObjectIdentifier
+	if _, err := asn1.Unmarshal(parameters, &curve); err == nil {
+		return !curve.Equal(oidP256) && !curve.Equal(oidP384)
+	}
+	var explicit asn1.RawValue
+	_, err := asn1.Unmarshal(parameters, &explicit)
+	return err == nil && explicit.Tag == asn1.TagSequence
+}
+
+// newConfig lists only TLS 1.2's suites, since crypto/tls does not let a config set TLS 1.3's.
 func newConfig(chain [][]byte, key crypto.Signer, leaf *x509.Certificate) *tls.Config {
 	return &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: chain, PrivateKey: key, Leaf: leaf}},
