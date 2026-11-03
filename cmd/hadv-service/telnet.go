@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"net"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/telnet"
@@ -14,17 +13,10 @@ import (
 const defaultPort = "23"
 
 // telnetTargets are Telnet's own list, so that its addresses can change without SSH's.
-var telnetTargets = []target{{"tcp4", ipv4Address}, {"tcp6", ipv6Address}}
+var telnetTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}
 
-// openTelnet adapts Telnet's way in to the Listener's, which wants a nil KindConnection on an
-// error, never one holding a nil Line.
-func openTelnet(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
-	line, err := telnet.Accept(ctx, connection)
-	if err != nil {
-		return nil, err
-	}
-	return line, nil
-}
+// openTelnet is Telnet's way in.
+var openTelnet = openKind(telnet.Accept)
 
 func newTelnetListener(ctx context.Context, port string, count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {

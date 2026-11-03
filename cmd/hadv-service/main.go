@@ -28,6 +28,8 @@ import (
 
 const (
 	ipv4Address = "127.0.0.1"
+	ipv4Network = "tcp4"
+	ipv6Network = "tcp6"
 	ipv6Address = "::1"
 
 	exitFailed = 1
@@ -266,4 +268,18 @@ func newKindListener(ctx context.Context, targets []target, port string, open li
 		return nil, nil, errors.Join(err, closeAll(sockets))
 	}
 	return kindListener, addresses, nil
+}
+
+// openKind adapts a kind's Accept to the Listener's way in, which wants a nil KindConnection on an
+// error, never one holding a nil connection.
+func openKind[K listener.KindConnection](
+	accept func(context.Context, *net.TCPConn) (K, error),
+) listener.Open {
+	return func(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
+		kindConnection, err := accept(ctx, connection)
+		if err != nil {
+			return nil, err
+		}
+		return kindConnection, nil
+	}
 }

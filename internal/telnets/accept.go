@@ -46,7 +46,8 @@ func accept(ctx context.Context, connection *net.TCPConn, certificate *Certifica
 	}
 	encrypted := tls.Server(connection, certificate.state.config)
 	release := timeup.WakeOnEnd(ctx, connection)
-	//nolint:noctx // HandshakeContext closes the connection when the context ends, which is the shared execution path's to do; timeup's wake ends the handshake instead
+	//nolint:noctx // HandshakeContext closes the connection, which the shared execution path does
+	// instead; timeup's wake ends the handshake
 	err := encrypted.Handshake()
 	release()
 	if err != nil {
