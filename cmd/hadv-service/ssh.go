@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
@@ -28,18 +27,8 @@ func sshOpener(key *ssh.HostKey) listener.Open {
 	}
 }
 
-// newSSHListener closes the sockets only when New refuses: once it has them they are the
-// Listener's.
 func newSSHListener(ctx context.Context, port string, key *ssh.HostKey,
 	count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
-	sockets, addresses, err := listen(ctx, sshTargets, port)
-	if err != nil {
-		return nil, nil, err
-	}
-	sshListener, err := listener.New(sockets, sshOpener(key), count)
-	if err != nil {
-		return nil, nil, errors.Join(err, closeAll(sockets))
-	}
-	return sshListener, addresses, nil
+	return newKindListener(ctx, sshTargets, port, sshOpener(key), count)
 }

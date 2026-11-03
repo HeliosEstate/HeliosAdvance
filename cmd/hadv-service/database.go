@@ -14,6 +14,7 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/database"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
+	"github.com/heliosestate/heliosadvance/internal/telnets"
 )
 
 // retryEvery is how long after one try started the next starts, so a try that used its whole
@@ -23,7 +24,7 @@ const retryEvery = 10 * time.Second
 // serve takes the server's lease, listens while it holds it, and takes it again after a loss,
 // until a stop. It returns the exit code.
 func serve(log func(key, value string), server *database.ServerDatabase,
-	options commandLine, hostKey *ssh.HostKey,
+	options commandLine, hostKey *ssh.HostKey, certificate *telnets.Certificate,
 ) int {
 	// Registered before anything listens: a stop sent as soon as the started line is read must
 	// not take the default action and kill the process without closing connections.
@@ -57,7 +58,7 @@ func serve(log func(key, value string), server *database.ServerDatabase,
 			continue
 		}
 
-		listeners, addresses, err := newListeners(stopContext, options, hostKey, count)
+		listeners, addresses, err := newListeners(stopContext, options, hostKey, certificate, count)
 		if err != nil {
 			lease.EndLease()
 			log("start_failed", err.Error())
@@ -98,7 +99,8 @@ func fixesItself(err error) bool {
 
 // newListeners makes every kind's listener, sharing the one count. On a failure it stops those it
 // made.
-func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey, count *listener.ConnectionCount,
+func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey,
+	certificate *telnets.Certificate, count *listener.ConnectionCount,
 ) ([]*listener.Listener, []string, error) {
 	telnetListener, telnetAddresses, err := newTelnetListener(ctx, options.telnetPort, count)
 	if err != nil {
@@ -114,6 +116,16 @@ func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey
 		}
 		listeners = append(listeners, sshListener)
 		addresses = append(addresses, urls("ssh", sshAddresses)...)
+	}
+	if certificate != nil {
+		telnetsListener, telnetsAddresses, err := newTelnetsListener(
+			ctx, options.tlsPort, certificate, count)
+		if err != nil {
+			stopAll(listeners)
+			return nil, nil, errors.New("telnets listeners: " + err.Error())
+		}
+		listeners = append(listeners, telnetsListener)
+		addresses = append(addresses, urls("telnets", telnetsAddresses)...)
 	}
 	return listeners, addresses, nil
 }

@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net"
 
 	"github.com/heliosestate/heliosadvance/internal/listener"
@@ -27,17 +26,7 @@ func openTelnet(ctx context.Context, connection *net.TCPConn) (listener.KindConn
 	return line, nil
 }
 
-// newTelnetListener closes the sockets only when New refuses: once it has them they are the
-// Listener's.
 func newTelnetListener(ctx context.Context, port string, count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
-	sockets, addresses, err := listen(ctx, telnetTargets, port)
-	if err != nil {
-		return nil, nil, err
-	}
-	telnetListener, err := listener.New(sockets, openTelnet, count)
-	if err != nil {
-		return nil, nil, errors.Join(err, closeAll(sockets))
-	}
-	return telnetListener, addresses, nil
+	return newKindListener(ctx, telnetTargets, port, openTelnet, count)
 }
