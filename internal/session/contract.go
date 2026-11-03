@@ -98,7 +98,7 @@ var (
 	// ErrCallerClosed means a call returned io.EOF before the call ended: the caller closed its
 	// side or, over a kind of connection that does not tell them apart, the connection ended.
 	ErrCallerClosed = errors.New("session: the caller closed the connection")
-	// ErrConnectionFailed means any other failure of the Connection.
+	// ErrConnectionFailed means any other failure of the Connection, or nil Texts.
 	ErrConnectionFailed = errors.New("session: the connection failed")
 	// ErrCallEnded means the context ended first: the call's ceiling or a stop. It is returned
 	// wrapping context.DeadlineExceeded or context.Canceled, so errors.Is matches both.
@@ -113,6 +113,7 @@ var (
 // reply and CR LF with SendString. With an error it returns no Ending. Results: ErrCallerClosed,
 // ErrConnectionFailed, ErrCallEnded.
 //
+//   - If texts is nil, then Run shall return ErrConnectionFailed without writing.
 //   - When it is called, Run shall write the greeting and CR LF, then the name prompt, before it
 //     reads.
 //   - Run shall read the name with RecvString, with a deadline of NameSeconds after the name
