@@ -66,9 +66,12 @@ func sendUrgent(connection *net.TCPConn, data []byte) (int, error) {
 	return len(data), nil
 }
 
-// receiveUrgent takes the urgent byte waiting on the connection, out of band, polling until it
-// has come or the deadline passes. Linux keeps it only until a read passes the mark, so it is
-// taken as soon as the bytes before it are read.
+// receiveUrgent takes the urgent byte waiting on the connection, out of band, checking again
+// every 5 ms until it has come or the deadline passes, the check-again the no-sleep rule allows:
+// the system announces urgent data only through select or poll, which the standard library
+// offers here only with a limit on descriptors or not at all. Linux keeps the byte only until a
+// read passes the mark, so it is taken as soon as the bytes before it are read; under load it
+// was never missed between checks.
 func receiveUrgent(ctx context.Context, connection *net.TCPConn, deadline time.Time) ([]byte, error) {
 	raw, err := connection.SyscallConn()
 	if err != nil {

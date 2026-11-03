@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The program run from outside: TestMain builds cmd/hadv-service once, and each row starts the
-// built program with its own options, reads its standard error as the local log, drives it with
-// the scripted Telnet caller over loopback, and waits for it to exit.
+// The program run from outside: TestMain builds cmd/hadv-service once and prepares its database,
+// and each row starts the built program with its own options and a connection file for a row of
+// its own, reads its standard error as the local log, drives it with the scripted Telnet caller
+// over loopback, and waits for it to exit.
 package main_test
 
 import (
 	"bufio"
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -18,11 +18,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The loopback addresses and the port option, as the page and the issue name them.
@@ -34,7 +35,7 @@ const (
 
 // startLimit bounds how long the program may take to name its listeners or to exit after a
 // refusal. The page gives it no limit; this one only keeps a hung program from hanging the run.
-const startLimit = 30 * time.Second
+var startLimit = testrun.Patient(30 * time.Second)
 
 var (
 	programPath  string
@@ -42,8 +43,23 @@ var (
 )
 
 // TestMain builds the program the rows run, under the race detector when the tests run under
-// it. A build that fails fails every row with its reason, rather than stopping before any runs.
+// it, and prepares the database every run needs. A build or a database that fails fails every
+// row with its reason, rather than stopping before any runs. First it makes this run's own
+// folder, taking what dead runs left, so that everything the run makes, the program included,
+// lands there.
 func TestMain(tests *testing.M) {
+	runFolder, swept, err := testrun.Enter()
+	if swept != nil {
+		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "the run's own folder: %v\n", err)
+		if err := testrun.Leave(runFolder); err != nil {
+			fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
+		}
+		os.Exit(1)
+	}
+	oracleFailure = prepareOracle()
 	directory, err := os.MkdirTemp("", "hadv-service-test-")
 	if err != nil {
 		buildFailure = err
@@ -54,7 +70,7 @@ func TestMain(tests *testing.M) {
 		}
 		programPath = filepath.Join(directory, name)
 		arguments := []string{"build", "-o", programPath}
-		if raceBuild {
+		if testrun.Race {
 			arguments = append(arguments, "-race")
 		}
 		arguments = append(arguments, ".")
@@ -64,8 +80,11 @@ func TestMain(tests *testing.M) {
 		}
 	}
 	code := tests.Run()
-	if directory != "" {
-		_ = os.RemoveAll(directory)
+	stopOracle()
+	// Logged, not failed: whether Windows has let go of every file by now is its timing, and
+	// the next run takes what is left.
+	if err := testrun.Leave(runFolder); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
 	}
 	os.Exit(code)
 }
@@ -79,12 +98,26 @@ type run struct {
 	exited   chan struct{}
 	mutex    sync.Mutex
 	log      []byte
+	entries  []logEntry
 	exitCode int
 	exitedAt time.Time
 }
 
-// startProgram starts the built program with the given options, killed when the test ends.
+// logEntry is one line of the local log and when the test read it.
+type logEntry struct {
+	line string
+	read time.Time
+}
+
+// startProgram starts the built program with a connection file for a row of its own on the
+// shared board, then the given options, killed when the test ends.
 func startProgram(t *testing.T, options ...string) *run {
+	t.Helper()
+	return startBare(t, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
+}
+
+// startBare starts the built program with the given options alone, killed when the test ends.
+func startBare(t *testing.T, options ...string) *run {
 	t.Helper()
 	return startCommand(t, exec.CommandContext(t.Context(), programPath, options...))
 }
@@ -96,12 +129,15 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
 	command.SysProcAttr = processAttributes()
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = testrun.Patient(testrun.HangBound)
 	// A program built with the race detector sleeps a second at exit by default, waiting for late
 	// reports, which would read as a slow exit; a race it finds still reaches the log and fails
 	// the row.
-	if raceBuild {
-		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
+	if testrun.Race {
+		if command.Env == nil {
+			command.Env = os.Environ()
+		}
+		command.Env = append(command.Env, "GORACE=atexit_sleep_ms=0")
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
@@ -130,6 +166,9 @@ func (program *run) read(stderr io.Reader) {
 		line, err := reader.ReadString('\n')
 		program.mutex.Lock()
 		program.log = append(program.log, line...)
+		if line != "" {
+			program.entries = append(program.entries, logEntry{line: strings.TrimSuffix(line, "\n"), read: time.Now()})
+		}
 		program.mutex.Unlock()
 		if line != "" {
 			select {
@@ -318,7 +357,13 @@ func (program *run) exit(t *testing.T, deadline time.Time) (int, time.Time) {
 	select {
 	case <-program.exited:
 	case <-timer.C:
-		t.Fatalf("the program had not exited by the deadline; its log so far:\n%s", program.text())
+		// For a test that came late, both may be ready and the select picks either: an exit
+		// already made wins.
+		select {
+		case <-program.exited:
+		default:
+			t.Fatalf("the program had not exited by the deadline; its log so far:\n%s", program.text())
+		}
 	}
 	program.mutex.Lock()
 	defer program.mutex.Unlock()
@@ -338,7 +383,59 @@ func (program *run) text() string {
 }
 
 // logKeys are the only keys the local log may hold.
-var logKeys = []string{"started", "start_failed"}
+var logKeys = []string{"started", "start_failed", "waiting", "lease_lost"}
+
+// waitForLine waits, by the deadline, for the local log's line at index, and returns its key, its
+// value and when it was read. A program that exits first, or a line that does not come, fails
+// the row.
+func (program *run) waitForLine(t *testing.T, index int, deadline time.Time) (string, string, time.Time) {
+	t.Helper()
+	for {
+		program.mutex.Lock()
+		var entry *logEntry
+		if index < len(program.entries) {
+			entry = &program.entries[index]
+		}
+		program.mutex.Unlock()
+		if entry != nil {
+			key, value, _ := strings.Cut(entry.line, "=")
+			return key, value, entry.read
+		}
+		select {
+		case <-program.exited:
+			program.mutex.Lock()
+			count := len(program.entries)
+			program.mutex.Unlock()
+			if index < count {
+				continue
+			}
+			t.Fatalf("the program exited with %d before its log's line %d; its log:\n%s", program.code(), index+1, program.text())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the program's log had no line %d by %v; its log:\n%s", index+1, deadline.Format(time.RFC3339Nano), program.text())
+		}
+		pause(t, 20*time.Millisecond)
+	}
+}
+
+// expectLine waits for the local log's line at index and checks its key, returning its value
+// and when it was read.
+func (program *run) expectLine(t *testing.T, index int, want string, deadline time.Time) (string, time.Time) {
+	t.Helper()
+	key, value, read := program.waitForLine(t, index, deadline)
+	if key != want {
+		t.Fatalf("the program's log's line %d is %s=%s, want a %s line; its log:\n%s", index+1, key, value, want, program.text())
+	}
+	return value, read
+}
+
+// lineCount is how many lines the local log holds so far.
+func (program *run) lineCount() int {
+	program.mutex.Lock()
+	defer program.mutex.Unlock()
+	return len(program.entries)
+}
 
 // expectLog checks the whole local log once the program has exited: every line is one key and
 // its value, the key one of logKeys and the value more than spaces and quote marks, each line
@@ -453,7 +550,7 @@ func heldPort(t *testing.T) (port string, ipv4, ipv6 net.Listener) {
 // expectRefused checks a dial to the address is refused: nothing listens there.
 func expectRefused(t *testing.T, address string) {
 	t.Helper()
-	connection, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(t.Context(), "tcp", address)
+	connection, err := (&net.Dialer{Timeout: testrun.Patient(testrun.HangBound)}).DialContext(t.Context(), "tcp", address)
 	if err == nil {
 		_ = connection.Close()
 		t.Errorf("a caller reached %s, where the engine may not listen", address)
@@ -480,57 +577,4 @@ func otherAddresses(t *testing.T) []net.IP {
 		}
 	}
 	return others
-}
-
-// listeningSockets reads the operating system's own table of listening TCP sockets, the one ss
-// shows the sysop, and returns the address of each socket the process holds. Linux alone keeps
-// the table and the process's open files in /proc.
-func listeningSockets(t *testing.T, processID int) []string {
-	t.Helper()
-	descriptors := filepath.Join("/proc", strconv.Itoa(processID), "fd")
-	entries, err := os.ReadDir(descriptors)
-	if err != nil {
-		t.Fatalf("listing the program's open files: %v", err)
-	}
-	held := map[string]bool{}
-	for _, entry := range entries {
-		target, err := os.Readlink(filepath.Join(descriptors, entry.Name()))
-		if err == nil && strings.HasPrefix(target, "socket:[") {
-			held[strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")] = true
-		}
-	}
-	var sockets []string
-	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		text, err := os.ReadFile(table)
-		if err != nil {
-			t.Fatalf("reading the socket table %s: %v", table, err)
-		}
-		for _, line := range strings.Split(strings.TrimSpace(string(text)), "\n")[1:] {
-			// The fields are the slot, the local address, the remote one, the state (0A is
-			// listening), the queues, the timer, the retransmits, the user, the timeout and the
-			// socket's inode, which ties it to the process's open files.
-			fields := strings.Fields(line)
-			if len(fields) < 10 || fields[3] != "0A" || !held[fields[9]] {
-				continue
-			}
-			sockets = append(sockets, tableAddress(t, fields[1]))
-		}
-	}
-	return sockets
-}
-
-// tableAddress reads an address as the socket table writes it: the IP in hex, each 32-bit word
-// in the machine's byte order, little-endian on every runner, then a colon and the port in hex.
-func tableAddress(t *testing.T, text string) string {
-	t.Helper()
-	ipText, portText, found := strings.Cut(text, ":")
-	raw, err := hex.DecodeString(ipText)
-	port, portErr := strconv.ParseUint(portText, 16, 16)
-	if !found || err != nil || portErr != nil || (len(raw) != net.IPv4len && len(raw) != net.IPv6len) {
-		t.Fatalf("an address in the socket table is not one: %q", text)
-	}
-	for word := 0; word < len(raw); word += 4 {
-		slices.Reverse(raw[word : word+4])
-	}
-	return net.JoinHostPort(net.IP(raw).String(), strconv.FormatUint(port, 10))
 }

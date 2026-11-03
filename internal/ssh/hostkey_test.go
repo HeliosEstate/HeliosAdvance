@@ -328,15 +328,15 @@ func TestLinuxReadHostKey(t *testing.T) {
 		t.Fatalf("these rows need an ordinary user: root reads a file of any mode")
 	}
 
-	t.Run("If, on Linux, the file's mode lets its group or others read it, then ReadHostKey shall return ErrHostKeyReadableByOthers without reading the file.", func(t *testing.T) {
+	t.Run("If, on Linux, the file's mode lets its group or others read or write it, then ReadHostKey shall return ErrHostKeyOpenToOthers without reading the file.", func(t *testing.T) {
 		t.Parallel()
-		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444, 0o660, 0o606} {
+		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444, 0o660, 0o606, 0o620, 0o602} {
 			t.Run(fmtMode("an Ed25519 key of mode", mode, "is refused"), func(t *testing.T) {
 				t.Parallel()
-				_ = expectRefusal(t, withMode(t, "ed25519", mode), ssh.ErrHostKeyReadableByOthers)
+				_ = expectRefusal(t, withMode(t, "ed25519", mode), ssh.ErrHostKeyOpenToOthers)
 			})
 		}
-		for _, mode := range []os.FileMode{0o600, 0o400, 0o620, 0o602, 0o700} {
+		for _, mode := range []os.FileMode{0o600, 0o400, 0o700} {
 			t.Run(fmtMode("the edge: an Ed25519 key of mode", mode, "is read"), func(t *testing.T) {
 				t.Parallel()
 				if key, err := ssh.ReadHostKey(withMode(t, "ed25519", mode)); err != nil || key == nil {
@@ -346,7 +346,11 @@ func TestLinuxReadHostKey(t *testing.T) {
 		}
 		t.Run("mode 0004, which others may read and its owner may not: refused for its mode, without reading it", func(t *testing.T) {
 			t.Parallel()
-			_ = expectRefusal(t, withMode(t, "ed25519", 0o004), ssh.ErrHostKeyReadableByOthers)
+			_ = expectRefusal(t, withMode(t, "ed25519", 0o004), ssh.ErrHostKeyOpenToOthers)
+		})
+		t.Run("mode 0020, which its group may write and its owner may not read: refused for its mode, without reading it", func(t *testing.T) {
+			t.Parallel()
+			_ = expectRefusal(t, withMode(t, "ed25519", 0o020), ssh.ErrHostKeyOpenToOthers)
 		})
 	})
 
@@ -354,19 +358,19 @@ func TestLinuxReadHostKey(t *testing.T) {
 		t.Parallel()
 		t.Run("an RSA key of mode 0644: its mode, before the key's type", func(t *testing.T) {
 			t.Parallel()
-			_ = expectRefusal(t, withMode(t, "rsa", 0o644), ssh.ErrHostKeyReadableByOthers)
+			_ = expectRefusal(t, withMode(t, "rsa", 0o644), ssh.ErrHostKeyOpenToOthers)
 		})
 		t.Run("a passphrase-protected key of mode 0640: its mode, before the passphrase", func(t *testing.T) {
 			t.Parallel()
 			path := makeKey(t, "ed25519", "secret")
 			setMode(t, path, 0o640)
-			_ = expectRefusal(t, path, ssh.ErrHostKeyReadableByOthers)
+			_ = expectRefusal(t, path, ssh.ErrHostKeyOpenToOthers)
 		})
 		t.Run("a line of text of mode 0644: its mode, before its format", func(t *testing.T) {
 			t.Parallel()
 			path := writeFile(t, []byte(canary+"\n"))
 			setMode(t, path, 0o644)
-			_ = expectRefusal(t, path, ssh.ErrHostKeyReadableByOthers)
+			_ = expectRefusal(t, path, ssh.ErrHostKeyOpenToOthers)
 		})
 		t.Run("mode 0200, which nobody but root may read: unreadable, before its format", func(t *testing.T) {
 			t.Parallel()

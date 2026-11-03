@@ -1,0 +1,177 @@
+# Fuzzes every fuzz target each night, ten minutes each (HeliosDesign #258's CI work, the
+# developer's approval of 2026-10-30). check.sh runs each target's seeds alone, so without this no
+# run ever fuzzes, and the rule for a parser of a caller's bytes, a fuzz target that fuzzes, would
+# hold in name only. The targets are found by listing, so a new one is fuzzed without anyone
+# naming it here. Each night starts from the seeds in the repository and keeps nothing: inputs kept
+# between nights would sit where any pull request can read them (developer, 2026-10-30).
+#
+# A failure is a security finding, kept private (developer, 2026-10-30): the run's log says only
+# that a target failed, never the input, its file's name (a hash of the input) or the failure,
+# since this repository and its logs are public. The input, whole, the failure and the line that
+# replays it go to alerts of their own in code scanning, which only those with write access see.
+# The fix is tested as every security fix is: its pull request adds the input to the target's
+# seeds, red until the engine is fixed. Once it merges, a run of this workflow by hand with the
+# alert's category closes the alert (HeliosDesign #274 holds closing it automatically). The input
+# becomes public with that pull request, as any security fix's test does.
+name: fuzz
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+    inputs:
+      close:
+        description: "An alert's category, to close it once its fix has merged (leave empty to fuzz)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  # The nightly run, or a run by hand with no category, fuzzes development alone: the alerts land
+  # where a close can reach them, and no other branch's code runs here.
+  targets:
+    if: inputs.close == '' && github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Found by a search of the test files, so nothing is built to name them.
+      - name: List the fuzz targets
+        id: list
+        shell: bash
+        run: |
+          list=$(grep -rnoE --include='*_test.go' '^func Fuzz[A-Za-z0-9_]*\(' . | awk -F: '
+            { file = $1; sub("^\\./", "", file); pkg = file; sub("/[^/]*$", "", pkg)
+              name = $3; sub("^func ", "", name); sub("\\($", "", name)
+              printf "%s{\"pkg\":\"./%s\",\"name\":\"%s\",\"file\":\"%s\",\"line\":%s}", (n++ ? "," : "["), pkg, name, file, $2 }
+            END { if (n) print "]" }')
+          [ -n "$list" ] || { echo "::error::no fuzz target found"; exit 1; }
+          echo "$list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: targets
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.list) }}
+    name: fuzz (${{ matrix.target.pkg }} ${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # No build cache: it would hold the night's inputs, and a pull request could read it.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      # The test code runs here with the same trust as merged code in check.yml. Its output stays
+      # in a file; the public log gets nothing from it.
+      - name: Fuzz for ten minutes
+        id: fuzz
+        continue-on-error: true
+        shell: bash
+        env:
+          PKG: ${{ matrix.target.pkg }}
+          NAME: ${{ matrix.target.name }}
+        run: go test -run '^$' -fuzz "^$NAME\$" -fuzztime 10m "$PKG" > "$RUNNER_TEMP/fuzz.txt" 2>&1
+      # Every failure is filed: one Go wrote an input for, and one it could not, such as a fuzzing
+      # process the system killed for its memory, which can be a finding too. The alerts are named
+      # by this run, never by the input's file. Code scanning keeps 4,096 characters of an alert's
+      # text, so the input goes compressed and split into numbered alerts beside the summary.
+      - name: The finding, for code scanning
+        id: finding
+        if: steps.fuzz.outcome == 'failure'
+        shell: bash
+        env:
+          PKG: ${{ matrix.target.pkg }}
+          NAME: ${{ matrix.target.name }}
+          FILE: ${{ matrix.target.file }}
+          LINE: ${{ matrix.target.line }}
+        run: |
+          id="fuzz/${PKG#./}/$NAME/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          written=$(git ls-files --others --exclude-standard -- "$PKG/testdata/fuzz/$NAME" 2>/dev/null | head -1)
+          parts="$RUNNER_TEMP/parts"
+          mkdir "$parts"
+          n=0
+          if [ -n "$written" ]; then
+            gzip -9 < "$written" | base64 -w0 | split -b 3800 -d -a 4 - "$RUNNER_TEMP/chunk."
+            chunks=("$RUNNER_TEMP"/chunk.*)
+            n=${#chunks[@]}
+            for i in $(seq 1 "$n"); do
+              { echo "Part $i of $n of the input, $id:"; echo; cat "${chunks[$((i - 1))]}"; } > "$parts/$i"
+            done
+            input="Go wrote the input to $written. It is in the alerts beside this one, in $n numbered parts of $id: join them in order, then base64 -d | gunzip, and put the result at that path. Replayed: go test -run '^$NAME/$(basename "$written")\$' $PKG. The fix's pull request adds the input to the target's seeds, red until the engine is fixed."
+          else
+            input="Go wrote no input: a build that broke, a seed that fails, or a fuzzing process ended from outside, such as by the system for its memory, which can be a finding. Fuzz the target where you can watch it: go test -run '^\$' -fuzz '^$NAME\$' $PKG"
+          fi
+          output=$(grep -v '^fuzz: elapsed' "$RUNNER_TEMP/fuzz.txt" || true)
+          failure=$(sed -n '/^--- FAIL\|^panic:/,$p' <<< "$output")
+          {
+            echo "Fuzzing $NAME in $PKG failed. $input"
+            echo
+            echo "Once the fix merges, run the fuzz workflow by hand on development with this category to close its alerts: $id"
+            echo
+            echo "The failure, from its start:"
+            echo
+            head -c 2500 <<< "${failure:-$output}"
+          } > "$parts/0"
+          for f in $(seq 0 "$n"); do jq -Rs --arg part "$f" '{part: $part, text: .}' < "$parts/$f"; done |
+            jq -s --arg id "$id" --arg rule "fuzz/${PKG#./}/$NAME" --arg name "$NAME" --arg file "$FILE" --argjson line "$LINE" \
+              '{version: "2.1.0", "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+                runs: [{tool: {driver: {name: "fuzz", informationUri: "https://go.dev/doc/security/fuzz/",
+                         rules: [{id: $rule, shortDescription: {text: ("Fuzzing " + $name + " failed")}}]}},
+                        results: map({ruleId: $rule, level: "error", message: {text: .text},
+                                      locations: [{physicalLocation: {artifactLocation: {uri: $file}, region: {startLine: $line}}}],
+                                      partialFingerprints: {"fuzzRun/v1": ($id + "#" + .part)}})}]}' > "$RUNNER_TEMP/fuzz.sarif"
+          echo "category=$id" >> "$GITHUB_OUTPUT"
+      - uses: github/codeql-action/upload-sarif@v4
+        if: steps.finding.outcome == 'success'
+        with:
+          sarif_file: ${{ runner.temp }}/fuzz.sarif
+          category: ${{ steps.finding.outputs.category }}
+      - name: A failure fails the job
+        if: steps.fuzz.outcome == 'failure'
+        env:
+          NAME: ${{ matrix.target.name }}
+        run: |
+          echo "::error::$NAME failed; the details are in code scanning, not here. If no alert appears, its upload stalled: run the workflow again, without debug logging."
+          exit 1
+
+  # Run by hand on development once a fix has merged: an upload with no result under the alert's
+  # category marks its alerts fixed. GitHub's processing of an upload can stall and the run still
+  # ends green (seen once, 2026-10-30): if the alerts are still open afterwards, run it again.
+  close:
+    if: inputs.close != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: An upload with no result
+        shell: bash
+        env:
+          CATEGORY: ${{ inputs.close }}
+        run: |
+          [ "$GITHUB_REF" = refs/heads/development ] || { echo "::error::run a close on development, where the alerts are"; exit 1; }
+          case $CATEGORY in fuzz/*/Fuzz*/*) ;; *) echo "::error::not a fuzz alert's category: $CATEGORY"; exit 1 ;; esac
+          jq -n '{version: "2.1.0", "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+                  runs: [{tool: {driver: {name: "fuzz", informationUri: "https://go.dev/doc/security/fuzz/", rules: []}}, results: []}]}' \
+            > "$RUNNER_TEMP/fuzz.sarif"
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ runner.temp }}/fuzz.sarif
+          category: ${{ inputs.close }}

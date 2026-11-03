@@ -1,71 +1,106 @@
-# Mutation testing, nightly, on what changed in the last day: a report of what the approved
-# tests miss, for QA to read (a report, not a gate: the developer, 2026-10-22). Each pull
-# request also runs it on its own changes, stopped at an hour (check.yml); this nightly run
-# covers what merged in a day, with the race detector, and its five hours allow for oracle
-# tests at twenty-five seconds a run; a red run here means the tool could not report.
+# Mutation testing: it plants small faults in the engine's code and reports those no test catches,
+# a test of the tests for QA to read (a report, not a gate: the developer, 2026-10-22). It runs
+# where its report is read, outside the required check (the CI recommendation's item 4, approved
+# 2026-10-30):
+# - a loop's build pull request (feature/issue-*), on each push that changes engine code, over
+#   the pull request's changed lines, so the report is there when QA reads the build;
+# - a QA pull request (qa/*) that changes or removes existing tests, over the whole packages whose
+#   tests changed, so a weakened row is seen before it merges;
+# - a milestone's close, over the whole engine, beside the full codebase review.
+# Other pull requests (QA's new rows alone, contracts, the harness) start none. A red run means
+# the tool could not report.
 name: mutation
 
 on:
-  schedule:
-    - cron: "17 6 * * *"
+  pull_request:
+    branches: [development]
+  milestone:
+    types: [closed]
   workflow_dispatch:
-    inputs:
-      base:
-        description: "Mutate everything changed since this commit (default: the last day)"
-        required: false
 
 permissions:
   contents: read
 
+# A new push to the same pull request supersedes the run in flight, whose report would be stale.
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   mutation:
+    # Pull requests from this repository's own branches only: the loop's and QA's.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # A bound on a hang only: a mutation run's length is not limited.
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: development
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'development' }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # The versions are pinned in .github/tool-versions, one place for every workflow.
-      - name: Install gates
+      # What to mutate, or nothing. A push to a build branch that changes only tests or a
+      # contract's declarations starts nothing; nor does a QA change that only adds rows. The
+      # engine's code is internal/, but for the test support; cmd/'s tests run the built program,
+      # which mutation testing cannot see into. A QA change counts a renamed test, or a changed file
+      # its rows read from testdata/, as a changed test. A milestone mutates the whole module, which
+      # check.sh's exclusions bring down to the engine's code.
+      - name: What to mutate
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          engine() { grep -E '^internal/' | grep -vE '^internal/testrun(/|$)' || true; }
+          if [ "$EVENT" != pull_request ]; then
+            echo "packages=." >> "$GITHUB_OUTPUT"
+            echo "base=HEAD" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base=$(git merge-base origin/development HEAD)
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          case "$HEAD_REF" in
+            feature/issue-*)
+              from=$base
+              if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then from=$BEFORE; fi
+              if git diff --name-only "$from" HEAD -- '*.go' ':!*_test.go' ':!*/contract.go' | engine | grep -q .; then
+                echo "diff=1" >> "$GITHUB_OUTPUT"
+              fi ;;
+            qa/*)
+              echo "packages=$(git diff --name-only --no-renames --diff-filter=MD "$base" HEAD -- '*_test.go' '*/testdata/*' | sed 's|/testdata/.*|/x|' | xargs -r -n1 dirname | sort -u | engine | sed 's|^|./|' | tr '\n' ' ')" >> "$GITHUB_OUTPUT" ;;
+          esac
+      # The version is pinned in .github/tool-versions, one place for every workflow.
+      - name: Install gremlins
+        if: steps.scope.outputs.diff || steps.scope.outputs.packages
         run: |
           source .github/tool-versions
-          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$(go env GOPATH)/bin" "$GOLANGCI_LINT"
-          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
           go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
-          # check.sh --mutation runs the license gate too (the codebase review, 2026-10-24).
-          go install github.com/google/go-licenses/v2@"$GO_LICENSES"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       # Plink, the outside Telnet client Part 4's Telnet rows drive as an oracle, is not on the
       # runner's image; it comes from Ubuntu's signed archive, as in check.yml.
       - name: Install Plink
+        if: steps.scope.outputs.diff || steps.scope.outputs.packages
         run: sudo apt-get update -q && sudo apt-get install -y -q putty-tools && plink -V
-      # The same cache as check.yml's, for the same reason: Docker Hub's 429.
-      - name: Restore the oracle images
-        id: oracle-images
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/oracle-images
-          key: oracle-images-${{ runner.arch }}-${{ hashFiles('oracle/**') }}
-          restore-keys: oracle-images-${{ runner.arch }}-
-      - name: Build the oracles
-        run: bash .github/oracle-images.sh ~/oracle-images
-      - name: Save the oracle images
-        if: steps.oracle-images.outputs.cache-hit != 'true' && hashFiles('oracle/**') != ''
-        uses: actions/cache/save@v6
-        with:
-          path: ~/oracle-images
-          key: ${{ steps.oracle-images.outputs.cache-primary-key }}
-      - name: Mutate the last day's changes
-        env:
-          RACE: -race
-          BASE_INPUT: ${{ inputs.base }}
+      # PostgreSQL's tools, the database tests' oracle: the image's newest, on no PATH.
+      - name: PostgreSQL's tools
+        if: steps.scope.outputs.diff || steps.scope.outputs.packages
+        id: postgres
         run: |
-          base=$(git rev-list -1 --before="24 hours ago" origin/development)
-          if [ -n "$BASE_INPUT" ]; then base=$(git rev-parse --verify "$BASE_INPUT^{commit}"); fi
-          if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then echo "nothing changed in the last day"; exit 0; fi
-          echo "mutating $base..HEAD"
-          BASE="$base" bash check.sh --mutation
+          compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
+          echo "bin=$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")" >> "$GITHUB_OUTPUT"
+      # The gates are the required check's, so they are skipped here.
+      - name: Mutate
+        if: steps.scope.outputs.diff || steps.scope.outputs.packages
+        env:
+          PGDIR: ${{ steps.postgres.outputs.bin }}
+          MUTATE: ${{ steps.scope.outputs.packages }}
+          BASE: ${{ steps.scope.outputs.base }}
+          GATES: "0"
+        run: |
+          export PATH="$PGDIR:$PATH"
+          if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
+          bash check.sh --mutation

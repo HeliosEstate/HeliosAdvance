@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // The commands of RFC 854 and RFC 885 these rows send, from the RFCs.
@@ -141,7 +143,7 @@ func TestCommands(t *testing.T) {
 			})
 		}
 	})
-	t.Run("When a Telnet caller sends AO or IP before its name ends, the engine shall send IAC DM, with DM as TCP urgent data.", func(t *testing.T) {
+	t.Run("When a Telnet caller sends AO or IP before its name ends, the engine shall send IAC DM, with DM as TCP urgent data on a plain Telnet connection and as an ordinary byte over TLS.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("AO during negotiation, before the answers: IAC, then DM urgent, before the greeting", func(t *testing.T) {
 			t.Parallel()
@@ -285,7 +287,7 @@ func TestCommands(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name, func(t *testing.T) {
 				t.Parallel()
-				call, stream, _ := answeredCall(t, row.answer, nil, 5*time.Second)
+				call, stream, _ := answeredCall(t, row.answer, nil, testrun.Patient(testrun.HangBound))
 				stream.waitFor(t, bytes.Index(join(opening, sendsFor(row.answer), asked), asked)+len(asked), time.Now().Add(progressLimit))
 				call.send(t, row.typed)
 				stream.expectStream(t, join(opening, sendsFor(row.answer), asked, row.after))

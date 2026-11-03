@@ -21,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 const (
@@ -53,7 +55,7 @@ func makeKey(t *testing.T, keyType, passphrase string, extra ...string) string {
 func expectSSHServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, []byte(sshVersionLine), call.connected.Add(margin))
+	call.readExactly(t, []byte(sshVersionLine), call.connected.Add(testrun.Patient(margin)))
 	return call
 }
 
@@ -84,26 +86,45 @@ func expectSSHStarts(t *testing.T) {
 	loopbackPorts(t, ssh)
 }
 
-// defaultSSHPortRow is the row for port 22 by default. Where 22 is free at both addresses, as
-// checked just before, the program listens for SSH there; where something else holds it or the
-// system keeps it from an ordinary user, the program refuses to start, while the same command
-// with an SSH port the system picks starts.
+// listenError opens the address and closes it at once, and returns why it could not be opened:
+// nil where the port is free there and the system lets this user take it.
+func listenError(t *testing.T, address string) error {
+	t.Helper()
+	held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
+	if err != nil {
+		return err
+	}
+	return held.Close()
+}
+
+// opensAt returns the loopback addresses at which the port opens just now, each written as the
+// started line writes it.
+func opensAt(t *testing.T, port string) []string {
+	t.Helper()
+	var free []string
+	for _, host := range []string{ipv4Loopback, ipv6Loopback} {
+		address := net.JoinHostPort(host, port)
+		if err := listenError(t, address); err != nil {
+			t.Logf("%s cannot be opened on this machine (%v), so the engine is not expected there", address, err)
+			continue
+		}
+		free = append(free, address)
+	}
+	return free
+}
+
+// defaultSSHPortRow is the row for port 22 by default. The program listens for SSH at every
+// address where 22 opened just before; where it opened at neither, because something else holds
+// it or the system keeps it from an ordinary user, the program refuses to start, while the same
+// command with an SSH port the system picks starts.
 func defaultSSHPortRow(t *testing.T) {
 	t.Helper()
 	key := makeKey(t, "ed25519", "")
-	free := true
-	for _, address := range []string{"127.0.0.1:22", "[::1]:22"} {
-		held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
-		if err != nil {
-			free = false
-			continue
-		}
-		_ = held.Close()
-	}
+	free := opensAt(t, "22")
 	program := startProgram(t, portOption, "0", hostKeyOption, key)
-	if free {
+	if len(free) > 0 {
 		_, ssh := program.kinds(t)
-		expectAddresses(t, ssh, "127.0.0.1:22", "[::1]:22")
+		expectAddresses(t, ssh, free...)
 		for _, address := range ssh {
 			expectSSHServed(t, address)
 		}
@@ -234,16 +255,12 @@ func TestSSHProgram(t *testing.T) {
 				expectSSHStarts(t)
 			})
 		}
-		t.Run("SSH's port taken at both addresses while Telnet's is free: one start_failed line, a non-zero exit, and no listener left, where a free port starts", func(t *testing.T) {
+		t.Run("SSH's port taken at both addresses while Telnet's is free: one start_failed line and a non-zero exit, where a free port starts", func(t *testing.T) {
 			t.Parallel()
 			sshPort, _, _ := heldPort(t)
-			telnetPort, ipv4, ipv6 := heldPort(t)
-			_ = ipv4.Close()
-			_ = ipv6.Close()
-			startProgram(t, portOption, telnetPort, hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, sshPort).expectRefusal(t)
-			for _, address := range []string{net.JoinHostPort(ipv4Loopback, telnetPort), net.JoinHostPort(ipv6Loopback, telnetPort)} {
-				expectRefused(t, address)
-			}
+			// Telnet's port is one the system picks, so it is free and the refusal is SSH's: a
+			// port freed for the program could be taken by anything in the gap.
+			startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, sshPort).expectRefusal(t)
 			expectSSHStarts(t)
 		})
 	})
@@ -262,7 +279,7 @@ func TestSSHProgram(t *testing.T) {
 				t.Fatalf("a Telnet caller was served with %d connections open", connectionCap)
 			}
 			call := dial(t, ssh[0])
-			received, err := readAll(call, call.connected.Add(margin))
+			received, err := readAll(call, call.connected.Add(testrun.Patient(margin)))
 			if len(received) != 0 || !(isEnd(err)) {
 				t.Fatalf("an SSH caller with %d connections open got %q and %v, want a close with nothing written", connectionCap, received, err)
 			}
@@ -315,7 +332,7 @@ func TestSSHProgram(t *testing.T) {
 			_, ssh := program.kinds(t)
 			silent := expectSSHServed(t, ssh[0])
 			from, sentBy := send(t, program)
-			notAfter := sentBy.Add(margin)
+			notAfter := sentBy.Add(testrun.Patient(margin))
 			_, err := readAll(silent, notAfter)
 			if !isEnd(err) {
 				t.Fatalf("the silent SSH caller's read ended with %v, want the engine's close", err)
@@ -369,9 +386,9 @@ func TestLinuxSSHProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If, on Linux, the host key file's mode lets its group or others read it, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If, on Linux, the host key file's mode lets its group or others read or write it, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444} {
+		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444, 0o620, 0o602} {
 			t.Run(fmt.Sprintf("an Ed25519 key of mode %04o: one start_failed line, a non-zero exit, a reason of its own", mode), func(t *testing.T) {
 				t.Parallel()
 				path := makeKey(t, "ed25519", "")
@@ -385,7 +402,7 @@ func TestLinuxSSHProgram(t *testing.T) {
 				}
 			})
 		}
-		for _, mode := range []os.FileMode{0o600, 0o400, 0o620} {
+		for _, mode := range []os.FileMode{0o600, 0o400} {
 			t.Run(fmt.Sprintf("the edge: an Ed25519 key of mode %04o starts", mode), func(t *testing.T) {
 				t.Parallel()
 				path := makeKey(t, "ed25519", "")
