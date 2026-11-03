@@ -55,8 +55,10 @@ func run(arguments []string, logOutput io.Writer) int {
 		log("start_failed", "no connection file: the command line names none, with -database")
 		return exitFailed
 	}
-	// The error is the database package's, which names the refusal and holds nothing of the file.
-	connectionFile, err := database.ReadConnectionFile(options.databasePath)
+	// Until bootstrap Part 1's build, the connection settings come from nowhere: ParseConnection's
+	// placeholder refuses them, so the engine does not start. The build reads them from the
+	// bootstrap file.
+	connection, err := database.ParseConnection(nil)
 	if err != nil {
 		log("start_failed", err.Error())
 		return exitFailed
@@ -73,7 +75,7 @@ func run(arguments []string, logOutput io.Writer) int {
 		}
 	}
 
-	return serve(log, database.NewServerDatabase(connectionFile), options, hostKey)
+	return serve(log, database.NewServerDatabase(connection), options, hostKey)
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and

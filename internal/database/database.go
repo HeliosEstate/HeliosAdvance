@@ -17,7 +17,7 @@ import (
 // the contract.
 
 type serverDatabaseState struct {
-	file ConnectionFile
+	file Connection
 	// config and roots are made at the first Take and kept, since parsing writes and reads a file.
 	config *pgx.ConnConfig
 	roots  *x509.CertPool
@@ -43,7 +43,7 @@ func schemaVersionText(failure *SchemaVersionError) string {
 		" is not one this engine accepts"
 }
 
-func newServerDatabase(file ConnectionFile) *ServerDatabase {
+func newServerDatabase(file Connection) *ServerDatabase {
 	return &ServerDatabase{state: serverDatabaseState{file: file}}
 }
 
