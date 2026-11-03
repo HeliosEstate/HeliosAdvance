@@ -36,7 +36,7 @@ func readHostKey(path string) (*HostKey, error) {
 		return nil, ErrHostKeyUnreadable
 	}
 	if runtime.GOOS == "linux" && info.Mode().Perm()&othersReadBits != 0 {
-		return nil, ErrHostKeyReadableByOthers
+		return nil, ErrHostKeyOpenToOthers
 	}
 	file, err := os.Open(cleaned)
 	if err != nil {
