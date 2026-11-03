@@ -141,17 +141,24 @@ jobs:
       # every bootstrap file with, on all three systems (bootstrap Part 1, HeliosAdvance #203). The
       # tests build the oracle themselves and run its self-test. Linux takes it from Ubuntu's signed
       # archive; Windows takes the project's own installer through winget at a fixed version,
-      # checked against the SHA256 in winget's manifest, and the compiler's folder joins the PATH of
-      # later steps by hand, as Plink's does (the developer, 2026-11-03).
+      # checked against the SHA256 in winget's manifest (the developer, 2026-11-03). On Windows the
+      # compiler's folder is handed to the step that runs the tests alone, and put after that
+      # step's own PATH, never on every later step's: it carries a gcc of its own, 2.95, without the
+      # C headers, which ahead of the runner's gcc failed every race build (HeliosAdvance #203's
+      # red run), as PostgreSQL's folder is kept from shadowing (HeliosDesign #229).
       - name: Install Free Pascal
         if: matrix.group != 'listener'
+        id: freepascal
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             winget install --id FreePascal.FreePascalCompiler -e --version 3.2.2 --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
-            echo 'C:\FPC\3.2.2\bin\i386-win32' >> "$GITHUB_PATH"
-            export PATH="/c/FPC/3.2.2/bin/i386-win32:$PATH"
-          else sudo apt-get update -q && sudo apt-get install -y -q fp-compiler; fi
-          fpc -iV
+            bin=/c/FPC/3.2.2/bin/i386-win32
+            "$bin/fpc" -iV
+            echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          else
+            sudo apt-get update -q && sudo apt-get install -y -q fp-compiler
+            fpc -iV
+          fi
       # PostgreSQL, the database tests' oracle (database Part 1, HeliosAdvance #159). Each test run
       # makes its own throwaway server in a temporary folder with initdb and pg_ctl, as the
       # ordinary user, so it can stop and start it and change its sign-in rules; no system
@@ -201,6 +208,7 @@ jobs:
           ONLY: ${{ matrix.pkgs }}
           EXCEPT: ${{ matrix.except }}
           PGDIR: ${{ steps.postgres.outputs.bin }}
+          FPCDIR: ${{ steps.freepascal.outputs.bin }}
           BASE: origin/${{ github.base_ref || 'development' }}
           TIMED: ${{ runner.temp }}/timed.txt
         run: |
@@ -210,6 +218,8 @@ jobs:
           echo "testing: $PKGS"
           export PKGS
           [ -n "$PGDIR" ] && export PATH="$PGDIR:$PATH"
+          # After the runner's own programs, so its gcc stays the one cgo finds.
+          [ -n "$FPCDIR" ] && export PATH="$PATH:$FPCDIR"
           bash check.sh
       # Each timed row's place in its window, kept with the run (#258's item 7), so a margin is read
       # from ordinary runs, never from a probe branch; and each line where a row cannot tell (#217).
