@@ -506,7 +506,8 @@ func TestAccept(t *testing.T) {
 		t.Parallel()
 		t.Run("TLS 1.2, a caller that stops reading until the buffers are full: Close returns an error, a later write fails, and the caller then reads its backlog to end of stream", func(t *testing.T) {
 			t.Parallel()
-			connection, _, line := acceptedCaller(t, tls.VersionTLS12)
+			connection, call, line := acceptedCaller(t, tls.VersionTLS12)
+			alert := closeNotifyLength(t, call.tls.ConnectionState().CipherSuite)
 			fillBuffers(t, connection.server)
 			done := make(chan error, 1)
 			go func() { done <- line.Close(t.Context()) }()
@@ -517,6 +518,22 @@ func TestAccept(t *testing.T) {
 			case closeErr = <-done:
 			case <-time.After(testrun.Patient(2 * testrun.HangBound)):
 				t.Fatalf("Close had not returned within %v", testrun.Patient(2*testrun.HangBound))
+			}
+			// Whether the system makes room for close_notify within crypto/tls's wait is the
+			// system's: on Windows it did in every trial, whatever the buffers' sizes (the
+			// developer's decision of 2026-11-03). The row judges the engine only where the write
+			// failed, and an engine that reports success for a close_notify it never wrote still
+			// fails.
+			if closeErr == nil {
+				received, err := rawToEnd(connection.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
+				if !errors.Is(err, io.EOF) {
+					t.Fatalf("Close gave no error, and the caller's read of the backlog ended with %v, want end of stream", err)
+				}
+				if !endsWithCloseNotify(received, alert) {
+					t.Fatalf("Close gave no error, but the caller's backlog does not end with a close_notify alert record")
+				}
+				t.Logf("cannot tell: the system made room for close_notify, so its write did not fail")
+				return
 			}
 			if !errors.Is(closeErr, telnet.ErrConnectionFailed) {
 				t.Fatalf("Close gave %v, want ErrConnectionFailed", closeErr)
@@ -630,4 +647,28 @@ func fillBuffers(t *testing.T, server *net.TCPConn) {
 		}
 	}
 	_ = server.SetWriteDeadline(time.Time{})
+}
+
+// closeNotifyLength is the length of a TLS 1.2 close_notify record's body under the suite: an AES
+// GCM record carries an 8-byte explicit nonce, the two alert bytes and a 16-byte tag; a ChaCha20
+// record carries the alert and the tag alone (RFC 5288, RFC 7905).
+func closeNotifyLength(t *testing.T, suite uint16) byte {
+	t.Helper()
+	switch suite {
+	case tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+		return 8 + 2 + 16
+	case tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
+		return 2 + 16
+	default:
+		t.Fatalf("a fault in the test: suite %#04x was not expected with an ECDSA certificate", suite)
+		return 0
+	}
+}
+
+// endsWithCloseNotify is true when the bytes end with one whole TLS 1.2 alert record of the
+// close_notify's length.
+func endsWithCloseNotify(received []byte, length byte) bool {
+	header := []byte{alertRecord, 3, 3, 0, length}
+	start := len(received) - len(header) - int(length)
+	return start >= 0 && bytes.Equal(received[start:start+len(header)], header)
 }
