@@ -46,6 +46,9 @@
 // their choosing. No caller's byte reaches this package. Fuzz targets: the header reader and the
 // key file's reader.
 //
+// The package builds for Linux and Windows only, the two systems whose key file checks it holds,
+// so the engine is never built where it would start with the key file unchecked.
+//
 // # Oracles
 //
 // The bootstrap file reference, oracle/bootstrap-file (Free Pascal, with its own AES and GCM, its
@@ -123,8 +126,10 @@ var (
 	// ErrKeyFileUnreadable means the key file is there but will not open or read, is not a regular
 	// file, or is a link leading out of the bootstrap folder.
 	ErrKeyFileUnreadable = errors.New("bootstrap: the key file cannot be read")
-	// ErrKeyFilePermissions means the key file's owner or permissions could not be read.
-	ErrKeyFilePermissions = errors.New("bootstrap: the key file's owner or permissions cannot be read")
+	// ErrKeyFilePermissions means Open is unable to confirm who has access to the key file: its
+	// owner or permissions could not be read, or its access list holds an entry of a kind Open does
+	// not judge.
+	ErrKeyFilePermissions = errors.New("bootstrap: who has access to the key file cannot be confirmed")
 	// ErrKeyFileReachable means someone but the engine's own account, SYSTEM or Administrators
 	// owns the key file or may reach it.
 	ErrKeyFileReachable = errors.New("bootstrap: someone but the engine's account, SYSTEM or Administrators can reach the key file")
@@ -156,8 +161,9 @@ var (
 //   - If the bootstrap folder holds no key file, then Open shall return ErrKeyFileMissing.
 //   - If the key file will not open, is not a regular file, or is a link leading out of the
 //     bootstrap folder, then Open shall return ErrKeyFileUnreadable.
-//   - If reading the key file's owner or permissions fails, or the engine runs on a system other
-//     than Linux or Windows, then Open shall return ErrKeyFilePermissions.
+//   - If reading the key file's owner or permissions fails, or, on Windows, an entry of its access
+//     list that allows access is of a kind other than a plain allow entry, such as a conditional
+//     entry, then Open shall return ErrKeyFilePermissions.
 //   - If, on Linux, the key file's owner is not the engine's effective user ID, or its mode gives
 //     its group or others any access, then Open shall return ErrKeyFileReachable.
 //   - If, on Windows, the key file's owner, or any entry of its access list that allows access,
