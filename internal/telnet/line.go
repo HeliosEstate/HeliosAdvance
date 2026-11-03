@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"time"
 
@@ -18,10 +17,7 @@ import (
 // lineState keeps a read's error until the bytes that came with it are read, since the caller's
 // last words arrive together with its closing and must not be lost to it.
 type lineState struct {
-	connection Conn
-	// accepted is the connection Accept made this Line over: only Close needs it, to shut down the
-	// sending side, and its being set is what makes a Line Accept's.
-	accepted      *net.TCPConn
+	connection    Conn
 	negotiation   *Negotiation
 	receiveBuffer [ReadBufferSize]byte
 	receiveNext   int
@@ -278,21 +274,21 @@ func (line *Line) echoes() bool {
 }
 
 func (line *Line) close(ctx context.Context) error {
-	if !line.usable() || line.state.accepted == nil {
+	if !line.usable() {
 		return ErrConnectionFailed
 	}
 	if err := contextEnded(ctx); err != nil {
 		return err
 	}
-	connection := line.state.accepted
+	connection := line.state.connection
 	if err := connection.CloseWrite(); err != nil {
-		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		return closeFailed(ctx, err)
 	}
 	waitEnd := time.Now().Add(ClosingWaitSeconds * time.Second)
 	if err := connection.SetReadDeadline(timeup.Limit(ctx, waitEnd)); err != nil {
-		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+		return closeFailed(ctx, err)
 	}
-	release := wakeOnEnd(ctx, line.state.connection)
+	release := wakeOnEnd(ctx, connection)
 	defer release()
 	var discard [DiscardBufferSize]byte
 	for {
@@ -300,4 +296,14 @@ func (line *Line) close(ctx context.Context) error {
 			return contextEnded(ctx)
 		}
 	}
+}
+
+// closeFailed is not judge: a close_notify that finds no room fails under crypto/tls's own write
+// deadline, which judge would report as a passed deadline where the caller is owed
+// ErrConnectionFailed.
+func closeFailed(ctx context.Context, cause error) error {
+	if ended := contextEnded(ctx); ended != nil {
+		return ended
+	}
+	return fmt.Errorf("%w: %w", ErrConnectionFailed, cause)
 }

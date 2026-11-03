@@ -77,8 +77,9 @@ func sendUrgent(connection *net.TCPConn, data []byte) (int, error) {
 }
 
 // receiveUrgent takes the urgent byte waiting on the connection, out of band, once SIOCATMARK
-// says one waits, polling until then or until the deadline passes: a receive of urgent data
-// with none waiting would block.
+// says one waits, checking again every 5 ms until then or until the deadline passes, the
+// check-again the no-sleep rule allows: a receive of urgent data with none waiting would block,
+// and Winsock announces urgent data only through select, which the standard library lacks.
 func receiveUrgent(ctx context.Context, connection *net.TCPConn, deadline time.Time) ([]byte, error) {
 	raw, err := connection.SyscallConn()
 	if err != nil {

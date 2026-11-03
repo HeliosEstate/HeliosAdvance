@@ -148,9 +148,9 @@ var (
 	ErrHostKeyPassphrase = errors.New("ssh: the host key is protected by a passphrase")
 	// ErrHostKeyNotEd25519 means the key is not an Ed25519 key.
 	ErrHostKeyNotEd25519 = errors.New("ssh: the host key is not an Ed25519 key")
-	// ErrHostKeyReadableByOthers means, on Linux, the file's mode lets its group or others read
-	// it.
-	ErrHostKeyReadableByOthers = errors.New("ssh: the host key file's mode lets its group or others read it")
+	// ErrHostKeyOpenToOthers means, on Linux, the file's mode lets its group or others read or
+	// write it.
+	ErrHostKeyOpenToOthers = errors.New("ssh: the host key file's mode lets its group or others read or write it")
 )
 
 var (
@@ -184,8 +184,8 @@ type HostKey struct {
 //   - ReadHostKey shall check the file in the order of these lines and return the first refusal
 //     that applies.
 //   - If no file is at path, then ReadHostKey shall return ErrHostKeyMissing.
-//   - If, on Linux, the file's mode lets its group or others read it, then ReadHostKey shall
-//     return ErrHostKeyReadableByOthers without reading the file.
+//   - If, on Linux, the file's mode lets its group or others read or write it, then ReadHostKey
+//     shall return ErrHostKeyOpenToOthers without reading the file.
 //   - If the file cannot be read, then ReadHostKey shall return ErrHostKeyUnreadable.
 //   - If the file is longer than HostKeyMostBytes, or is not one PEM block of type "OPENSSH
 //     PRIVATE KEY", then ReadHostKey shall return ErrHostKeyNotOpenSSH.

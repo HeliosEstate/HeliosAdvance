@@ -6,6 +6,7 @@
 package telnet_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/telnet"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // closingWaitLimit is the contract's closing wait, as its line states it.
@@ -43,8 +46,15 @@ func waitAccepted(t *testing.T, done <-chan accepted, limit time.Duration) accep
 	case got := <-done:
 		return got
 	case <-time.After(limit):
-		t.Fatalf("Accept had not returned after %v", limit)
-		return accepted{}
+		// A limit counted to a deadline is below zero for a test that came late, and both may
+		// be ready: a result already in wins.
+		select {
+		case got := <-done:
+			return got
+		default:
+			t.Fatalf("Accept had not returned after %v", limit)
+			return accepted{}
+		}
 	}
 }
 
@@ -53,9 +63,9 @@ func acceptedLine(t *testing.T) (connected, *telnet.Line) {
 	t.Helper()
 	pair := connect(t)
 	done := acceptOn(t.Context(), pair.server.TCPConn)
-	expectOpening(t, pair.client, time.Now().Add(margin))
+	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 	write(t, pair.client, answers)
-	got := waitAccepted(t, done, margin)
+	got := waitAccepted(t, done, testrun.Patient(margin))
 	if got.err != nil || got.line == nil {
 		t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 	}
@@ -90,7 +100,7 @@ func waitClosed(t *testing.T, done <-chan closed, limit time.Duration) closed {
 // expectEndOfStream is the caller's read ending in order, at once.
 func expectEndOfStream(t *testing.T, client net.Conn) {
 	t.Helper()
-	received, err := readToEnd(client, time.Now().Add(margin))
+	received, err := readToEnd(client, time.Now().Add(testrun.Patient(margin)))
 	if !errors.Is(err, io.EOF) || len(received) != 0 {
 		t.Fatalf("the caller read % x and %v, want end of stream at once", received, err)
 	}
@@ -116,11 +126,11 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			_ = pair.server.Close()
-			got := waitAccepted(t, acceptOn(t.Context(), pair.server.TCPConn), margin)
+			got := waitAccepted(t, acceptOn(t.Context(), pair.server.TCPConn), testrun.Patient(margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrConnectionFailed) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrConnectionFailed", got.line, got.err)
 			}
-			received, err := readToEnd(pair.client, time.Now().Add(margin))
+			received, err := readToEnd(pair.client, time.Now().Add(testrun.Patient(margin)))
 			t.Logf("the caller's read ended with %v", err)
 			if len(received) != 0 {
 				t.Fatalf("the caller received % x", received)
@@ -135,20 +145,20 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			sent := write(t, pair.client, answers)
-			got := waitAccepted(t, done, margin)
+			got := waitAccepted(t, done, testrun.Patient(margin))
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
-			expectWithin(t, "Accept's return", got.returned, sent, sent.Add(margin))
+			expectWithin(t, "Accept's return", got.returned, sent.began, sent.done.Add(margin))
 		})
 		t.Run("a silent caller: a Line 3 seconds after the opening", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
-			got := waitAccepted(t, done, negotiationLimit+2*margin)
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			got := waitAccepted(t, done, negotiationLimit+testrun.Patient(2*margin))
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
@@ -158,9 +168,9 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			_ = pair.client.CloseWrite()
-			got := waitAccepted(t, done, margin)
+			got := waitAccepted(t, done, testrun.Patient(margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrCallerClosed) || !errors.Is(got.err, io.EOF) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrCallerClosed matching io.EOF", got.line, got.err)
 			}
@@ -170,9 +180,9 @@ func TestAccept(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			done := acceptOn(ctx, pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			cancel()
-			got := waitAccepted(t, done, margin)
+			got := waitAccepted(t, done, testrun.Patient(margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)
 			}
@@ -189,15 +199,15 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			write(t, pair.client, answers[:21])
 			writeUrgent(t, pair.client, command(dataMark))
 			sent := write(t, pair.client, answers[21:])
-			got := waitAccepted(t, done, negotiationLimit+2*margin)
+			got := waitAccepted(t, done, negotiationLimit+testrun.Patient(2*margin))
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
-			expectWithin(t, "Accept's return", got.returned, sent, sent.Add(margin))
+			expectWithin(t, "Accept's return", got.returned, sent.began, sent.done.Add(margin))
 		})
 		t.Run("ab, a Synch, cd after negotiation: a, b, c, d", func(t *testing.T) {
 			t.Parallel()
@@ -223,11 +233,11 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			write(t, pair.client, command(abortOutput))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
 			write(t, pair.client, answers)
-			if got := waitAccepted(t, done, margin); got.err != nil || got.line == nil {
+			if got := waitAccepted(t, done, testrun.Patient(margin)); got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
 		})
@@ -236,7 +246,7 @@ func TestAcceptUrgent(t *testing.T) {
 			pair, line := acceptedLine(t)
 			write(t, pair.client, join([]byte("x"), command(interruptProcess), []byte("y")))
 			expectData(t, line, []byte("xy"))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(margin))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
 			expectQuiet(t, pair.client)
 		})
 	})
@@ -278,7 +288,7 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair, line := stalled(t)
 			deadline := time.Now().Add(500 * time.Millisecond)
-			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(5*time.Second))
+			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want os.ErrDeadlineExceeded", err)
 			}
@@ -286,7 +296,10 @@ func TestAcceptUrgent(t *testing.T) {
 			for name, call := range map[string]func() error{
 				"SendChar": func() error { return line.SendChar(t.Context(), 'x') },
 				"Flush":    func() error { return line.Flush(t.Context()) },
-				"RecvChar": func() error { _, err := line.RecvChar(t.Context(), time.Now().Add(margin)); return err },
+				"RecvChar": func() error {
+					_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(margin)))
+					return err
+				},
 			} {
 				if err := call(); !errors.Is(err, telnet.ErrConnectionFailed) {
 					t.Fatalf("%s after the Synch's write failed returned %v, want ErrConnectionFailed", name, err)
@@ -299,7 +312,10 @@ func TestAcceptUrgent(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			cancelAt := time.Now().Add(500 * time.Millisecond)
 			time.AfterFunc(time.Until(cancelAt), cancel)
-			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(ctx, time.Now().Add(10*time.Second)); return err }, time.Now().Add(5*time.Second))
+			returned, err := recvBounded(t, pair, func() error {
+				_, err := line.RecvChar(ctx, time.Now().Add(testrun.Patient(10*time.Second)))
+				return err
+			}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("RecvChar returned %v, want context.Canceled", err)
 			}
@@ -309,22 +325,36 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair, line := stalled(t)
 			deadline := time.Now().Add(500 * time.Millisecond)
-			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(endsLate(t, deadline), deadline.Add(5*time.Second)); return err }, time.Now().Add(5*time.Second))
+			returned, err := recvBounded(t, pair, func() error {
+				_, err := line.RecvChar(endsLate(t, deadline), deadline.Add(testrun.Patient(5*time.Second)))
+				return err
+			}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want context.DeadlineExceeded", err)
 			}
 			expectWithin(t, "RecvChar's return", returned, deadline, deadline.Add(margin))
 		})
-		t.Run("during negotiation, the context's deadline at 1 second: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
+		t.Run("during negotiation, the context's deadline once its write waits: Accept returns ErrDeadlineEnded then", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			keepUrgentInLine(t, pair.client)
-			deadline := time.Now().Add(time.Second)
+			deadline := testrun.CaseDeadline()
+			called := time.Now()
 			done := acceptOn(withDeadline(t, deadline), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
 			fill(t, pair.server.TCPConn)
 			write(t, pair.client, join(command(abortOutput), lateAnswers))
-			got := waitAccepted(t, done, time.Until(deadline)+2*margin)
+			// Negotiation's own 3 seconds end a read that waits, so a setup that ends near them
+			// cannot tell whether the write it set up is what waits, as stallNegotiation does.
+			if late := time.Since(called); late > negotiationLimit-margin {
+				if testrun.Race {
+					t.Logf("under the race detector, timing is not judged: the setup took %v, too near negotiation's 3 seconds, so the row judges nothing", late)
+					return
+				}
+				t.Fatalf("cannot tell: the setup took %v, too near negotiation's 3 seconds for the write to be what waits", late)
+			}
+			testrun.ExpectCaseReached(t, deadline, margin)
+			got := waitAccepted(t, done, time.Until(deadline)+testrun.Patient(2*margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)
 			}
@@ -336,8 +366,24 @@ func TestAcceptUrgent(t *testing.T) {
 func TestLineClose(t *testing.T) {
 	t.Parallel()
 
-	t.Run("Close shall shut down the sending side of the Line's connection, then read and discard until the caller closes or ClosingWaitSeconds pass, no later than the context's deadline.", func(t *testing.T) {
+	t.Run("Close shall shut down the sending side of the Line's connection with the Conn's CloseWrite, then read and discard until the caller closes or ClosingWaitSeconds pass, no later than the context's deadline.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("a Line Open made over a connection whose CloseWrite sends a marker first: the caller receives the marker, then end of stream, and Close returns when it closes", func(t *testing.T) {
+			t.Parallel()
+			pair, line := markedLine(t, nil)
+			done := closeOn(t.Context(), line)
+			received, err := readToEnd(pair.client, time.Now().Add(testrun.Patient(margin)))
+			if !errors.Is(err, io.EOF) || !bytes.Equal(received, closeMarker) {
+				t.Fatalf("the caller read % x and %v, want the marker % x, then end of stream", received, err, closeMarker)
+			}
+			callerClosed := time.Now()
+			_ = pair.client.Close()
+			got := waitClosed(t, done, testrun.Patient(margin+time.Second))
+			if got.err != nil {
+				t.Fatalf("Close gave %v, want no error", got.err)
+			}
+			expectWithin(t, "Close's return", got.returned, callerClosed, callerClosed.Add(margin))
+		})
 		t.Run("the caller sees end of stream at once, and Close returns when it closes", func(t *testing.T) {
 			t.Parallel()
 			pair, line := acceptedLine(t)
@@ -345,7 +391,7 @@ func TestLineClose(t *testing.T) {
 			expectEndOfStream(t, pair.client)
 			callerClosed := time.Now()
 			_ = pair.client.Close()
-			got := waitClosed(t, done, margin+time.Second)
+			got := waitClosed(t, done, testrun.Patient(margin+time.Second))
 			if got.err != nil {
 				t.Fatalf("Close gave %v, want no error", got.err)
 			}
@@ -362,7 +408,7 @@ func TestLineClose(t *testing.T) {
 				write(t, pair.client, chunk)
 				wait(t.Context(), time.Now().Add(200*time.Millisecond))
 			}
-			got := waitClosed(t, done, closingWaitLimit+2*margin)
+			got := waitClosed(t, done, closingWaitLimit+testrun.Patient(2*margin))
 			if got.err != nil {
 				t.Fatalf("Close gave %v, want no error", got.err)
 			}
@@ -374,7 +420,7 @@ func TestLineClose(t *testing.T) {
 			deadline := time.Now().Add(time.Second)
 			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			t.Cleanup(cancel)
-			got := waitClosed(t, closeOn(ctx, line), time.Second+2*margin)
+			got := waitClosed(t, closeOn(ctx, line), time.Second+testrun.Patient(2*margin))
 			if !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Close gave %v, want context.DeadlineExceeded", got.err)
 			}
@@ -382,7 +428,7 @@ func TestLineClose(t *testing.T) {
 		})
 	})
 
-	t.Run("Close shall write nothing to the connection.", func(t *testing.T) {
+	t.Run("Close shall write nothing to the connection but what the Conn's CloseWrite sends.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a byte queued with SendChar before Close: never sent, the stream ends empty", func(t *testing.T) {
 			t.Parallel()
@@ -390,6 +436,16 @@ func TestLineClose(t *testing.T) {
 			sendAll(t, line, []byte("x"))
 			closeOn(t.Context(), line)
 			expectEndOfStream(t, pair.client)
+		})
+		t.Run("a byte queued before Close, over a connection whose CloseWrite sends a marker: the caller receives the marker alone, then end of stream", func(t *testing.T) {
+			t.Parallel()
+			pair, line := markedLine(t, nil)
+			sendAll(t, line, []byte("x"))
+			closeOn(t.Context(), line)
+			received, err := readToEnd(pair.client, time.Now().Add(testrun.Patient(margin)))
+			if !errors.Is(err, io.EOF) || !bytes.Equal(received, closeMarker) {
+				t.Fatalf("the caller read % x and %v, want the marker % x alone, then end of stream", received, err, closeMarker)
+			}
 		})
 	})
 
@@ -399,7 +455,7 @@ func TestLineClose(t *testing.T) {
 			t.Parallel()
 			_, line := acceptedLine(t)
 			called := time.Now()
-			got := waitClosed(t, closeOn(t.Context(), line), closingWaitLimit+2*margin)
+			got := waitClosed(t, closeOn(t.Context(), line), closingWaitLimit+testrun.Patient(2*margin))
 			if got.err != nil {
 				t.Fatalf("Close gave %v, want no error", got.err)
 			}
@@ -412,7 +468,7 @@ func TestLineClose(t *testing.T) {
 			expectEndOfStream(t, pair.client)
 			resetAt := time.Now()
 			reset(t, pair.client)
-			got := waitClosed(t, done, margin+time.Second)
+			got := waitClosed(t, done, testrun.Patient(margin+time.Second))
 			if got.err != nil {
 				t.Fatalf("Close gave %v, want no error", got.err)
 			}
@@ -445,7 +501,7 @@ func TestLineClose(t *testing.T) {
 			expectEndOfStream(t, pair.client)
 			cancelledAt := time.Now()
 			cancel()
-			got := waitClosed(t, done, margin+time.Second)
+			got := waitClosed(t, done, testrun.Patient(margin+time.Second))
 			if !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Close gave %v, want context.Canceled", got.err)
 			}
@@ -453,14 +509,26 @@ func TestLineClose(t *testing.T) {
 		})
 	})
 
-	t.Run("If shutting down the sending side or setting the read deadline fails, then Close shall return ErrConnectionFailed at once.", func(t *testing.T) {
+	t.Run("If shutting down the sending side or setting the read deadline fails, then Close shall return the context's error, wrapped, when the context has ended, and otherwise ErrConnectionFailed, at once.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("a CloseWrite that cancels the call's context and then fails: context.Canceled, at once", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			_, line := markedLine(t, cancel)
+			called := time.Now()
+			got := waitClosed(t, closeOn(ctx, line), testrun.Patient(margin+time.Second))
+			if !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("Close gave %v, want context.Canceled, wrapped", got.err)
+			}
+			expectWithin(t, "Close's return", got.returned, called, called.Add(margin))
+		})
 		t.Run("the connection closed under the Line: ErrConnectionFailed at once", func(t *testing.T) {
 			t.Parallel()
 			pair, line := acceptedLine(t)
 			_ = pair.server.Close()
 			called := time.Now()
-			got := waitClosed(t, closeOn(t.Context(), line), margin+time.Second)
+			got := waitClosed(t, closeOn(t.Context(), line), testrun.Patient(margin+time.Second))
 			if !errors.Is(got.err, telnet.ErrConnectionFailed) {
 				t.Fatalf("Close gave %v, want ErrConnectionFailed", got.err)
 			}
@@ -468,18 +536,20 @@ func TestLineClose(t *testing.T) {
 		})
 	})
 
-	t.Run("If the Line was not made by Accept, or is nil, then Close shall return ErrConnectionFailed without touching the connection.", func(t *testing.T) {
+	t.Run("If the Line was made by neither Open nor Accept, or is nil, then Close shall return ErrConnectionFailed without touching the connection.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a Line Open made: ErrConnectionFailed, no end of stream, where Accept's shuts down", func(t *testing.T) {
+		t.Run("the edge, a Line Open made: it closes through CloseWrite, the caller sees end of stream, and Close returns no error when the caller closes", func(t *testing.T) {
 			t.Parallel()
 			pair, line := answeredLine(t, nil)
-			if err := line.Close(t.Context()); !errors.Is(err, telnet.ErrConnectionFailed) {
-				t.Fatalf("Close on a Line Open made gave %v", err)
+			done := closeOn(t.Context(), line)
+			expectEndOfStream(t, pair.client)
+			callerClosed := time.Now()
+			_ = pair.client.Close()
+			got := waitClosed(t, done, testrun.Patient(margin+time.Second))
+			if got.err != nil {
+				t.Fatalf("Close on a Line Open made gave %v, want no error", got.err)
 			}
-			expectNotShutDown(t, pair.client)
-			acceptedPair, acceptedLine := acceptedLine(t)
-			closeOn(t.Context(), acceptedLine)
-			expectEndOfStream(t, acceptedPair.client)
+			expectWithin(t, "Close's return", got.returned, callerClosed, callerClosed.Add(margin))
 		})
 		t.Run("nil and a zero Line: ErrConnectionFailed, where Accept's shuts down", func(t *testing.T) {
 			t.Parallel()
@@ -495,4 +565,46 @@ func TestLineClose(t *testing.T) {
 			expectEndOfStream(t, pair.client)
 		})
 	})
+}
+
+// closeMarker is what markedConn's CloseWrite sends before it shuts down, as a connection with
+// its own close message does.
+var closeMarker = []byte("close-marker")
+
+// errCloseWriteRefused is markedConn's CloseWrite failing, as a close message's write can.
+var errCloseWriteRefused = errors.New("the test's CloseWrite failed")
+
+// markedConn is the real server end whose CloseWrite sends closeMarker and then shuts down the
+// sending side; given cancel, it instead cancels the call's context and fails, touching nothing.
+type markedConn struct {
+	urgentConn
+	cancel context.CancelFunc
+}
+
+func (connection markedConn) CloseWrite() error {
+	if connection.cancel != nil {
+		connection.cancel()
+		return errCloseWriteRefused
+	}
+	if _, err := connection.Write(closeMarker); err != nil {
+		return err
+	}
+	return connection.TCPConn.CloseWrite()
+}
+
+// markedLine is a Line Open made over a markedConn, for a caller that answered the eight.
+func markedLine(t *testing.T, cancel context.CancelFunc) (connected, *telnet.Line) {
+	t.Helper()
+	pair := connect(t)
+	call := openOn(t.Context(), markedConn{urgentConn: pair.server, cancel: cancel})
+	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+	write(t, pair.client, answers)
+	got := call.result(t, time.Now().Add(testrun.Patient(margin)))
+	if got.err != nil || got.outcome != telnet.Answered {
+		t.Fatalf("setting up: Open returned (%v, %v), want Answered", got.outcome, got.err)
+	}
+	if replies, _ := freshReading().readAll(answers); len(replies) > 0 {
+		readExactly(t, pair.client, len(replies), time.Now().Add(testrun.Patient(margin)))
+	}
+	return pair, got.line
 }

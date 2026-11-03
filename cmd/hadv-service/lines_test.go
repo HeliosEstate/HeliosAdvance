@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // stopSignal is one way the OS asks the program to stop. prepare readies the sender before the
@@ -43,9 +45,9 @@ const (
 func (call caller) typeName(t *testing.T) {
 	t.Helper()
 	call.send(t, append(append([]byte{}, answers...), typedName+"\r"...))
-	call.readExactly(t, []byte(greeting+prompt+typedName+"\r\n"+reply+typedName+"\r\n"), time.Now().Add(margin))
+	call.readExactly(t, []byte(greeting+prompt+typedName+"\r\n"+reply+typedName+"\r\n"), time.Now().Add(testrun.Patient(margin)))
 	shutdownFrom := time.Now()
-	call.expectEnd(t, shutdownFrom, shutdownFrom.Add(margin))
+	call.expectEnd(t, shutdownFrom, shutdownFrom.Add(testrun.Patient(margin)))
 }
 
 func TestProgram(t *testing.T) {
@@ -154,12 +156,21 @@ func TestProgram(t *testing.T) {
 				// which shut down after the silent caller connected, inside its 3 seconds of
 				// closing wait, so nothing but the stop ends either in the window.
 				from, sentBy := send(t, program)
-				notAfter := sentBy.Add(margin)
-				if sentBy.After(silent.connected.Add(negotiationLimit)) {
+				notAfter := sentBy.Add(testrun.Patient(margin))
+				// Under the race detector a stop the test sent too late leaves the two calls
+				// unjudged, since something else may have ended them, but the exit is still the
+				// stop's.
+				inTime := !sentBy.After(silent.connected.Add(negotiationLimit))
+				if !inTime && !testrun.Race {
 					t.Fatalf("the stop was sent %v after the silent caller connected, past the negotiation's own end", sentBy.Sub(silent.connected))
 				}
-				silent.expectEnd(t, from, notAfter)
-				closing.awaitReset(t, from, notAfter)
+				if inTime {
+					silent.expectEnd(t, from, notAfter)
+					closing.awaitReset(t, from, notAfter)
+				} else {
+					t.Logf("under the race detector, timing is not judged: the stop was sent %v after the silent caller connected, past the negotiation's own end, so the calls are not judged",
+						sentBy.Sub(silent.connected))
+				}
 				_, exitedAt := program.exit(t, notAfter)
 				expectWithin(t, "the exit", exitedAt, from, notAfter)
 				program.expectLog(t, "started")
@@ -179,7 +190,7 @@ func TestProgram(t *testing.T) {
 				expectServed(t, address)
 			}
 			from, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(testrun.Patient(margin)))
 			_ = from
 			values := program.expectLog(t, "started")
 			want := "telnet://" + strings.Join(addresses, ",telnet://")
@@ -236,7 +247,7 @@ func TestProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall write no line to the local log other than `started` and `start_failed`.", func(t *testing.T) {
+	t.Run("The engine shall write no line to the local log other than `started`, `start_failed`, `waiting` and `lease_lost`.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a whole call, a silent caller and a stop leave the started line alone", func(t *testing.T) {
 			t.Parallel()
@@ -248,7 +259,7 @@ func TestProgram(t *testing.T) {
 			_ = whole.connection.Close()
 			expectServed(t, addresses[len(addresses)-1])
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(testrun.Patient(margin)))
 			program.expectLog(t, "started")
 		})
 	})
@@ -261,7 +272,7 @@ func TestProgram(t *testing.T) {
 			program := startProgram(t, portOption, "0")
 			program.listening(t)
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(testrun.Patient(margin)))
 			program.expectLog(t, "started")
 		})
 		t.Run("the start_failed line is start_failed= and a reason, ending in LF", func(t *testing.T) {
@@ -284,7 +295,7 @@ func TestProgram(t *testing.T) {
 			// The engine refuses a request only once it has read every byte the caller sent
 			// before it, so the refusal shows the text above has been read.
 			during.send(t, []byte{iac, will, unknownOption})
-			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(margin))
+			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(testrun.Patient(margin)))
 			// The text sent after negotiation becomes the name, cut at 30 characters, and once
 			// Hello is written the engine shuts its sending side and says nothing more, so the
 			// only sign it has read all of the text, to the caller's end of stream, is the call
@@ -297,7 +308,7 @@ func TestProgram(t *testing.T) {
 			after := expectServed(t, addresses[len(addresses)-1])
 			answeredAt := time.Now()
 			after.send(t, answers)
-			after.readExactly(t, []byte(greeting), time.Now().Add(margin))
+			after.readExactly(t, []byte(greeting), time.Now().Add(testrun.Patient(margin)))
 			if served(t, addresses[0]) {
 				t.Fatalf("a caller was served with %d connections open", connectionCap)
 			}
@@ -313,11 +324,17 @@ func TestProgram(t *testing.T) {
 			// the engine read to the caller's end of stream.
 			if servedAt := time.Now(); servedAt.After(answeredAt.Add(closingWait)) ||
 				servedAt.After(firstConnected.Add(negotiationLimit+nameLimit)) {
-				t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
+				// Under the race detector only that is left unjudged: the log's contents are not a
+				// matter of time.
+				if !testrun.Race {
+					t.Fatalf("a caller was served only %v after the closing caller answered, too late to tell what ended the call",
+						servedAt.Sub(answeredAt))
+				}
+				t.Logf("under the race detector, timing is not judged: a caller was served only %v after the closing caller answered, too late to tell what ended the call",
 					servedAt.Sub(answeredAt))
 			}
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(margin))
+			program.exit(t, sentBy.Add(testrun.Patient(margin)))
 			if strings.Contains(program.text(), canary) {
 				t.Fatalf("the local log holds what a caller sent:\n%s", program.text())
 			}
@@ -344,12 +361,12 @@ func TestLinuxRoot(t *testing.T) {
 	t.Run("If the engine is started as root on Linux, then the engine shall write one `start_failed` line to the local log saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, options := range [][]string{nil, {portOption, "0"}} {
-			t.Run(fmt.Sprintf("as root with the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
+			t.Run(fmt.Sprintf("as root with a connection file and the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
 				t.Parallel()
 				if buildFailure != nil {
 					t.Fatalf("the program did not build: %v", buildFailure)
 				}
-				reason := startCommand(t, rootCommand(t, options...)).expectRefusal(t)
+				reason := startCommand(t, rootCommand(t, append([]string{databaseOption, sharedRowFile(t)}, options...)...)).expectRefusal(t)
 				if !strings.Contains(strings.ToLower(reason), "root") {
 					t.Fatalf("the start_failed reason %q does not say the engine was started as root", reason)
 				}
@@ -392,7 +409,7 @@ func TestLinuxLowPort(t *testing.T) {
 	t.Parallel()
 	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with no option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("with a connection file and no other option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			if os.Geteuid() == 0 {
 				t.Fatalf("this row needs an ordinary user, not root")

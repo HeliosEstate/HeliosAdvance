@@ -2,7 +2,10 @@
 # The only definition of green. Every gate tolerates an empty repository and says so; a gate that
 # cannot run fails and says so.
 # Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER,
-#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test)
+#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
+#   PKGS (CI, the packages one job tests; default all), GATES=0 (CI, a job whose Go gates another
+#   job of the same run checks), TIMED (CI, a file for the timed rows' place-in-window lines),
+#   MUTATE (CI, with --mutation: whole packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
@@ -35,7 +38,8 @@ fi
 # reads the same file, so the commit lock and the edit lock cannot disagree. The loops are the
 # App logins in loop-identities; the interactive session's App is not one, and its changes to
 # owned paths land by pull request on the developer's code-owner review.
-# Gates 3 and 4a judge a branch's commits before it merges; --mutation's range is already merged.
+# Gates 3 and 4a judge a branch's commits before it merges; --mutation is a report, never the
+# required check, so it skips them.
 # Both lists are read from the base when it has them, never from the branch being judged: a loop
 # commit that edits a list would otherwise judge itself by its own copy (the codebase review,
 # 2026-10-24). The tree's copy serves only where the base has none, as on a first branch.
@@ -81,10 +85,13 @@ if [ "$MUTATION" = 0 ]; then
     git merge-base --is-ancestor "$merge^2" "$BASE" ||
       fail "the loop's merge ${merge:0:7} merges a commit the base does not have"
     parted=$(git merge-base "$merge^1" "$merge^2")
-    while read -r path; do
-      git diff --quiet "$parted" "$merge^2" -- "$path" && git diff --quiet "$merge^1" "$merge" -- "$path" ||
+    # Each name whole and taken literally (a leading : or a wildcard is part of the name), with no
+    # rename hiding the old name; a git that fails here fails the gate too.
+    while IFS= read -r -d '' path; do
+      git diff --quiet "$parted" "$merge^2" -- ":(literal)$path" && git diff --quiet "$merge^1" "$merge" -- ":(literal)$path" ||
         fail "the loop's merge ${merge:0:7} has $path as no clean merge leaves it"
-    done < <(git diff --name-only "$merge^2" "$merge" -- "${owned[@]}")
+    done < <(git diff -z --no-renames --name-only "$merge^2" "$merge" -- "${owned[@]}")
+    wait $! || fail "git could not list the owned paths the loop's merge ${merge:0:7} touched"
   done <<< "$merges"
 fi
 
@@ -211,15 +218,42 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 }')
 [ -z "$long" ] || { echo "$long"; fail "a comment line runs past 100 columns: wrap it, or shorten a nolint's reason"; }
 
+# 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
+# entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
+# only begins the same way; a merge that keeps the other side of a conflict would bring one back
+# with everything green (HeliosAdvance #160). Each of the engine's paths in the file is judged,
+# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
+# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
+# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
+# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
+# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
+# developer's, and his review of every change to it is the check for that.
+[ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
+paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
+  grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
+  fail "no path of the engine's own was found in .golangci.yml, so its import rules cannot be checked"
+loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths" || true)
+[ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's paths without a closing \$"; }
+wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
+[ "$wide" = 1 ] || fail "the import rules hold the engine's module-wide entry $wide times, not once"
+
+# 4i. The test support (internal/testrun) is for tests: no other file imports it, whatever its
+# build tags, which the linter's import rules do not see (a file built only for the race detector).
+leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/internal/testrun"' . |
+  grep -vE '_test\.go$|^\./internal/testrun/' || true)
+[ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
 # than check.yml.
 if [ "${SKIP_GO:-}" = 1 ]; then echo "no Go in the change set; Go gates skipped"; echo green; exit 0; fi
 pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
-if [ -n "$pkgs" ]; then
+if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
+  echo "Go gates checked by another job of this run; tests only"
+elif [ -n "$pkgs" ]; then
   need golangci-lint "https://golangci-lint.run"
-  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck@latest"
+  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck at the version in .github/tool-versions"
   need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
   go mod verify
   # Every module the engine is built from, indirect ones included, carries a licence that can
@@ -247,18 +281,42 @@ if [ -n "$pkgs" ]; then
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
   CGO_ENABLED=0 GOOS=$other golangci-lint run ./...
   go run ./tools/namecheck .
+  govulncheck ./...
+fi
+if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
   # Windows, and CI sets the same pattern for its Windows runner.
   [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
-  go test ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ./...
-  govulncheck ./...
+  # One package at a time, on every machine: the timed rows' margins are measured that way, and
+  # every failure from load on record came with every package at once (HeliosDesign #258).
+  if [ -n "${TIMED:-}" ]; then
+    # CI keeps every timed row's place in its window (#258), and every line where a row says it
+    # cannot tell and sets its check aside, since such a pass proves nothing (HeliosDesign #217): a
+    # passing run's logs show only in Go's -json stream, so those lines go to $TIMED, a few KB. The
+    # rows TESTSKIP skips by name are named above. The console gets each package's result, and a
+    # failed package's whole output, so a crash or a hang that Go does not pin on one test still
+    # shows its cause.
+    need jq "jq, from the system's packages"
+    stream=$(mktemp); status=0
+    go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
+    jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep -E 'into its window of|cannot tell' > "$TIMED" || true
+    jq -sj '[.[] | select(.Action == "fail" and (.Test | not)) | .Package] as $failed
+      | .[] | select(.Action == "build-output" or .Action == "output")
+      | select((.Package as $p | any($failed[]; . == $p))
+          or (.Test == null and (.Output | test("^(PASS|coverage: .*)\n$") | not)))
+      | .Output' "$stream"
+    rm -f "$stream"
+    [ "$status" = 0 ] || exit "$status"
+  else
+    go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
+  fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
     # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
-  elif [ "$MUTATION" = 1 ] && git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' 2>/dev/null | grep -q .; then
+  elif [ "$MUTATION" = 1 ] && { [ -n "${MUTATE:-}" ] || git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; }; then
     need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
@@ -267,15 +325,23 @@ if [ -n "$pkgs" ]; then
     # every mutant "time out", which counts as killed, and read 100% (2026-10-21).
     # cmd/ is left out: its tests run the built program as its own process, which gremlins'
     # coverage cannot see, so every mutant there reads "Not covered". The rows and QA's broken
-    # copies prove it instead (the developer, 2026-10-22).
+    # copies prove it instead (the developer, 2026-10-22). internal/testrun/ is left out too: it is
+    # test support, proved by the rows that use it; so is tools/, the gates' own tools.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
     # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
     # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
-    # The run stays at the repository root (.): a package path matches no diff entry (its 278).
-    mutants=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash --diff "$BASE" --exclude-files '^cmd/' . 2>&1) || { echo "$mutants"; fail "mutation testing: gremlins failed"; }
-    echo "$mutants"
-    grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$mutants" || fail "mutation testing: no result lines, so there is nothing to report"
+    # The run on a diff stays at the repository root (.): a package path matches no diff entry (its
+    # 278). MUTATE names whole packages instead (a QA change to existing rows, a milestone), each
+    # mutated in full.
+    if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
+    mutants=
+    for target in "${targets[@]}"; do
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      echo "$out"
+      grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
+      mutants+="$out"$'\n'
+    done
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       { echo "## Mutation testing, a report"; echo '```'
         grep -E 'LIVED|NOT COVERED|Killed:|Timed out:|Test efficacy|Mutator coverage' <<< "$mutants"
