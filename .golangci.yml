@@ -70,6 +70,12 @@ linters:
             - github.com/jackc/pgx/v5$
             - github.com/jackc/pgx/v5/pgconn$
             - github.com/jackc/pgx/v5/pgproto3$
+            # The language unit's reader of TOML 1.1, the language files' format: the standard
+            # library has none, and a whole TOML reader of our own is large. MIT, no other modules,
+            # TOML 1.1 since v1.6.0, several maintainers and no security advisory; go-toml/v2, the
+            # alternative, had a high-severity one in July 2026, fixed. Watched by govulncheck,
+            # Dependabot and the licence gate (the developer's "yes", Languages Part 1).
+            - github.com/BurntSushi/toml$
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -93,6 +99,7 @@ linters:
             - "!**/internal/ssh/**"
             - "!**/internal/listener/**"
             - "!**/internal/database/**"
+            - "!**/internal/language/**"
             - "!**/cmd/hadv-service/**"
             - "!**/tools/**"
             - "!**/internal/testrun/*_windows.go"
@@ -139,6 +146,8 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+            # The call's texts in the board's language, by their keys (Languages Part 1).
+            - github.com/heliosestate/heliosadvance/internal/language$
             # Its own path, so its black-box tests in package session_test can import it.
             - github.com/heliosestate/heliosadvance/internal/session$
         textio:
@@ -180,6 +189,8 @@ linters:
             # connection (docs/architecture.md, Part 3's shape).
             - github.com/heliosestate/heliosadvance/internal/textio$
             - github.com/heliosestate/heliosadvance/internal/session$
+            # The board's texts, handed to it and passed to each call (Languages Part 1).
+            - github.com/heliosestate/heliosadvance/internal/language$
         # The Listener's tests drive it with a real kind of connection, Telnet's, never a fake;
         # its approved rows for the Session and Text I/O run over a real Telnet Line. Its code
         # still names no kind (developer, 2026-10-25).
@@ -191,6 +202,7 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/textio$
             - github.com/heliosestate/heliosadvance/internal/session$
             - github.com/heliosestate/heliosadvance/internal/telnet$
+            - github.com/heliosestate/heliosadvance/internal/language$
             # Its own path, so its black-box tests in package listener_test can import it.
             - github.com/heliosestate/heliosadvance/internal/listener$
             # The test support, for its tests alone (check.sh's gate 4i).
@@ -225,6 +237,20 @@ linters:
             # It reads the connection file and takes the lease before it listens, and closes the
             # listeners when the lease is lost (database Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
+            # It loads the board's language at start and hands its texts to every Listener
+            # (Languages Part 1).
+            - github.com/heliosestate/heliosadvance/internal/language$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
+        language:
+          files: ["**/internal/language/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # The language files' TOML (docs/architecture.md).
+            - github.com/BurntSushi/toml$
+            # Its own path, so its black-box tests in package language_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/language$
             # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         # The test support's Windows files, which find and end a dead run's programs (the
