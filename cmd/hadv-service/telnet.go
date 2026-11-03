@@ -15,10 +15,7 @@ const defaultPort = "23"
 // telnetTargets are Telnet's own list, so that its addresses can change without SSH's.
 var telnetTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}
 
-// openTelnet is Telnet's way in.
-var openTelnet = openKind(telnet.Accept)
-
 func newTelnetListener(ctx context.Context, port string, count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
-	return newKindListener(ctx, telnetTargets, port, openTelnet, count)
+	return newKindListener(ctx, telnetTargets, port, telnet.Accept, count)
 }

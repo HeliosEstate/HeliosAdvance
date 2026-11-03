@@ -254,32 +254,26 @@ func closeAll(sockets []*net.TCPListener) error {
 // not say IPv4 or IPv6 to net.Listen.
 type target struct{ network, address string }
 
-// newKindListener opens a kind's sockets and gives them to a new Listener, closing them only when
-// New refuses: once it has them they are the Listener's.
-func newKindListener(ctx context.Context, targets []target, port string, open listener.Open,
-	count *listener.ConnectionCount,
+// newKindListener opens a kind's sockets and gives them to a new Listener with the kind's Accept,
+// closing the sockets only when New refuses: once it has them they are the Listener's. The
+// Listener wants a nil KindConnection on an error, never one holding a nil connection.
+func newKindListener[K listener.KindConnection](ctx context.Context, targets []target, port string,
+	accept func(context.Context, *net.TCPConn) (K, error), count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
 	sockets, addresses, err := listen(ctx, targets, port)
 	if err != nil {
 		return nil, nil, err
 	}
-	kindListener, err := listener.New(sockets, open, count)
-	if err != nil {
-		return nil, nil, errors.Join(err, closeAll(sockets))
-	}
-	return kindListener, addresses, nil
-}
-
-// openKind adapts a kind's Accept to the Listener's way in, which wants a nil KindConnection on an
-// error, never one holding a nil connection.
-func openKind[K listener.KindConnection](
-	accept func(context.Context, *net.TCPConn) (K, error),
-) listener.Open {
-	return func(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
+	open := func(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
 		kindConnection, err := accept(ctx, connection)
 		if err != nil {
 			return nil, err
 		}
 		return kindConnection, nil
 	}
+	kindListener, err := listener.New(sockets, open, count)
+	if err != nil {
+		return nil, nil, errors.Join(err, closeAll(sockets))
+	}
+	return kindListener, addresses, nil
 }

@@ -18,13 +18,12 @@ const defaultTLSPort = "992"
 // others'.
 var telnetsTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}
 
-// newTelnetsListener pairs the sockets with Telnet over TLS's way in, with the certificate read
-// at start.
+// newTelnetsListener serves with the certificate read at start.
 func newTelnetsListener(ctx context.Context, port string, certificate *telnets.Certificate,
 	count *listener.ConnectionCount,
 ) (*listener.Listener, []string, error) {
-	open := openKind(func(ctx context.Context, connection *net.TCPConn) (*telnet.Line, error) {
+	accept := func(ctx context.Context, connection *net.TCPConn) (*telnet.Line, error) {
 		return telnets.Accept(ctx, connection, certificate)
-	})
-	return newKindListener(ctx, telnetsTargets, port, open, count)
+	}
+	return newKindListener(ctx, telnetsTargets, port, accept, count)
 }
