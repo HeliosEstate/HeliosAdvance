@@ -1034,7 +1034,7 @@ func TestTLSProgram(t *testing.T) {
 			garbage := dial(t, telnets[0])
 			garbage.send(t, []byte(canary+" is not TLS\r\n"))
 			expectAtMostAlertThenEnd(t, garbage, time.Now().Add(testrun.Patient(margin)))
-			expectTLSServed(t, telnets[1])
+			expectTLSServedOnceFreed(t, telnets[1])
 		})
 	})
 

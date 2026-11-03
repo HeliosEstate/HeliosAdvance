@@ -656,6 +656,36 @@ func expectTLSServed(t *testing.T, address string) tlsCaller {
 	return call
 }
 
+// expectTLSServedOnceFreed dials over TLS until a caller is served. The lines do not say when,
+// after a connection closes, its place in the count is freed, so a caller closed at once as one
+// over the cap, its handshake ended with nothing from the engine, is tried again, by the hang
+// bound; any other end of the handshake fails the row.
+func expectTLSServedOnceFreed(t *testing.T, address string) {
+	t.Helper()
+	deadline := time.Now().Add(testrun.Patient(testrun.HangBound))
+	for {
+		raw := dial(t, address)
+		tapped := &tap{TCPConn: raw.connection}
+		connection := tls.Client(tapped, tlsConfig(0))
+		ctx, cancel := context.WithTimeout(t.Context(), testrun.Patient(testrun.HangBound))
+		err := connection.HandshakeContext(ctx)
+		cancel()
+		if err == nil {
+			call := tlsCaller{raw: raw, tap: tapped, tls: connection, lastFlight: tapped.lastWrite()}
+			call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
+			return
+		}
+		if !isEnd(err) {
+			t.Fatalf("the caller's handshake ended with %v, want a service, or a close at once with nothing written", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no TLS caller was served within %v: the place was never freed", testrun.Patient(testrun.HangBound))
+		}
+		_ = raw.connection.Close()
+		pause(t, 20*time.Millisecond)
+	}
+}
+
 func (call tlsCaller) send(t *testing.T, data []byte) {
 	t.Helper()
 	_ = call.tls.SetWriteDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
