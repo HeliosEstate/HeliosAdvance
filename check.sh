@@ -286,8 +286,15 @@ fi
 if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
-  # Windows, and CI sets the same pattern for its Windows runner.
-  [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
+  # Windows, and CI sets the same pattern for its Windows runner. The rows that need an elevated
+  # process (TestWindowsElevated…) are skipped too when this one is not: CI's Windows runner is
+  # elevated and runs them, while the loop's run and the developer's are not, and would fail them
+  # for a right they lack rather than for a fault (HeliosDesign #303). `net session` succeeds only
+  # when elevated.
+  if [ "$(go env GOOS)" = windows ]; then
+    if net session > /dev/null 2>&1; then TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
+    else TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux|TestWindowsElevated)'}; fi
+  fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
   # every failure from load on record came with every package at once (HeliosDesign #258).
   if [ -n "${TIMED:-}" ]; then
