@@ -93,6 +93,7 @@ linters:
             - "!**/internal/ssh/**"
             - "!**/internal/telnets/**"
             - "!**/internal/listener/**"
+            - "!**/internal/orchestrator/**"
             - "!**/internal/database/**"
             - "!**/cmd/hadv-service/**"
             - "!**/tools/**"
