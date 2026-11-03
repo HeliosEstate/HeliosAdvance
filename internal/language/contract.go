@@ -27,9 +27,12 @@
 // # Untrusted input
 //
 // The language files come from outside the engine: translators, language packs and the sysop. A
-// text reaches every caller, so a text that could reach a screen as anything but its characters
-// counts as missing: one holding a control character or a bidi control, broken syntax, more of
-// the standard than this package reads, or a placeholder the engine does not give it. A code,
+// text reaches every caller, so a text that could reach a terminal reading UTF-8 as anything but
+// its characters counts as missing: one holding a control character or a bidi control, broken
+// syntax, more of the standard than this package reads, or a placeholder the engine does not give
+// it. A terminal on a legacy code page reads a text's UTF-8 bytes as that page's characters, and
+// one that reads 8-bit controls may read a byte of 0x80 to 0x9F as one; converting a text for such
+// a terminal is Terminal negotiation's, not this package's. A code,
 // whether the board's language, a folder's name or a parent, is matched against the languages the
 // folder holds and never made into a path. A placeholder's value, the caller's name among them,
 // is put in as its characters and never read as a text's syntax. The parser of a text is the fuzz
@@ -57,7 +60,8 @@ const (
 	Folder = "lang"
 	// Fallback is the language every chain ends at, released holding every text the engine shows.
 	Fallback = "en-us"
-	// MostFileBytes bounds a language file; a larger one is refused before it is read.
+	// MostFileBytes bounds a language file; a larger one is refused, no more than this and one
+	// byte of it read.
 	MostFileBytes = 1 << 20
 	// KeyGreeting is the greeting, written first; it is given no placeholder.
 	KeyGreeting = "session.greeting"
@@ -91,43 +95,56 @@ type Value struct {
 // checked by Load. It does not change once Load returns it, and is safe for use from many
 // goroutines at once.
 type Texts struct {
-	texts
+	state textsState
 }
 
 // Load reads every language in folder once, checks each file, and finds every text the engine
 // shows for code, the board's language. With an error it returns no Texts. Results:
 // ErrNotInstalled, ErrFileRefused.
 //
-// A language is a folder in folder holding a file of the folder's own name and .toml; anything
-// else in folder is not a language and is left alone. The chain for code is code, then its parent,
-// then that language's parent and so on, then Fallback.
+// A language is a folder in folder holding a file named exactly the folder's own name and .toml,
+// as folder lists it; anything else in folder is not a language and is left alone. A code, given
+// as code or as a parent, names the language whose folder's name it matches without regard to case
+// (RFC 5646). The chain for code is code, then its parent, then that language's parent and so on,
+// then Fallback; Fallback's own parent, if it has one, is ignored, so every chain ends there.
 //
-//   - Load shall read each language's file once, and every language's, not only those in the chain.
+// Load makes the checks below in the order listed, the languages taken in the order of their
+// folders' names, and returns the first that fails.
+//
 //   - If folder cannot be read, then Load shall return ErrFileRefused naming it.
-//   - If code is not a language in folder, then Load shall return ErrNotInstalled.
-//   - If Fallback is not a language in folder, then Load shall return ErrFileRefused naming its
-//     file.
 //   - If a language's folder name is not a well-formed language tag in lower case, then Load shall
 //     return ErrFileRefused naming its file.
+//   - If a language's folder or file is a link leading out of folder, or its file cannot be read,
+//     then Load shall return ErrFileRefused naming the file.
 //   - If a language's file is over MostFileBytes, then Load shall return ErrFileRefused naming it,
 //     having read no more than MostFileBytes and one byte of it.
-//   - If a language's file cannot be read, is a link leading out of folder, or is not UTF-8 and
-//     TOML 1.1, then Load shall return ErrFileRefused naming it.
+//   - If a language's file is not UTF-8 and TOML 1.1, then Load shall return ErrFileRefused naming
+//     it.
 //   - If a language's file has no name, or a name that is not a string, is empty or holds a
-//     control character, then Load shall return ErrFileRefused naming it.
-//   - If a language's file has a parent that is not a string or is not a language in folder, or
-//     whose chain of parents leads back to that language, then Load shall return ErrFileRefused
-//     naming it.
-//   - For each key above, Load shall take the text from the first language in the chain for code
-//     whose file holds that key as a text that does not count as missing.
+//     control character or a bidi control, as a text may not, then Load shall return
+//     ErrFileRefused naming it.
+//   - If Fallback is not a language in folder, then Load shall return ErrFileRefused naming its
+//     file.
+//   - If code is not a language in folder, then Load shall return ErrNotInstalled.
+//   - If a language's file other than Fallback's has a parent that is not a string or names no
+//     language in folder, or whose chain of parents leads back to that language, then Load shall
+//     return ErrFileRefused naming it.
 //   - If Fallback's file does not hold one of the keys above as a text that does not count as
 //     missing, then Load shall return ErrFileRefused naming Fallback's file.
+//
+// Its other lines:
+//
+//   - Load shall read each language's file once, and every language's, not only those in the
+//     chain.
+//   - For each key above, Load shall take the text from the first language in the chain for code
+//     whose file holds that key as a text that does not count as missing.
 //   - Load shall ignore a key in a language's file that is not name, parent or one of the keys
 //     above.
 //
 // A text counts as missing from a language when its key is not in the file, or when it:
 //
 //   - is not a string, or is not valid MessageFormat 2;
+//   - is a complex message, one that begins with a declaration or is a quoted pattern, {{…}};
 //   - holds anything but characters, the escapes and variable placeholders with no function,
 //     option or attribute, a literal placeholder such as {BBSNAME} included;
 //   - holds a placeholder its key is not given;
@@ -137,9 +154,11 @@ func Load(folder, code string) (*Texts, error) {
 	return load(folder, code)
 }
 
-// Text returns the text for key in the board's language, each placeholder replaced by the Text of
-// the Value of its Name.
+// Text returns the text for key in the board's language, each escape the character it escapes and
+// each placeholder replaced by the Text of the Value of its Name. A Texts not made by Load, or
+// nil, gives the empty string for every key.
 //
+//   - Text shall give each escape, \{, \}, \| or \\, as the one character it escapes.
 //   - Text shall put each Value's Text in its placeholder's place as its characters, never read as
 //     a text's syntax.
 //   - Text shall replace a placeholder given no Value with nothing, and ignore a Value whose Name
@@ -151,7 +170,8 @@ func (t *Texts) Text(key string, values ...Value) string {
 
 // Missing returns, in the order of the keys above, the keys that were missing from the board's
 // language, each found further along its chain; for each, the program writes one text_missing
-// line. With the board's language Fallback, there are none.
+// line. With the board's language Fallback, there are none; a Texts not made by Load, or nil,
+// gives none.
 func (t *Texts) Missing() []string {
 	return t.missing()
 }

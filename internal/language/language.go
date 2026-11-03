@@ -11,16 +11,20 @@ import "errors"
 
 var errNotBuilt = errors.New("language: not built yet")
 
-type texts struct{}
+type textsState struct{}
 
 func load(string, string) (*Texts, error) {
 	return nil, errNotBuilt
 }
 
-func (*texts) text(string, []Value) string {
+func (t *Texts) text(string, []Value) string {
+	if t == nil {
+		return ""
+	}
+	_ = t.state
 	return ""
 }
 
-func (*texts) missing() []string {
+func (*Texts) missing() []string {
 	return nil
 }
