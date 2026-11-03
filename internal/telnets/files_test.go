@@ -88,6 +88,10 @@ var (
 const (
 	pkcs8KeyType = "PRIVATE KEY"
 	sec1KeyType  = "EC PRIVATE KEY"
+
+	// explicitParameters is what openssl's text for a key shows when the key spells out its
+	// curve's numbers in place of the curve's name.
+	explicitParameters = "Field Type: prime-field"
 )
 
 // tlsFiles are a certificate file and a key file, as the sysop names them.

@@ -286,12 +286,14 @@ func TestReadCertificate(t *testing.T) {
 		}{
 			{"ECDSA secp256k1, by its curve's name, in an EC PRIVATE KEY block", sec1KeyType, "ASN1 OID: secp256k1",
 				func(t *testing.T) string { t.Helper(); return sec1Key(t, "secp256k1", "named_curve") }},
-			{"ECDSA secp256k1, by explicit parameters, in an EC PRIVATE KEY block", sec1KeyType, "Field Type: prime-field",
+			{"ECDSA secp256k1, by explicit parameters, in an EC PRIVATE KEY block", sec1KeyType, explicitParameters,
 				func(t *testing.T) string { t.Helper(); return sec1Key(t, "secp256k1", "explicit") }},
 			{"ECDSA secp256k1, by its curve's name, in a PRIVATE KEY block", pkcs8KeyType, "ASN1 OID: secp256k1",
 				func(t *testing.T) string { t.Helper(); return makeKey(t, ecdsaSecp256k1) }},
-			{"ECDSA secp256k1, by explicit parameters, in a PRIVATE KEY block", pkcs8KeyType, "Field Type: prime-field",
+			{"ECDSA secp256k1, by explicit parameters, in a PRIVATE KEY block", pkcs8KeyType, explicitParameters,
 				func(t *testing.T) string { t.Helper(); return makeKey(t, ecdsaSecp256k1Explicit) }},
+			{"ECDSA P-256, by explicit parameters, in an EC PRIVATE KEY block", sec1KeyType, explicitParameters,
+				func(t *testing.T) string { t.Helper(); return sec1Key(t, "prime256v1", "explicit") }},
 		} {
 			t.Run(key.name+", with an ECDSA P-256 certificate: ErrKeyType", func(t *testing.T) {
 				t.Parallel()
