@@ -76,6 +76,18 @@ var (
 	ecdsaP521  = keyKind{"ECDSA P-521", "-algorithm EC -pkeyopt ec_paramgen_curve:P-521"}
 	ed25519Key = keyKind{"Ed25519", "-algorithm ED25519"}
 	rsaPSS2048 = keyKind{"RSA-PSS 2048", "-algorithm RSA-PSS -pkeyopt rsa_keygen_bits:2048"}
+
+	ecdsaSecp256k1         = keyKind{"ECDSA secp256k1", "-algorithm EC -pkeyopt ec_paramgen_curve:secp256k1"}
+	ecdsaSecp256k1Explicit = keyKind{
+		"ECDSA secp256k1 by explicit parameters",
+		"-algorithm EC -pkeyopt ec_paramgen_curve:secp256k1 -pkeyopt ec_param_enc:explicit",
+	}
+)
+
+// The private key blocks openssl writes: genpkey's PKCS#8, and ecparam's SEC 1.
+const (
+	pkcs8KeyType = "PRIVATE KEY"
+	sec1KeyType  = "EC PRIVATE KEY"
 )
 
 // tlsFiles are a certificate file and a key file, as the sysop names them.
@@ -108,6 +120,29 @@ func makeKey(t *testing.T, kind keyKind) string {
 	path := filepath.Join(folder, "key.pem")
 	setMode(t, path, 0o600)
 	return path
+}
+
+// sec1Key has openssl ecparam make a key on the curve, written as an EC PRIVATE KEY block with
+// the curve given by the encoding named, as the sysop makes one, and returns its path.
+func sec1Key(t *testing.T, curve, encoding string) string {
+	t.Helper()
+	folder := t.TempDir()
+	openssl(t, folder, "ecparam", "-name", curve, "-genkey", "-noout", "-param_enc", encoding, "-out", "key.pem")
+	path := filepath.Join(folder, "key.pem")
+	setMode(t, path, 0o600)
+	return path
+}
+
+// expectKeyEncoding fails the row as a fault in the test when openssl wrote the key in another
+// block, or gave its curve another way, than the row is about.
+func expectKeyEncoding(t *testing.T, path, block, encoding string) {
+	t.Helper()
+	if got := keyBlock(t, path).Type; got != block {
+		t.Fatalf("openssl wrote a %s block, and this row needs a %s block", got, block)
+	}
+	if text := openssl(t, filepath.Dir(path), "pkey", "-in", path, "-text", "-noout"); !strings.Contains(string(text), encoding) {
+		t.Fatalf("openssl's text for the key holds no %q, which this row needs", encoding)
+	}
 }
 
 // selfSigned has openssl make a self-signed certificate for the key, and returns its path.

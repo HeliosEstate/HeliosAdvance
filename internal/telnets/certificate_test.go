@@ -183,8 +183,8 @@ func TestReadCertificate(t *testing.T) {
 			name  string
 			block func(t *testing.T, files tlsFiles) *pem.Block
 		}{
-			{"PRIVATE KEY", func(t *testing.T, files tlsFiles) *pem.Block { t.Helper(); return keyBlock(t, files.key) }},
-			{"EC PRIVATE KEY", func(t *testing.T, _ tlsFiles) *pem.Block {
+			{pkcs8KeyType, func(t *testing.T, files tlsFiles) *pem.Block { t.Helper(); return keyBlock(t, files.key) }},
+			{sec1KeyType, func(t *testing.T, _ tlsFiles) *pem.Block {
 				t.Helper()
 				folder := t.TempDir()
 				openssl(t, folder, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "key.pem")
@@ -266,7 +266,7 @@ func TestReadCertificate(t *testing.T) {
 		t.Run("a PRIVATE KEY block of text: ErrTLSFileNotPEM", func(t *testing.T) {
 			t.Parallel()
 			files := goodFiles(t, ecdsaP256)
-			key := writeBlocks(t, &pem.Block{Type: "PRIVATE KEY", Bytes: []byte(canary + " is not a key")})
+			key := writeBlocks(t, &pem.Block{Type: pkcs8KeyType, Bytes: []byte(canary + " is not a key")})
 			expectRefusal(t, tlsFiles{certificate: files.certificate, key: key}, telnets.ErrTLSFileNotPEM)
 		})
 	})
@@ -277,6 +277,27 @@ func TestReadCertificate(t *testing.T) {
 			t.Run(kind.name+" with its own certificate: ErrKeyType", func(t *testing.T) {
 				t.Parallel()
 				expectRefusal(t, goodFiles(t, kind), telnets.ErrKeyType)
+			})
+		}
+		// crypto/x509 reads none of these keys, so the engine must tell them from a damaged file.
+		for _, key := range []struct {
+			name, block, encoding string
+			make                  func(t *testing.T) string
+		}{
+			{"ECDSA secp256k1, by its curve's name, in an EC PRIVATE KEY block", sec1KeyType, "ASN1 OID: secp256k1",
+				func(t *testing.T) string { t.Helper(); return sec1Key(t, "secp256k1", "named_curve") }},
+			{"ECDSA secp256k1, by explicit parameters, in an EC PRIVATE KEY block", sec1KeyType, "Field Type: prime-field",
+				func(t *testing.T) string { t.Helper(); return sec1Key(t, "secp256k1", "explicit") }},
+			{"ECDSA secp256k1, by its curve's name, in a PRIVATE KEY block", pkcs8KeyType, "ASN1 OID: secp256k1",
+				func(t *testing.T) string { t.Helper(); return makeKey(t, ecdsaSecp256k1) }},
+			{"ECDSA secp256k1, by explicit parameters, in a PRIVATE KEY block", pkcs8KeyType, "Field Type: prime-field",
+				func(t *testing.T) string { t.Helper(); return makeKey(t, ecdsaSecp256k1Explicit) }},
+		} {
+			t.Run(key.name+", with an ECDSA P-256 certificate: ErrKeyType", func(t *testing.T) {
+				t.Parallel()
+				path := key.make(t)
+				expectKeyEncoding(t, path, key.block, key.encoding)
+				expectRefusal(t, tlsFiles{certificate: goodFiles(t, ecdsaP256).certificate, key: path}, telnets.ErrKeyType)
 			})
 		}
 		for _, kind := range []keyKind{rsa2048, rsa4096, ecdsaP256, ecdsaP384, ed25519Key} {
