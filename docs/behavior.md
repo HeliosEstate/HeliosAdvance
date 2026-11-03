@@ -123,7 +123,8 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 The engine also takes SSH callers, when the sysop gives it a host key, and serves them the same
 call as Telnet callers: the greeting, the name and the answer. Part 3 narrows the earlier lines
-that only a Telnet caller meets to a Telnet caller.
+that only a Telnet caller meets to a Telnet caller. Part 8 changes its line on the host key file's
+mode.
 
 #### Turning SSH on
 
@@ -134,8 +135,8 @@ that only a Telnet caller meets to a Telnet caller.
 - If the host key file is missing, unreadable, not in OpenSSH's format, protected by a passphrase
   or not an Ed25519 key, then the engine shall write one `start_failed` line saying which, and
   exit with a non-zero code.
-- If, on Linux, the host key file's mode lets its group or others read it, then the engine shall
-  write one `start_failed` line saying so, and exit with a non-zero code.
+- If, on Linux, the host key file's mode lets its group or others read or write it, then the
+  engine shall write one `start_failed` line saying so, and exit with a non-zero code.
 
 #### The same call over SSH
 
@@ -239,7 +240,8 @@ call ends at the end of file. Part 7 changes one of Part 3's lines, on the conne
 The engine also takes Telnet callers over TLS, on a listener of its own, when the sysop gives it a
 certificate and its key, and serves them inside the encrypted channel as it serves a Telnet
 caller. Every earlier line that names a Telnet caller stands for a Telnet over TLS caller, inside
-the channel. Part 8 changes one of Part 4's lines, on the Synch.
+the channel. Part 8 changes one of Part 4's lines, on the Synch, and one of Part 3's, on the host
+key file's mode.
 
 #### Turning Telnet over TLS on
 
@@ -251,8 +253,8 @@ the channel. Part 8 changes one of Part 4's lines, on the Synch.
 - If either file is missing, unreadable or not PEM, or the key is protected by a passphrase, does
   not match the certificate, or is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519,
   then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.
-- If, on Linux, the key file's mode lets its group or others read it, then the engine shall write
-  one `start_failed` line saying so, and exit with a non-zero code.
+- If, on Linux, the key file's mode lets its group or others read or write it, then the engine
+  shall write one `start_failed` line saying so, and exit with a non-zero code.
 
 #### The two files' checks
 

@@ -65,11 +65,11 @@ func TestLinuxReadCertificate(t *testing.T) {
 
 	t.Run("ReadCertificate shall check the certificate file and then the key file, in the order of these lines, and return the first refusal that applies.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("a key file of mode 0644 holding no PEM: ErrKeyReadableByOthers", func(t *testing.T) {
+		t.Run("a key file of mode 0644 holding no PEM: ErrKeyOpenToOthers", func(t *testing.T) {
 			t.Parallel()
 			key := writeFile(t, []byte(canary+" is not PEM\n"))
 			setMode(t, key, 0o644)
-			expectRefusal(t, tlsFiles{certificate: goodFiles(t, ecdsaP256).certificate, key: key}, telnets.ErrKeyReadableByOthers)
+			expectRefusal(t, tlsFiles{certificate: goodFiles(t, ecdsaP256).certificate, key: key}, telnets.ErrKeyOpenToOthers)
 		})
 		t.Run("a folder of mode 0755 as the key file: ErrTLSFileNotRegular", func(t *testing.T) {
 			t.Parallel()
@@ -107,17 +107,17 @@ func TestLinuxReadCertificate(t *testing.T) {
 		}
 	})
 
-	t.Run("If, on Linux, the opened key file's mode lets its group or others read it, then ReadCertificate shall return ErrKeyReadableByOthers without reading the file.", func(t *testing.T) {
+	t.Run("If, on Linux, the opened key file's mode lets its group or others read or write it, then ReadCertificate shall return ErrKeyOpenToOthers without reading the file.", func(t *testing.T) {
 		t.Parallel()
-		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444} {
-			t.Run(fmt.Sprintf("a key file of mode %04o holding text that is no PEM, so a read first would refuse it otherwise: ErrKeyReadableByOthers", mode), func(t *testing.T) {
+		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444, 0o620, 0o602} {
+			t.Run(fmt.Sprintf("a key file of mode %04o holding text that is no PEM, so a read first would refuse it otherwise: ErrKeyOpenToOthers", mode), func(t *testing.T) {
 				t.Parallel()
 				key := writeFile(t, []byte(canary+" is not PEM\n"))
 				setMode(t, key, mode)
-				expectRefusal(t, tlsFiles{certificate: goodFiles(t, ecdsaP256).certificate, key: key}, telnets.ErrKeyReadableByOthers)
+				expectRefusal(t, tlsFiles{certificate: goodFiles(t, ecdsaP256).certificate, key: key}, telnets.ErrKeyOpenToOthers)
 			})
 		}
-		for _, mode := range []os.FileMode{0o600, 0o400, 0o620} {
+		for _, mode := range []os.FileMode{0o600, 0o400} {
 			t.Run(fmt.Sprintf("the edge: a good key file of mode %04o is read", mode), func(t *testing.T) {
 				t.Parallel()
 				files := goodFiles(t, ecdsaP256)
@@ -157,7 +157,7 @@ func TestLinuxReadCertificate(t *testing.T) {
 			t.Parallel()
 			files := goodFiles(t, ecdsaP256)
 			setMode(t, files.key, 0o644)
-			err := refusedWith(t, files, telnets.ErrKeyReadableByOthers)
+			err := refusedWith(t, files, telnets.ErrKeyOpenToOthers)
 			if holdsPart(err.Error(), append(bodies(t, files.certificate, files.key), canary)) {
 				t.Fatalf("the error's text %q holds part of a file", err)
 			}

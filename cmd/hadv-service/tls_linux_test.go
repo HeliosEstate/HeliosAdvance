@@ -57,9 +57,9 @@ func TestLinuxTLSProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If, on Linux, the key file's mode lets its group or others read it, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If, on Linux, the key file's mode lets its group or others read or write it, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444} {
+		for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o444, 0o620, 0o602} {
 			t.Run(fmt.Sprintf("a key file of mode %04o: one start_failed line, a non-zero exit, a reason of its own", mode), func(t *testing.T) {
 				t.Parallel()
 				files := goodTLSFiles(t, tlsP256)
@@ -74,7 +74,7 @@ func TestLinuxTLSProgram(t *testing.T) {
 				}
 			})
 		}
-		for _, mode := range []os.FileMode{0o600, 0o400, 0o620} {
+		for _, mode := range []os.FileMode{0o600, 0o400} {
 			t.Run(fmt.Sprintf("the edge: a key file of mode %04o starts", mode), func(t *testing.T) {
 				t.Parallel()
 				files := goodTLSFiles(t, tlsP256)
