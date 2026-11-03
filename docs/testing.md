@@ -111,6 +111,10 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - On Windows a file opened through `os.Root` lets others delete it, so removing its folder succeeds
   while it is still open. A row that checks a file or folder was closed opens it with no sharing at
   all, which fails while any other handle is open, however that handle shares.
+- CI's elevated Windows runner opens a file or folder whatever its access list says, an empty one
+  included, and reads past a deny entry: on Windows, no access list makes a file or folder that
+  will not open. A row that needs one holds it open with no sharing until it ends; every other
+  open of it then fails, whatever the account, while it still shows as there.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
 - A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on

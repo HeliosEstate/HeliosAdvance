@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/heliosestate/heliosadvance/internal/testrun"
@@ -47,14 +48,25 @@ func protectKeyFile(t *testing.T, path string) {
 	icacls(t, path, "/inheritance:r", "/grant:r", "*"+runnerSID(t)+":(F)")
 }
 
-// makeUnopenable leaves a file or folder an empty access list, which lets no one open it, not
-// even the runner's elevated administrator, and gives its owner full control back once the row
-// ends, so the row's folder can be removed. The owner may always change the list.
+// makeUnopenable holds a file or folder open with no sharing until the row ends, so the program
+// cannot open it, whatever its account. An access list cannot do this on CI: its elevated runner
+// opens a file or folder whose access list is empty (seen on CI, 2026-11-03).
 func makeUnopenable(t *testing.T, path string) {
 	t.Helper()
-	sid := runnerSID(t)
-	icacls(t, path, "/inheritance:r", "/remove:g", "*"+sid)
-	t.Cleanup(func() { icacls(t, path, "/grant", "*"+sid+":(F)") })
+	name, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatalf("naming %s: %v", path, err)
+	}
+	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ, 0, nil, syscall.OPEN_EXISTING,
+		syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatalf("holding %s open with no sharing: %v", path, err)
+	}
+	t.Cleanup(func() {
+		if err := syscall.CloseHandle(handle); err != nil {
+			t.Errorf("closing %s: %v", path, err)
+		}
+	})
 }
 
 // openToOthers gives the key file no access list at all, a NULL DACL, which lets anyone do

@@ -58,7 +58,7 @@ func setAccessList(t *testing.T, path, sddl string) {
 }
 
 // removeAccessList gives a file no access list at all, a NULL DACL, which lets anyone do
-// anything with it: not an empty list, which lets no one.
+// anything with it: not an empty list, which grants no one access.
 func removeAccessList(t *testing.T, path string) {
 	t.Helper()
 	information := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
@@ -81,21 +81,25 @@ func protectKeyFile(t *testing.T, path string) {
 	setAccessList(t, path, "D:P(A;;FA;;;"+runnerSID(t)+")")
 }
 
-// makeUnopenable gives a file or folder a protected, empty access list, which lets no one open
-// it, not even the runner's elevated administrator, and gives its owner full control back once
-// the row ends, so the row's folder can be removed. The owner may always change the list.
+// makeUnopenable holds a file or folder open with no sharing until the row ends, so no other
+// open of it succeeds, whatever the account. An access list cannot do this on CI: its elevated
+// runner opens a file or folder whose access list is empty (seen on CI, 2026-11-03).
 func makeUnopenable(t *testing.T, path string) {
 	t.Helper()
-	info, err := os.Lstat(path)
+	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
+		t.Fatalf("naming %s: %v", path, err)
 	}
-	back := "D:P(A;;FA;;;" + runnerSID(t) + ")"
-	if info.IsDir() {
-		back = "D:P(A;OICI;FA;;;" + runnerSID(t) + ")"
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatalf("holding %s open with no sharing: %v", path, err)
 	}
-	setAccessList(t, path, "D:P")
-	t.Cleanup(func() { setAccessList(t, path, back) })
+	t.Cleanup(func() {
+		if err := windows.CloseHandle(handle); err != nil {
+			t.Errorf("closing %s: %v", path, err)
+		}
+	})
 }
 
 // linkOutside puts at link a junction to a folder outside the bootstrap folder: the link a
