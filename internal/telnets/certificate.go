@@ -106,7 +106,7 @@ func readOpened(opened *os.File, file string, privateMode bool) ([]byte, error) 
 		return nil, refusal(file, ErrTLSFileNotRegular)
 	}
 	if privateMode && runtime.GOOS == "linux" && info.Mode().Perm()&othersReadBits != 0 {
-		return nil, refusal(file, ErrKeyReadableByOthers)
+		return nil, refusal(file, ErrKeyOpenToOthers)
 	}
 	// One byte more than the most, so that a longer file shows as a full buffer.
 	contents := make([]byte, TLSFileMostBytes+1)

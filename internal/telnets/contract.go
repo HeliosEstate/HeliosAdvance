@@ -152,8 +152,9 @@ var (
 	// the wrong type, since crypto/x509 cannot read it.
 	ErrKeyType = errors.New(
 		"telnets: the key is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519")
-	// ErrKeyReadableByOthers means, on Linux, the key file's mode lets its group or others read it.
-	ErrKeyReadableByOthers = errors.New("telnets: the key file can be read by its group or others")
+	// ErrKeyOpenToOthers means, on Linux, the key file's mode lets its group or others read or
+	// write it.
+	ErrKeyOpenToOthers = errors.New("telnets: the key file can be read or written by its group or others")
 )
 
 // ErrHandshakeFailed means the handshake failed before Telnet took the call, other than by the
@@ -186,8 +187,8 @@ type Certificate struct {
 //   - If the opened file is not a regular file, such as a folder or a named pipe, then
 //     ReadCertificate shall return ErrTLSFileNotRegular, without reading it and without waiting
 //     on it, its open included.
-//   - If, on Linux, the opened key file's mode lets its group or others read it, then
-//     ReadCertificate shall return ErrKeyReadableByOthers without reading the file.
+//   - If, on Linux, the opened key file's mode lets its group or others read or write it,
+//     then ReadCertificate shall return ErrKeyOpenToOthers without reading the file.
 //   - If the opened file cannot be read, then ReadCertificate shall return ErrTLSFileUnreadable.
 //   - If the file is longer than TLSFileMostBytes or holds no PEM block, then ReadCertificate
 //     shall return ErrTLSFileNotPEM.
