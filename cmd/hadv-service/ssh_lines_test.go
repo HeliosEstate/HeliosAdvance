@@ -86,26 +86,45 @@ func expectSSHStarts(t *testing.T) {
 	loopbackPorts(t, ssh)
 }
 
-// defaultSSHPortRow is the row for port 22 by default. Where 22 is free at both addresses, as
-// checked just before, the program listens for SSH there; where something else holds it or the
-// system keeps it from an ordinary user, the program refuses to start, while the same command
-// with an SSH port the system picks starts.
+// listenError opens the address and closes it at once, and returns why it could not be opened:
+// nil where the port is free there and the system lets this user take it.
+func listenError(t *testing.T, address string) error {
+	t.Helper()
+	held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
+	if err != nil {
+		return err
+	}
+	return held.Close()
+}
+
+// opensAt returns the loopback addresses at which the port opens just now, each written as the
+// started line writes it.
+func opensAt(t *testing.T, port string) []string {
+	t.Helper()
+	var free []string
+	for _, host := range []string{ipv4Loopback, ipv6Loopback} {
+		address := net.JoinHostPort(host, port)
+		if err := listenError(t, address); err != nil {
+			t.Logf("%s cannot be opened on this machine (%v), so the engine is not expected there", address, err)
+			continue
+		}
+		free = append(free, address)
+	}
+	return free
+}
+
+// defaultSSHPortRow is the row for port 22 by default. The program listens for SSH at every
+// address where 22 opened just before; where it opened at neither, because something else holds
+// it or the system keeps it from an ordinary user, the program refuses to start, while the same
+// command with an SSH port the system picks starts.
 func defaultSSHPortRow(t *testing.T) {
 	t.Helper()
 	key := makeKey(t, "ed25519", "")
-	free := true
-	for _, address := range []string{"127.0.0.1:22", "[::1]:22"} {
-		held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
-		if err != nil {
-			free = false
-			continue
-		}
-		_ = held.Close()
-	}
+	free := opensAt(t, "22")
 	program := startProgram(t, portOption, "0", hostKeyOption, key)
-	if free {
+	if len(free) > 0 {
 		_, ssh := program.kinds(t)
-		expectAddresses(t, ssh, "127.0.0.1:22", "[::1]:22")
+		expectAddresses(t, ssh, free...)
 		for _, address := range ssh {
 			expectSSHServed(t, address)
 		}

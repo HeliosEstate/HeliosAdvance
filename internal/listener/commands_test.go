@@ -143,7 +143,7 @@ func TestCommands(t *testing.T) {
 			})
 		}
 	})
-	t.Run("When a Telnet caller sends AO or IP before its name ends, the engine shall send IAC DM, with DM as TCP urgent data.", func(t *testing.T) {
+	t.Run("When a Telnet caller sends AO or IP before its name ends, the engine shall send IAC DM, with DM as TCP urgent data on a plain Telnet connection and as an ordinary byte over TLS.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("AO during negotiation, before the answers: IAC, then DM urgent, before the greeting", func(t *testing.T) {
 			t.Parallel()
