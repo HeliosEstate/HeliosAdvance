@@ -21,11 +21,15 @@ import (
 	"syscall"
 
 	"github.com/heliosestate/heliosadvance/internal/database"
+	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
+	"github.com/heliosestate/heliosadvance/internal/telnets"
 )
 
 const (
 	ipv4Address = "127.0.0.1"
+	ipv4Network = "tcp4"
+	ipv6Network = "tcp6"
 	ipv6Address = "::1"
 
 	exitFailed = 1
@@ -75,7 +79,18 @@ func run(arguments []string, logOutput io.Writer) int {
 		}
 	}
 
-	return serve(log, database.NewServerDatabase(connection), options, hostKey)
+	// Read before anything listens, as the host key is. The error is the telnets package's, which
+	// names the file and the refusal and holds nothing of either file.
+	var certificate *telnets.Certificate
+	if options.certificatePath != "" {
+		certificate, err = telnets.ReadCertificate(options.certificatePath, options.keyPath)
+		if err != nil {
+			log("start_failed", err.Error())
+			return exitFailed
+		}
+	}
+
+	return serve(log, database.NewServerDatabase(connection), options, hostKey, certificate)
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and
@@ -98,12 +113,16 @@ func newLocalLog(output io.Writer) func(key, value string) {
 }
 
 // commandLine is what the sysop asked for: the ports as decimal strings, the connection file that
-// names the database, and the host key file that turns SSH on.
+// names the database, the host key file that turns SSH on, and the certificate and key files that
+// turn Telnet over TLS on.
 type commandLine struct {
-	telnetPort   string
-	sshPort      string
-	hostKeyPath  string
-	databasePath string
+	telnetPort      string
+	sshPort         string
+	tlsPort         string
+	hostKeyPath     string
+	certificatePath string
+	keyPath         string
+	databasePath    string
 }
 
 // portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
@@ -121,8 +140,8 @@ func portFlag(port *string) func(string) error {
 
 // parseCommandLine takes the last of an option given twice.
 func parseCommandLine(arguments []string) (commandLine, error) {
-	options := commandLine{telnetPort: defaultPort, sshPort: defaultSSHPort}
-	sshPortGiven := false
+	options := commandLine{telnetPort: defaultPort, sshPort: defaultSSHPort, tlsPort: defaultTLSPort}
+	sshPortGiven, tlsPortGiven := false, false
 	flags := flag.NewFlagSet("hadv-service", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Func("port", "port to listen on for Telnet", portFlag(&options.telnetPort))
@@ -144,6 +163,24 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 		options.hostKeyPath = value
 		return nil
 	})
+	flags.Func("tls-port", "port to listen on for Telnet over TLS", func(value string) error {
+		tlsPortGiven = true
+		return portFlag(&options.tlsPort)(value)
+	})
+	flags.Func("tls-cert", "certificate file, which turns Telnet over TLS on", func(value string) error {
+		if value == "" {
+			return errors.New("the certificate file's path is empty")
+		}
+		options.certificatePath = value
+		return nil
+	})
+	flags.Func("tls-key", "key file for the certificate", func(value string) error {
+		if value == "" {
+			return errors.New("the key file's path is empty")
+		}
+		options.keyPath = value
+		return nil
+	})
 	if err := flags.Parse(arguments); err != nil {
 		return commandLine{}, err
 	}
@@ -152,6 +189,12 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 	}
 	if sshPortGiven && options.hostKeyPath == "" {
 		return commandLine{}, errors.New("-ssh-port needs -ssh-host-key")
+	}
+	if (options.certificatePath == "") != (options.keyPath == "") {
+		return commandLine{}, errors.New("-tls-cert and -tls-key go together")
+	}
+	if tlsPortGiven && options.certificatePath == "" {
+		return commandLine{}, errors.New("-tls-port needs -tls-cert and -tls-key")
 	}
 	return options, nil
 }
@@ -212,3 +255,27 @@ func closeAll(sockets []*net.TCPListener) error {
 // target is a kind's address with the network it must be opened on, since the address alone does
 // not say IPv4 or IPv6 to net.Listen.
 type target struct{ network, address string }
+
+// newKindListener opens a kind's sockets and gives them to a new Listener with the kind's Accept,
+// closing the sockets only when New refuses: once it has them they are the Listener's. The
+// Listener wants a nil KindConnection on an error, never one holding a nil connection.
+func newKindListener[K listener.KindConnection](ctx context.Context, targets []target, port string,
+	accept func(context.Context, *net.TCPConn) (K, error), count *listener.ConnectionCount,
+) (*listener.Listener, []string, error) {
+	sockets, addresses, err := listen(ctx, targets, port)
+	if err != nil {
+		return nil, nil, err
+	}
+	open := func(ctx context.Context, connection *net.TCPConn) (listener.KindConnection, error) {
+		kindConnection, err := accept(ctx, connection)
+		if err != nil {
+			return nil, err
+		}
+		return kindConnection, nil
+	}
+	kindListener, err := listener.New(sockets, open, count)
+	if err != nil {
+		return nil, nil, errors.Join(err, closeAll(sockets))
+	}
+	return kindListener, addresses, nil
+}

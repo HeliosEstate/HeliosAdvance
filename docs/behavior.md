@@ -124,7 +124,8 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 
 The engine also takes SSH callers, when the sysop gives it a host key, and serves them the same
 call as Telnet callers: the greeting, the name and the answer. Part 3 narrows the earlier lines
-that only a Telnet caller meets to a Telnet caller.
+that only a Telnet caller meets to a Telnet caller. Part 8 changes its line on the host key file's
+mode.
 
 #### Turning SSH on
 
@@ -135,8 +136,8 @@ that only a Telnet caller meets to a Telnet caller.
 - If the host key file is missing, unreadable, not in OpenSSH's format, protected by a passphrase
   or not an Ed25519 key, then the engine shall write one `start_failed` line saying which, and
   exit with a non-zero code.
-- If, on Linux, the host key file's mode lets its group or others read it, then the engine shall
-  write one `start_failed` line saying so, and exit with a non-zero code.
+- If, on Linux, the host key file's mode lets its group or others read or write it, then the
+  engine shall write one `start_failed` line saying so, and exit with a non-zero code.
 
 #### The same call over SSH
 
@@ -181,7 +182,8 @@ that only a Telnet caller meets to a Telnet caller.
 
 The engine negotiates the rest of the Telnet options a caller's terminal uses, BINARY in both
 directions and the options that describe the terminal, and answers the Telnet commands the
-standard requires. It keeps nothing a caller's terminal reports.
+standard requires. It keeps nothing a caller's terminal reports. Part 8 changes its line on the
+Synch, for a caller over TLS.
 
 #### Opening
 
@@ -203,7 +205,7 @@ standard requires. It keeps nothing a caller's terminal reports.
 - When a Telnet caller sends AYT before its name ends, the engine shall write CR LF, `[Yes]` and
   CR LF.
 - When a Telnet caller sends AO or IP before its name ends, the engine shall send IAC DM, with DM
-  as TCP urgent data.
+  as TCP urgent data on a plain Telnet connection and as an ordinary byte over TLS.
 - When a Telnet caller sends EC after negotiation and before its name ends, the engine shall do
   as it does for BS.
 - When a Telnet caller sends EL after negotiation and before its name ends, the engine shall
@@ -233,6 +235,71 @@ call ends at the end of file. Part 7 changes one of Part 3's lines, on the conne
   asked for a shell and the greeting and name prompt are written, the engine shall close the
   connection when it reaches the end of file, writing nothing more but the channel close SSH
   requires in reply.
+
+### Part 8: Telnet over TLS
+
+The engine also takes Telnet callers over TLS, on a listener of its own, when the sysop gives it a
+certificate and its key, and serves them inside the encrypted channel as it serves a Telnet
+caller. Every earlier line that names a Telnet caller stands for a Telnet over TLS caller, inside
+the channel. Part 8 changes one of Part 4's lines, on the Synch, and one of Part 3's, on the host
+key file's mode.
+
+#### Turning Telnet over TLS on
+
+- When the sysop passes a TLS certificate file and its key file on the command line, the engine
+  shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on port 992, beside its other
+  listeners.
+- When the sysop passes a Telnet over TLS port on the command line as well, the engine shall
+  listen for Telnet over TLS callers on that port in place of port 992.
+- If either file is missing, unreadable or not PEM, or the key is protected by a passphrase, does
+  not match the certificate, or is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519,
+  then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.
+- If, on Linux, the key file's mode lets its group or others read or write it, then the engine
+  shall write one `start_failed` line saying so, and exit with a non-zero code.
+
+#### The two files' checks
+
+- If a certificate block in the certificate file holds no certificate, the chain's later blocks
+  included, then the engine shall write one `start_failed` line saying so, and exit with a
+  non-zero code.
+- If the certificate file holds a private key, then the engine shall write one `start_failed`
+  line saying so, and exit with a non-zero code.
+- If either file's path names anything but a regular file, or the file is longer than 65,536
+  bytes, then the engine shall write one `start_failed` line saying so, and exit with a non-zero
+  code.
+
+#### The handshake
+
+- The engine shall offer TLS 1.3 and TLS 1.2, and no other version.
+- The engine shall offer, in TLS 1.3, only `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384` and
+  `TLS_CHACHA20_POLY1305_SHA256`, and in TLS 1.2 only ECDHE with an ECDSA or RSA certificate and
+  `AES_128_GCM_SHA256`, `AES_256_GCM_SHA384` or `CHACHA20_POLY1305_SHA256`.
+- The engine shall offer only the key exchanges X25519MLKEM768, SecP256r1MLKEM768,
+  SecP384r1MLKEM1024, X25519, P-256, P-384 and P-521.
+- The engine shall send the certificate file's whole chain, ask for no client certificate, and
+  refuse renegotiation and session resumption.
+- If a Telnet over TLS caller's handshake fails, then the engine shall close the connection,
+  writing no Telnet byte to it.
+
+#### The same call over TLS
+
+- When a Telnet over TLS caller's handshake completes, the engine shall serve it inside the
+  encrypted channel as it serves a Telnet caller it has just accepted.
+- When `Hello <name>` is written to a Telnet over TLS caller, the engine shall send TLS's
+  close_notify before it shuts down its sending side of the connection.
+- If a write to a Telnet over TLS caller has failed before its call is closed, then the engine
+  shall send that caller no close_notify, and shall still shut down its sending side of the
+  connection.
+- If a Telnet over TLS caller sends close_notify or a damaged record, then the engine shall close
+  the connection.
+- The engine shall count Telnet over TLS callers among the 100 open connections, with its Telnet
+  and SSH callers.
+
+#### Nothing kept
+
+- The engine shall not store, log or show anything a caller sends in its handshake, the server
+  name it asks for among them.
+- The engine shall not write any part of the private key to the local log.
 
 ## database
 
