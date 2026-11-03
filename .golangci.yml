@@ -350,12 +350,8 @@ linters:
       - path: tools/
         linters: [forbidigo, gosec]
         text: fmt\.Print|os\.Std(out|err)|G204|G703
-      # The program hands its standard error to the slog logger it writes the local log through.
-      - path: cmd/hadv-service/main\.go
-        linters: [forbidigo]
-        text: os\.Stderr
-      # From Part 6, the local log goes to standard output unless the command line names a log
-      # file; the standard error exception above goes once Part 6's build has moved the log.
+      # The program hands its standard output to the slog logger it writes the local log through,
+      # unless the command line names a log file (Part 6).
       - path: cmd/hadv-service/main\.go
         linters: [forbidigo]
         text: os\.Stdout
