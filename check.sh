@@ -286,8 +286,20 @@ fi
 if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
-  # Windows, and CI sets the same pattern for its Windows runner.
-  [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
+  # Windows, and CI sets the same pattern for its Windows runner. The rows that need an elevated
+  # process (TestWindowsElevated…) are skipped too when this one is not: CI's Windows runner is
+  # elevated and runs them, while the loop's run and the developer's are not, and would fail them
+  # for a right they lack rather than for a fault (HeliosDesign #303). Windows is asked whether this
+  # process's token holds the Administrators group, which only an elevated token does; anything but
+  # "True" counts as not elevated. A skip is always said, never silent.
+  if [ "$(go env GOOS)" = windows ] && [ -z "${TESTSKIP+set}" ]; then
+    elevated=$(powershell.exe -NoProfile -Command '([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)' 2>/dev/null | tr -d '\r')
+    if [ "$elevated" = True ]; then TESTSKIP='^(TestOracle|TestLinux)'
+    else
+      TESTSKIP='^(TestOracle|TestLinux|TestWindowsElevated)'
+      echo "check: this process is not elevated, so the TestWindowsElevated rows are skipped; CI runs them"
+    fi
+  fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
   # every failure from load on record came with every package at once (HeliosDesign #258).
   if [ -n "${TIMED:-}" ]; then
