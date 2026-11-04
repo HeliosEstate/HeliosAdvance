@@ -4,6 +4,7 @@
 .github/*
 */contract.go
 internal/database/schema.sql
+lang/*
 CLAUDE.md
 check.sh
 .golangci.yml
