@@ -112,6 +112,18 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   `cmd/`'s rows catch as lived, since `cmd/` is left out of it. Plant such a mutant before calling
   it a gap.
 
+## OpenSSL's s_client
+
+- On Windows, s_client writes what it receives to a pipe only when it ends, so a row cannot wait
+  on it while it runs: it ends s_client by its input, or waits on the engine's own moment.
+- Under `-ign_eof` s_client reads no command, such as R to renegotiate: it sends the letter as
+  data.
+- A refusal is read from the engine's own alert in `-msg`, and only from the records before
+  s_client sums up the handshake. A case s_client cannot offer, or refuses itself, is a fault in
+  the test.
+- In TLS 1.3 an alert after the handshake is encrypted, a record of type 23: it is told inside
+  the channel, never by the record's type on the wire.
+
 ## Runners
 
 Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user. A test that can run on Linux
