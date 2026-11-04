@@ -23,10 +23,11 @@ const oracleStepHangs = 12
 
 // BuildBootstrapOracle builds the bootstrap file oracle with Free Pascal from its source in the
 // folder source, as its README says, into a folder of its own in the run's folder, units and
-// program both, so the source folder is only read; then it runs the oracle's self-test, the
-// published AES and GCM vectors: an oracle whose cipher does not match the standard makes no file
-// a row trusts. It returns the built oracle's path. A TestMain calls it after Enter, with the
-// folder Enter made.
+// program both, so the source folder is only read. Every unit is compiled afresh, so nothing a
+// build by hand left in the source folder, under other switches, is taken in. Then it runs the
+// oracle's self-test, the published AES and GCM vectors: an oracle whose cipher does not match
+// the standard makes no file a row trusts. It returns the built oracle's path. A TestMain calls
+// it after Enter, with the folder Enter made.
 func BuildBootstrapOracle(runFolder, source string) (string, error) {
 	folder, err := os.MkdirTemp(runFolder, "bootstrap-oracle-")
 	if err != nil {
@@ -36,7 +37,7 @@ func BuildBootstrapOracle(runFolder, source string) (string, error) {
 	if folder, err = filepath.Abs(folder); err != nil {
 		return "", err
 	}
-	main, err := filepath.Abs(filepath.Join(source, "bootstrapfile.pas"))
+	programSource, err := filepath.Abs(filepath.Join(source, "bootstrapfile.pas"))
 	if err != nil {
 		return "", err
 	}
@@ -47,8 +48,8 @@ func BuildBootstrapOracle(runFolder, source string) (string, error) {
 	if _, err := exec.LookPath("fpc"); err != nil {
 		return "", fmt.Errorf("the Free Pascal compiler, fpc, is not on the PATH: %w", err)
 	}
-	if err := runOracleStep("the oracle's build by fpc", folder, "fpc", "-O2", "-Sew", "-FE"+folder, "-FU"+folder,
-		"-o"+program, main); err != nil {
+	if err := runOracleStep("the oracle's build by fpc", folder, "fpc", "-B", "-O2", "-Sew", "-FU"+folder, "-o"+program,
+		programSource); err != nil {
 		return "", err
 	}
 	if err := runOracleStep("the oracle's self-test", folder, program, "selftest"); err != nil {
