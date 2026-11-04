@@ -362,6 +362,17 @@ linters:
       - path: ^internal/testrun/
         linters: [gosec]
         text: G(204|304)
+      # The key file's check on Windows reads the account each entry of the access list names.
+      # The account sits just past the entry's fixed fields, reached only by a pointer conversion:
+      # golang.org/x/sys/windows gives no other way, and its own tests convert the same way. The
+      # developer's decision, 2026-11-04, for this one file, in place of reading the accounts out
+      # of the access list's text form, which would put a parser inside the check.
+      - path: ^internal/bootstrap/keyfile_windows\.go$
+        linters: [depguard]
+        text: "'unsafe'"
+      - path: ^internal/bootstrap/keyfile_windows\.go$
+        linters: [gosec]
+        text: G103
 
 formatters:
   enable:
