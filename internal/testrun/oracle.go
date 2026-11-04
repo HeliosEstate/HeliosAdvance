@@ -16,67 +16,65 @@ import (
 
 // oracleStepHangs is how many hang bounds the oracle's build, and then its self-test, may each
 // take before a run calls it hung: neither has a time of its own, and a hung one would hold the
-// whole test binary until go test's own timeout, which names no cause. Generous, since it costs
-// time only when something is already stuck; never a time a row judges.
+// whole test binary until go test's own timeout, ten minutes, which names no cause. The build and
+// the self-test together stay well inside it. Not stretched under the race detector, which
+// neither runs under; never a time a row judges.
 const oracleStepHangs = 12
 
-// BuildBootstrapOracle copies the bootstrap file oracle's Pascal source from the folder source
-// into a folder of its own in the run's folder, builds it there with Free Pascal as its README
-// says, and runs its self-test, the published AES and GCM vectors: an oracle whose cipher does not
-// match the standard makes no file a row trusts. It returns the built oracle's path. A TestMain
-// calls it after Enter, with the folder Enter made.
+// BuildBootstrapOracle builds the bootstrap file oracle with Free Pascal from its source in the
+// folder source, as its README says, into a folder of its own in the run's folder, units and
+// program both, so the source folder is only read; then it runs the oracle's self-test, the
+// published AES and GCM vectors: an oracle whose cipher does not match the standard makes no file
+// a row trusts. It returns the built oracle's path. A TestMain calls it after Enter, with the
+// folder Enter made.
 func BuildBootstrapOracle(runFolder, source string) (string, error) {
 	folder, err := os.MkdirTemp(runFolder, "bootstrap-oracle-")
 	if err != nil {
 		return "", err
 	}
-	names, err := filepath.Glob(filepath.Join(source, "*.pas"))
-	if err != nil || len(names) == 0 {
-		return "", fmt.Errorf("no Pascal source in %s: %w", source, errors.Join(err, os.ErrNotExist))
+	// Each step runs in the oracle's folder, so a relative name would be read from there.
+	if folder, err = filepath.Abs(folder); err != nil {
+		return "", err
 	}
-	for _, name := range names {
-		text, err := os.ReadFile(name)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(folder, filepath.Base(name)), text, 0o600); err != nil {
-			return "", err
-		}
+	main, err := filepath.Abs(filepath.Join(source, "bootstrapfile.pas"))
+	if err != nil {
+		return "", err
 	}
-	program := "bootstrap-file"
+	program := filepath.Join(folder, "bootstrap-file")
 	if runtime.GOOS == "windows" {
 		program += ".exe"
 	}
 	if _, err := exec.LookPath("fpc"); err != nil {
 		return "", fmt.Errorf("the Free Pascal compiler, fpc, is not on the PATH: %w", err)
 	}
-	if err := runOracleStep("the oracle's build by fpc", folder, "fpc", "-O2", "-Sew", "-o"+program, "bootstrapfile.pas"); err != nil {
+	if err := runOracleStep("the oracle's build by fpc", folder, "fpc", "-O2", "-Sew", "-FE"+folder, "-FU"+folder,
+		"-o"+program, main); err != nil {
 		return "", err
 	}
-	path := filepath.Join(folder, program)
-	if err := runOracleStep("the oracle's self-test", folder, path, "selftest"); err != nil {
+	if err := runOracleStep("the oracle's self-test", folder, program, "selftest"); err != nil {
 		return "", err
 	}
-	return path, nil
+	return program, nil
 }
 
 // runOracleStep runs one step of the oracle's build in folder, within its own bound, and says
-// whether it failed or hung.
+// whether it failed or hung. A step that ended well is clean even when what it started still
+// held its output when the wait for that ran out.
 func runOracleStep(step, folder, name string, arguments ...string) error {
-	bound := Patient(oracleStepHangs * HangBound)
+	bound := oracleStepHangs * HangBound
 	ctx, cancel := context.WithTimeout(context.Background(), bound)
 	defer cancel()
 	command := exec.CommandContext(ctx, name, arguments...)
 	command.Dir = folder
-	// Ending the step does not end what it started, such as the compiler's own compiler and
-	// linker, which would hold the output open.
-	command.WaitDelay = Patient(HangBound)
+	// Ending a step does not end what it started, such as the compiler's own compiler and linker,
+	// which would hold the output open; after this, the output is closed and the wait ends.
+	command.WaitDelay = HangBound
 	output, err := command.CombinedOutput()
+	if err == nil || errors.Is(err, exec.ErrWaitDelay) {
+		return nil
+	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%s hung: it had not ended after %v: %s", step, bound, strings.TrimSpace(string(output)))
 	}
-	if err != nil {
-		return fmt.Errorf("%s: %w: %s", step, err, strings.TrimSpace(string(output)))
-	}
-	return nil
+	return fmt.Errorf("%s: %w: %s", step, err, strings.TrimSpace(string(output)))
 }
