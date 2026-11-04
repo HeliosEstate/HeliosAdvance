@@ -114,7 +114,7 @@ jobs:
       # The versions are pinned in .github/tool-versions, one place for every workflow. Every gate,
       # the linter included, is a go install at its pinned version: Go's module proxy and checksum
       # database fix what a version holds, so a moved tag cannot change what runs here, as an
-      # install script fetched by its tag and piped to sh could (the developer's "yes", 2026-11-04,
+      # install script fetched by its tag and piped to sh could (the developer's "yes", 2026-11-03,
       # over the linter's released binary, whose documentation does not support a go install
       # build). Only the job that runs the gates installs them.
       - name: Install gates
