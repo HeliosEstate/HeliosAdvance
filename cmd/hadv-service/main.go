@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Command hadv-service is the Helios Advance engine as a sysop runs it: it reads the
-// connection file, takes its server's lease, and only while it holds the lease opens the loopback
+// Command hadv-service is the Helios Advance engine as a sysop runs it: it opens the
+// bootstrap folder, takes its server's lease, and only while it holds the lease opens the loopback
 // listening sockets, closing everything when the lease is lost or it is told to stop. It exists so
 // the sysop has one program to start, and one local log, standard error, to read.
 package main
@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/heliosestate/heliosadvance/internal/bootstrap"
 	"github.com/heliosestate/heliosadvance/internal/database"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
@@ -55,12 +56,19 @@ func run(arguments []string, logOutput io.Writer) int {
 		return exitFailed
 	}
 
-	if options.databasePath == "" {
-		log("start_failed", "no connection file: the command line names none, with -database")
+	if options.bootstrapFolder == "" {
+		log("start_failed", "no bootstrap folder: the command line names none, with -bootstrap")
 		return exitFailed
 	}
-	// The error is the database package's, which names the refusal and holds nothing of the file.
-	connectionFile, err := database.ReadConnectionFile(options.databasePath)
+	// The errors are the bootstrap and database packages', which name the refusal and hold nothing
+	// of either file.
+	settings, err := bootstrap.Open(options.bootstrapFolder)
+	if err != nil {
+		log("start_failed", err.Error())
+		return exitFailed
+	}
+	connection, err := database.ParseConnection(settings)
+	clear(settings)
 	if err != nil {
 		log("start_failed", err.Error())
 		return exitFailed
@@ -88,7 +96,7 @@ func run(arguments []string, logOutput io.Writer) int {
 		}
 	}
 
-	return serve(log, database.NewServerDatabase(connectionFile), options, hostKey, certificate)
+	return serve(log, database.NewServerDatabase(connection), options, hostKey, certificate)
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and
@@ -110,9 +118,9 @@ func newLocalLog(output io.Writer) func(key, value string) {
 	}
 }
 
-// commandLine is what the sysop asked for: the ports as decimal strings, the connection file that
-// names the database, the host key file that turns SSH on, and the certificate and key files that
-// turn Telnet over TLS on.
+// commandLine is what the sysop asked for: the ports as decimal strings, the bootstrap folder that
+// holds what the database needs, the host key file that turns SSH on, and the certificate and key
+// files that turn Telnet over TLS on.
 type commandLine struct {
 	telnetPort      string
 	sshPort         string
@@ -120,7 +128,7 @@ type commandLine struct {
 	hostKeyPath     string
 	certificatePath string
 	keyPath         string
-	databasePath    string
+	bootstrapFolder string
 }
 
 // portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
@@ -147,11 +155,8 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 		sshPortGiven = true
 		return portFlag(&options.sshPort)(value)
 	})
-	flags.Func("database", "connection file, which names the database", func(value string) error {
-		if value == "" {
-			return errors.New("the connection file's path is empty")
-		}
-		options.databasePath = value
+	flags.Func("bootstrap", "bootstrap folder, which holds what the database needs", func(value string) error {
+		options.bootstrapFolder = value
 		return nil
 	})
 	flags.Func("ssh-host-key", "host key file, which turns SSH on", func(value string) error {

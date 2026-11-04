@@ -261,7 +261,7 @@ func (connection *fakeConnection) awaitEnd(deadline time.Time) time.Time {
 	}
 }
 
-// fakeFile is a connection file for the fake.
+// file is the connection settings for the fake.
 func (server *fake) file() connectionFile {
 	return connectionFile{ServerID: 1, Host: databaseHost, Port: server.port, Database: "board",
 		Login: "server", Password: "password-" + canary, CACertificate: server.authority.pemText}
