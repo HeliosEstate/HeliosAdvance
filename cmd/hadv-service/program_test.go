@@ -66,7 +66,7 @@ func TestMain(tests *testing.M) {
 		buildFailure = err
 	} else {
 		name := "hadv-service"
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == windowsOS {
 			name += ".exe"
 		}
 		programPath = filepath.Join(directory, name)
@@ -383,8 +383,11 @@ func (program *run) text() string {
 	return string(program.log)
 }
 
+// startFailedKey is the local log's key for a refusal to start.
+const startFailedKey = "start_failed"
+
 // logKeys are the only keys the local log may hold.
-var logKeys = []string{"started", "start_failed", "waiting", "lease_lost"}
+var logKeys = []string{"started", startFailedKey, "waiting", "lease_lost"}
 
 // waitForLine waits, by the deadline, for the local log's line at index, and returns its key, its
 // value and when it was read. A program that exits first, or a line that does not come, fails
@@ -482,7 +485,7 @@ func (program *run) expectRefusal(t *testing.T) string {
 	case <-timer.C:
 	}
 	code, _ := program.exit(t, time.Now().Add(startLimit))
-	values := program.expectLog(t, "start_failed")
+	values := program.expectLog(t, startFailedKey)
 	if code == 0 {
 		t.Fatalf("the program refused to start but exited with 0; its log:\n%s", program.text())
 	}

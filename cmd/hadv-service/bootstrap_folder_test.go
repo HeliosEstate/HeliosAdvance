@@ -35,6 +35,9 @@ const (
 	bootstrapMost     = 65536
 )
 
+// windowsOS is Windows as runtime.GOOS names it.
+const windowsOS = "windows"
+
 // bootstrapOraclePath is the built oracle, and bootstrapOracleFailure why it could not be built
 // or failed its self-test: a missing oracle fails every row that starts the program.
 var (
@@ -64,7 +67,7 @@ func buildBootstrapOracle(runFolder string) (string, error) {
 		}
 	}
 	program := "bootstrap-file"
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == windowsOS {
 		program += ".exe"
 	}
 	if _, err := exec.LookPath("fpc"); err != nil {

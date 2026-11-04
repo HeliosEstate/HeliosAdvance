@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -169,6 +170,49 @@ func waitForStarted(t *testing.T, program *run, index int, deadline time.Time) t
 	return read
 }
 
+// expectSignInRefusal is expectRefusal for a refused sign-in. On Windows PostgreSQL's server
+// process exits as it sends the refusal, and the connection's reset can throw the refusal away,
+// so the engine may first meet a database that does not answer: one waiting line, the same as
+// for a database that closes each connection, then the refusal at its next try, 10 seconds on,
+// inside the start limit. Which comes first is the operating system's timing and is not pinned
+// (bootstrap Part 1's page, "A refused sign-in on Windows"); on Linux the refusal is exact.
+func (program *run) expectSignInRefusal(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != windowsOS {
+		return program.expectRefusal(t)
+	}
+	want := []string{startFailedKey}
+	timer := time.NewTimer(startLimit)
+	defer timer.Stop()
+	select {
+	case line := <-program.lines:
+		if strings.HasPrefix(line, "started=") {
+			t.Fatalf("the program started, %q, where it was to refuse", line)
+		}
+		if strings.HasPrefix(line, "waiting=") {
+			want = []string{"waiting", startFailedKey}
+		}
+	case <-program.exited:
+	case <-timer.C:
+	}
+	code, _ := program.exit(t, time.Now().Add(startLimit))
+	values := program.expectLog(t, want...)
+	if code == 0 {
+		t.Fatalf("the program refused to start but exited with 0; its log:\n%s", program.text())
+	}
+	if len(values) == 2 {
+		database := startAcceptor(t)
+		contents := sharedBoard.file()
+		contents.Port = database.port(t)
+		closing := startWithFile(t, contents.write(t), nil, portOption, "0")
+		notAnswering, _ := closing.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
+		if values[0] != notAnswering {
+			t.Fatalf("the waiting line before the refusal says %s, want what a database that does not answer gives, %s", values[0], notAnswering)
+		}
+	}
+	return values[len(values)-1]
+}
+
 func TestDatabaseProgram(t *testing.T) {
 	t.Parallel()
 
@@ -309,7 +353,11 @@ func TestDatabaseProgram(t *testing.T) {
 				"sign-in refused":           wrongPassword.write(t),
 			} {
 				program := startWithFile(t, path, nil, portOption, "0")
-				reasons[name] = program.expectRefusal(t)
+				if name == "sign-in refused" {
+					reasons[name] = program.expectSignInRefusal(t)
+				} else {
+					reasons[name] = program.expectRefusal(t)
+				}
 				expectNoPassword(t, program)
 			}
 			expectDifferent(t, reasons)
