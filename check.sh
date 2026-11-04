@@ -289,7 +289,7 @@ if [ -n "$pkgs" ]; then
   # Windows, and CI sets the same pattern for its Windows runner. The rows that need an elevated
   # process (TestWindowsElevated…) are skipped too when this one is not: CI's Windows runner is
   # elevated and runs them, while the loop's run and the developer's are not, and would fail them
-  # for a right they lack rather than for a fault (HeliosDesign #303). Windows is asked whether this
+  # for a right they lack rather than for a fault. Windows is asked whether this
   # process's token holds the Administrators group, which only an elevated token does; anything but
   # "True" counts as not elevated. A skip is always said, never silent.
   if [ "$(go env GOOS)" = windows ] && [ -z "${TESTSKIP+set}" ]; then
