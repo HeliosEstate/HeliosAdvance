@@ -272,6 +272,12 @@ func NewServerDatabase(connection Connection) *ServerDatabase {
 //     ErrRefused.
 //   - If the context has ended when Take is called, or ends while it waits, then Take shall
 //     return the context's error, wrapped.
+//
+// On Windows, PostgreSQL's server process exits as it sends a refusal, and the operating system
+// can reset the connection and throw the refusal away before Take reads it; Take then meets a
+// connection that failed after it was made. So on Windows a refused sign-in gives
+// ErrSignInRefused or ErrUnreachable, by the operating system's timing, and these lines do not
+// pin which. On Linux it gives ErrSignInRefused.
 func (server *ServerDatabase) Take(ctx context.Context) (*Lease, error) {
 	return server.take(ctx)
 }
