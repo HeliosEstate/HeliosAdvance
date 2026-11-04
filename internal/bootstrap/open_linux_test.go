@@ -150,9 +150,9 @@ func run(t *testing.T, name string, arguments ...string) {
 	}
 }
 
-// TestLinuxRootOpen needs sudo, which CI's runner has: another account as the key file's owner,
-// read by a copy of this test binary given the capability to read any file, so the owner is the
-// only thing wrong with the key file.
+// TestLinuxRootOpen needs sudo and setpriv, which CI's runner has: another account as the key
+// file's owner, read by a copy of this test binary given the capability to read any file, so the
+// owner is the only thing wrong with the key file.
 func TestLinuxRootOpen(t *testing.T) {
 	t.Parallel()
 
@@ -162,18 +162,14 @@ func TestLinuxRootOpen(t *testing.T) {
 			t.Parallel()
 			made := makeFolder(t)
 			run(t, "sudo", "-n", "chown", "nobody", made.keyFile)
-			child := capableCopy(t)
-			ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
-			defer cancel()
-			output, err := exec.CommandContext(ctx, child, "-"+openChildFlag+"="+made.folder).CombinedOutput()
+			output, err := capableOpen(t, made.folder)
 			if err != nil {
 				t.Fatalf("the capable copy: %v: %s", err, strings.TrimSpace(string(output)))
 			}
 			want := "refused " + strconv.Itoa(errorIndex(bootstrap.ErrKeyFileReachable))
 			got, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
-			// Twice on CI the copy started without the capability, cause unknown (HeliosDesign
-			// #318): a copy that says it lacks it proves nothing about Open. Bit 2 is
-			// cap_dac_read_search.
+			// A copy that says it lacks the capability proves nothing about Open: the test's
+			// setup failed. Bit 2 is cap_dac_read_search.
 			_, report, _ := strings.Cut(string(output), "effective capabilities ")
 			capabilities, _, _ := strings.Cut(report, ";")
 			if bits, err := strconv.ParseUint(capabilities, 16, 64); got != want && err == nil && bits&(1<<2) == 0 {
@@ -187,9 +183,13 @@ func TestLinuxRootOpen(t *testing.T) {
 	})
 }
 
-// capableCopy copies this test binary into the row's folder and gives the copy, with sudo, the
-// capability to read any file whatever its owner and mode.
-func capableCopy(t *testing.T) string {
+// capableOpen copies this test binary into the row's folder, inside the run's own, runs the copy
+// as a child that opens folder, as this test's own user with the capability to read any file
+// whatever its owner and mode, and returns all it printed. sudo gives the capability to the
+// process, as an ambient one, not to the copy's file: the kernel ignores a file's capabilities on
+// a file system mounted nosuid, as the temporary folder is on some CI runners, and there the copy
+// ran without it.
+func capableOpen(t *testing.T, folder string) ([]byte, error) {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
@@ -197,6 +197,12 @@ func capableCopy(t *testing.T) string {
 	}
 	child := filepath.Join(t.TempDir(), "open-child")
 	run(t, "cp", self, child)
-	run(t, "sudo", "-n", "setcap", "cap_dac_read_search+ep", child)
-	return child
+	ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
+	defer cancel()
+	command := exec.CommandContext(ctx, "sudo", "-n", "setpriv",
+		"--reuid="+strconv.Itoa(os.Getuid()), "--regid="+strconv.Itoa(os.Getgid()), "--init-groups",
+		"--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search", child, "-"+openChildFlag+"="+folder)
+	// Ending sudo does not end the copy it started, which would hold the output open.
+	command.WaitDelay = testrun.Patient(testrun.HangBound)
+	return command.CombinedOutput()
 }

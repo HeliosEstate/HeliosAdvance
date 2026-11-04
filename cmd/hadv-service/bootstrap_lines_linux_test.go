@@ -7,11 +7,15 @@
 package main_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
 // modeName writes a mode for a row's name.
@@ -72,9 +76,9 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 	})
 }
 
-// TestLinuxRootBootstrapProgram needs sudo, which CI's runner has: another account as the key
-// file's owner, read by a copy of the program given the capability to read any file, so the
-// owner is the only thing wrong with the key file.
+// TestLinuxRootBootstrapProgram needs sudo and setpriv, which CI's runner has: another account as
+// the key file's owner, read by a copy of the program given the capability to read any file, so
+// the owner is the only thing wrong with the key file.
 func TestLinuxRootBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
@@ -89,8 +93,8 @@ func TestLinuxRootBootstrapProgram(t *testing.T) {
 			}
 			capable := filepath.Join(t.TempDir(), "hadv-service")
 			runSystemTool(t, "cp", programPath, capable)
-			runSystemTool(t, "sudo", "-n", "setcap", "cap_dac_read_search+ep", capable)
-			command := exec.CommandContext(t.Context(), capable, databaseOption, made.path, portOption, "0")
+			expectReadsAnyFile(t, made.keyFile)
+			command := exec.CommandContext(t.Context(), "sudo", readingAnyFile(capable, databaseOption, made.path, portOption, "0")...)
 			command.Env = cleanEnvironment()
 			run := startCommand(t, command)
 			reason := run.expectRefusal(t)
@@ -99,4 +103,27 @@ func TestLinuxRootBootstrapProgram(t *testing.T) {
 			expectOwnReason(t, reason, keyMissingReason(t), "a missing key file")
 		})
 	})
+}
+
+// readingAnyFile is sudo's arguments to run a program as this test's own user with the
+// capability to read any file whatever its owner and mode. sudo gives the capability to the
+// process, as an ambient one, not to the program's file: the kernel ignores a file's
+// capabilities on a file system mounted nosuid, as the temporary folder is on some CI runners,
+// and there the program ran without it.
+func readingAnyFile(program string, arguments ...string) []string {
+	return append([]string{"-n", "setpriv", "--reuid=" + strconv.Itoa(os.Getuid()), "--regid=" + strconv.Itoa(os.Getgid()),
+		"--init-groups", "--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search", program}, arguments...)
+}
+
+// expectReadsAnyFile fails the row, as one that cannot tell, unless cat started the same way can
+// read the key file: a program started without the capability is refused for a key file it
+// cannot read, which the row's check of the reason cannot tell from the owner's refusal.
+func expectReadsAnyFile(t *testing.T, keyFile string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
+	defer cancel()
+	if output, err := exec.CommandContext(ctx, "sudo", readingAnyFile("cat", keyFile)...).CombinedOutput(); err != nil {
+		t.Fatalf("cannot tell: the test's setup failed, a process given the capability to read any file could not read the key file: %v: %s",
+			err, strings.TrimSpace(string(output)))
+	}
 }

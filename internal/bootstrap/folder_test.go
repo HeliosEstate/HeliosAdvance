@@ -241,12 +241,17 @@ func expectError(t *testing.T, contents []byte, err, want error) {
 
 // expectNothingSecret fails the row when the error's text holds the key in any of its forms, the
 // key file's text, the canary in the plaintext, or the bootstrap file's bytes after its magic.
+// The refusal's own fixed words are set aside first: they carry nothing of the files, and a
+// fuzzed file's few bytes after its magic can be found in them by chance, such as "e".
 func (made *layout) expectNothingSecret(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
 		return
 	}
 	text := err.Error()
+	if index := errorIndex(err); index >= 0 {
+		text = strings.Replace(text, openErrors[index].Error(), "", 1)
+	}
 	secrets := map[string]string{
 		"the canary in the plaintext": canary,
 		"the key's bytes":             string(made.key),
@@ -260,7 +265,7 @@ func (made *layout) expectNothingSecret(t *testing.T, err error) {
 	}
 	for name, secret := range secrets {
 		if secret != "" && strings.Contains(text, secret) {
-			t.Fatalf("Open's error holds %s: %q", name, text)
+			t.Fatalf("Open's error holds %s: %q", name, err.Error())
 		}
 	}
 }

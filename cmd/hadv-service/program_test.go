@@ -60,7 +60,7 @@ func TestMain(tests *testing.M) {
 		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()
-	bootstrapOraclePath, bootstrapOracleFailure = buildBootstrapOracle(runFolder)
+	bootstrapOraclePath, bootstrapOracleFailure = testrun.BuildBootstrapOracle(runFolder, filepath.Join("..", "..", "oracle", "bootstrap-file"))
 	directory, err := os.MkdirTemp("", "hadv-service-test-")
 	if err != nil {
 		buildFailure = err
@@ -208,8 +208,8 @@ func telnetAlone(t *testing.T, listeners []string) []string {
 	return telnet
 }
 
-// freedPortTries bounds startOnFreedPort: the race it tries again on was met once in all of PR
-// 129's runs (HeliosDesign #190), so a row that meets it this often is broken, not unlucky.
+// freedPortTries bounds startOnFreedPort: the race it tries again on was met once in all the runs
+// of the build that brought these rows, so a row that meets it this often is broken, not unlucky.
 const freedPortTries = 5
 
 // startOnFreedPort holds a port free at both loopback addresses, closes the hosts the row names

@@ -12,8 +12,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -34,46 +32,6 @@ var (
 	bootstrapOraclePath    string
 	bootstrapOracleFailure error
 )
-
-// buildBootstrapOracle copies the oracle's Pascal source into the run's folder, builds it there
-// as its README says, and runs its self-test, the published AES and GCM vectors.
-func buildBootstrapOracle(runFolder string) (string, error) {
-	source := filepath.Join("..", "..", "oracle", "bootstrap-file")
-	folder := filepath.Join(runFolder, "bootstrap-oracle")
-	if err := os.Mkdir(folder, 0o700); err != nil {
-		return "", err
-	}
-	names, err := filepath.Glob(filepath.Join(source, "*.pas"))
-	if err != nil || len(names) == 0 {
-		return "", fmt.Errorf("no Pascal source in %s: %w", source, errors.Join(err, os.ErrNotExist))
-	}
-	for _, name := range names {
-		text, err := os.ReadFile(name)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(folder, filepath.Base(name)), text, 0o600); err != nil {
-			return "", err
-		}
-	}
-	program := "bootstrap-file"
-	if runtime.GOOS == windowsOS {
-		program += ".exe"
-	}
-	if _, err := exec.LookPath("fpc"); err != nil {
-		return "", fmt.Errorf("the Free Pascal compiler, fpc, is not on the PATH: %w", err)
-	}
-	build := exec.CommandContext(context.Background(), "fpc", "-O2", "-Sew", "-o"+program, "bootstrapfile.pas")
-	build.Dir = folder
-	if output, err := build.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("fpc: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	path := filepath.Join(folder, program)
-	if output, err := exec.CommandContext(context.Background(), path, "selftest").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("the oracle's self-test: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return path, nil
-}
 
 // writeBootstrapFolder makes a good bootstrap folder sealing text under a fresh key, and returns
 // its path.

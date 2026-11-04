@@ -7,14 +7,11 @@
 package bootstrap_test
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -69,7 +66,7 @@ func TestMain(tests *testing.M) {
 		}
 		os.Exit(1)
 	}
-	oraclePath, oracleFailure = buildOracle(runFolder)
+	oraclePath, oracleFailure = testrun.BuildBootstrapOracle(runFolder, filepath.Join("..", "..", "oracle", "bootstrap-file"))
 	code := tests.Run()
 	// Logged, not failed: whether Windows has let go of every file by now is its timing.
 	if err := testrun.Leave(runFolder); err != nil {
@@ -79,9 +76,9 @@ func TestMain(tests *testing.M) {
 }
 
 // childReport is what a child that Open refused can say of itself, for a row's failure message:
-// the capabilities in effect, on Linux, and how its own read of the key file ended. A capable
-// child once got the key file's unreadable error on CI where the owner's was due, seen once and
-// not reproduced in 2,400 starts by a probe (QA, 2026-11-03), so the next one says why.
+// the capabilities in effect, on Linux, and how its own read of the key file ended. A child meant
+// to hold the capability to read any file that cannot read the key file did not hold it, and
+// then its Open proves nothing; this says so.
 func childReport(folder string) string {
 	capabilities := "unknown"
 	if status, err := os.ReadFile("/proc/self/status"); err == nil {
@@ -96,46 +93,4 @@ func childReport(folder string) string {
 		read = err.Error()
 	}
 	return fmt.Sprintf("the child: effective capabilities %s; its own read of the key file: %s", capabilities, read)
-}
-
-// buildOracle copies the oracle's Pascal source into the run's folder, builds it there as its
-// README says, and runs its self-test, the published AES and GCM vectors: an oracle whose cipher
-// does not match the standard makes no file a row trusts.
-func buildOracle(runFolder string) (string, error) {
-	source := filepath.Join("..", "..", "oracle", "bootstrap-file")
-	folder := filepath.Join(runFolder, "oracle")
-	if err := os.Mkdir(folder, 0o700); err != nil {
-		return "", err
-	}
-	names, err := filepath.Glob(filepath.Join(source, "*.pas"))
-	if err != nil || len(names) == 0 {
-		return "", fmt.Errorf("no Pascal source in %s: %w", source, errors.Join(err, os.ErrNotExist))
-	}
-	for _, name := range names {
-		text, err := os.ReadFile(name)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(folder, filepath.Base(name)), text, 0o600); err != nil {
-			return "", err
-		}
-	}
-	program := "bootstrap-file"
-	if runtime.GOOS == "windows" {
-		program += ".exe"
-	}
-	if _, err := exec.LookPath("fpc"); err != nil {
-		return "", fmt.Errorf("the Free Pascal compiler, fpc, is not on the PATH: %w", err)
-	}
-	build := exec.CommandContext(context.Background(), "fpc", "-O2", "-Sew", "-o"+program, "bootstrapfile.pas")
-	build.Dir = folder
-	if output, err := build.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("fpc: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	path := filepath.Join(folder, program)
-	selftest := exec.CommandContext(context.Background(), path, "selftest")
-	if output, err := selftest.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("the oracle's self-test: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return path, nil
 }
