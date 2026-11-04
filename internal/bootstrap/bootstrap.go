@@ -24,8 +24,8 @@ const (
 	alphabet     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 )
 
-// refusals are the errors a file's reading gives: the file is not there, will not open or read, or
-// is longer than its bound.
+// refusals are the three errors a file's reading can end in, which differ between the two files
+// although the reading is one.
 type refusals struct{ missing, unreadable, tooLarge error }
 
 var (
@@ -73,8 +73,8 @@ func unseal(root *os.Root) ([]byte, error) {
 	return unsealWith(key, sealed)
 }
 
-// headerIsOurs is true when the file is long enough for its header, nonce and tag and its header
-// is format version 1's for the key file.
+// headerIsOurs is checked before the key file is opened, so a file this engine cannot read never
+// makes the engine touch the key.
 func headerIsOurs(sealed []byte) bool {
 	if len(sealed) < HeaderBytes+NonceBytes+TagBytes {
 		return false
@@ -131,7 +131,7 @@ func readOpened(opened *os.File, most int, refuse refusals, check func(*os.File,
 	return contents[:count], nil
 }
 
-// decodeKey checks the key file's form before it decodes, because Go's decoder skips carriage
+// decodeKey checks the form before it decodes, because Go's decoder skips carriage
 // returns and line feeds anywhere in its input. The key is a slice of decoded, which the caller
 // clears.
 func decodeKey(text, decoded []byte) ([]byte, bool) {
@@ -155,8 +155,8 @@ func decodeKey(text, decoded []byte) ([]byte, bool) {
 	return decoded[:count], true
 }
 
-// unsealWith opens the sealed JSON under the key. The authenticated data is every byte before it,
-// the header and the nonce; the JSON is a new slice, sharing no memory with the file's buffer.
+// unsealWith authenticates every byte before the JSON, the header and the nonce, so a changed header
+// fails the tag; the JSON is a new slice, so wiping the file's buffer leaves it whole.
 func unsealWith(key, sealed []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

@@ -85,7 +85,8 @@ func checkKeyFile(file *os.File, _ fs.FileInfo) error {
 	return nil
 }
 
-// allowedAccounts are SYSTEM, Administrators and the user of the engine's own token.
+// allowedAccounts are the only accounts that may own or reach the key file; the engine's own user is
+// read from its token, since no name stands for it.
 func allowedAccounts() ([]*windows.SID, error) {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
