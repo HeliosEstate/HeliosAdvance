@@ -22,11 +22,11 @@ import (
 // served is one listener serveAll started: its address, each Accept's result as it returns, and
 // when each connection reached it and when it began listening, for a row's failure message.
 type served struct {
-	address   string
-	results   chan accepted
-	listening time.Time
-	mutex     sync.Mutex
-	arrived   []time.Time
+	address string
+	results chan accepted
+	began   time.Time
+	mutex   sync.Mutex
+	arrived []time.Time
 }
 
 // serveAll listens on loopback at a port the operating system picks and hands every connection to
@@ -39,7 +39,7 @@ func serveAll(t *testing.T, certificate *telnets.Certificate) *served {
 		t.Fatalf("listening on loopback: %v", err)
 	}
 	t.Cleanup(func() { _ = listening.Close() })
-	server := &served{address: listening.Addr().String(), results: make(chan accepted, 64), listening: time.Now()}
+	server := &served{address: listening.Addr().String(), results: make(chan accepted, 64), began: time.Now()}
 	go func() {
 		for {
 			connection, err := listening.Accept()
@@ -93,7 +93,7 @@ func (server *served) nextAccepted(t *testing.T, client *sClient) accepted {
 	server.mutex.Unlock()
 	t.Fatalf("Accept had not returned by the deadline, %s after the wait began. Times are from the wait's start.\n"+
 		"The listener began at %s; connections reached it at [%s].\n%s",
-		offset(time.Now(), waited), offset(server.listening, waited), strings.Join(connections, " "), client.timeline(waited))
+		offset(time.Now(), waited), offset(server.began, waited), strings.Join(connections, " "), client.timeline(waited))
 	return accepted{}
 }
 
