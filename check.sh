@@ -115,19 +115,17 @@ is_qa() {
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
 qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
 if [ -n "$qa" ]; then
-  changed=$(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go' | tr '\0' '\n') ||
-    fail "git could not list the tests changed since the QA commit"
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
   # commit left it as it found it and HEAD holds it as the base does; gate 4a locks the base's
   # tests. The base's copy over a test this QA commit changed is still a change to it.
-  if [ -n "$changed" ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1 &&
-    forked=$(git merge-base "$qa" "$BASE"); then
-    changed=$(while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      git diff --quiet "$forked" "$qa" -- "$f" && git diff --quiet "$BASE" HEAD -- "$f" || echo "$f"
-    done <<< "$changed")
-  fi
+  forked=""
+  git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && forked=$(git merge-base "$qa" "$BASE") || forked=""
+  changed=$(while IFS= read -r -d '' f; do
+      [ -n "$forked" ] && git diff --quiet "$forked" "$qa" -- "$f" && git diff --quiet "$BASE" HEAD -- "$f" && continue
+      echo "$f"
+    done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go')
+    wait $!) || fail "git could not list the tests changed since the QA commit"
   [ -z "$changed" ] || { echo "$changed"; fail "test files approved at ${qa:0:8} were changed or deleted"; }
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
@@ -138,10 +136,7 @@ fi
 if [ "$MUTATION" = 0 ]; then
   exclude=()
   [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1 && exclude=(--not origin/development)
-  basetests=$(git diff -z --no-renames --name-only --diff-filter=MDT "$BASE...HEAD" -- '*_test.go' | tr '\0' '\n') ||
-    fail "git could not list the tests this branch changed"
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
+  while IFS= read -r -d '' f; do
     commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- "$f") || fail "git could not list the commits to $f"
     # A merge whose copy of the file is one of its parents' adds nothing of its own: git lists it
     # when that parent is on the base and the other side's copy differs, and every change on the
@@ -154,7 +149,8 @@ if [ "$MUTATION" = 0 ]; then
       esac
       is_qa "$c" || echo "$c"; done)
     [ -z "$nonqa" ] || { echo "$f: $nonqa"; fail "a test file on $BASE was changed or deleted by a non-QA commit"; }
-  done <<< "$basetests"
+  done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$BASE...HEAD" -- '*_test.go')
+  wait $! || fail "git could not list the tests this branch changed"
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
 # base holds it passed this gate on its own branch before it merged; a squash merge drops the
