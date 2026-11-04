@@ -155,8 +155,8 @@ func decodeKey(text, decoded []byte) ([]byte, bool) {
 	return decoded[:count], true
 }
 
-// unsealWith authenticates every byte before the JSON, the header and the nonce, so a changed header
-// fails the tag; the JSON is a new slice, so wiping the file's buffer leaves it whole.
+// unsealWith authenticates every byte before the JSON, the header and the nonce, so a changed
+// header fails the tag; the JSON is a new slice, so wiping the file's buffer leaves it whole.
 func unsealWith(key, sealed []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
