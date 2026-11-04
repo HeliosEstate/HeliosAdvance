@@ -21,7 +21,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -31,7 +30,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -762,7 +760,7 @@ func (created *board) sqlAsOwner(t *testing.T, statements string) string {
 	return created.server.sql(t, created.database, "SET ROLE "+created.owner+";\n"+statements)
 }
 
-// connectionFile is the connection file's contents, as the tests write it.
+// connectionFile is the connection settings, as the tests give them to the package.
 type connectionFile struct {
 	ServerID      int64
 	Host          string
@@ -773,40 +771,11 @@ type connectionFile struct {
 	CACertificate string
 }
 
-// file is the board's connection file's contents.
+// file is the board's connection settings.
 func (created *board) file() connectionFile {
 	return connectionFile{ServerID: created.serverID, Host: databaseHost, Port: created.server.port,
 		Database: created.database, Login: created.login, Password: created.password,
 		CACertificate: created.server.authority.pemText}
-}
-
-// text is the contents as one JSON object, its seven fields named as the format names them.
-func (contents connectionFile) text(t *testing.T) string {
-	t.Helper()
-	text, err := json.Marshal(map[string]any{
-		fieldServerID: contents.ServerID, fieldHost: contents.Host, fieldPort: contents.Port,
-		fieldDatabase: contents.Database, fieldLogin: contents.Login, fieldPassword: contents.Password,
-		fieldCertificate: contents.CACertificate,
-	})
-	if err != nil {
-		t.Fatalf("writing the connection file's JSON: %v", err)
-	}
-	return string(text)
-}
-
-// writeFile writes text as a connection file only its owner may read, and returns its path.
-func writeFile(t *testing.T, text string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "connection.json")
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
-		t.Fatalf("writing the connection file: %v", err)
-	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o600); err != nil {
-			t.Fatalf("protecting the connection file: %v", err)
-		}
-	}
-	return path
 }
 
 // lease is the board's row as the database holds it, with the database's time when read.

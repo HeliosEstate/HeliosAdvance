@@ -10,9 +10,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strconv"
 )
 
@@ -28,61 +25,15 @@ const (
 	fieldCertificate = "ca_certificate"
 )
 
-var fileFields = []string{fieldServerID, fieldHost, fieldPort, fieldDatabase, fieldLogin, fieldPassword,
+var connectionFields = []string{fieldServerID, fieldHost, fieldPort, fieldDatabase, fieldLogin, fieldPassword,
 	fieldCertificate}
 
-// groupOrOthersRead is any of the bits that let someone but the owner read a file that holds a
-// password.
-const groupOrOthersRead = 0o044
-
-func readConnectionFile(path string) (ConnectionFile, error) {
-	cleaned := filepath.Clean(path)
-	info, err := os.Stat(cleaned)
-	if errors.Is(err, os.ErrNotExist) {
-		return ConnectionFile{}, ErrFileMissing
-	}
-	if err != nil {
-		return ConnectionFile{}, ErrFileUnreadable
-	}
-	// The mode is checked before the file is opened: a file others can read is refused unread.
-	if runtime.GOOS == "linux" && info.Mode().Perm()&groupOrOthersRead != 0 {
-		return ConnectionFile{}, ErrFileReadableByOthers
-	}
-	contents, err := readLimited(cleaned)
-	if err != nil {
-		return ConnectionFile{}, err
-	}
-	defer clear(contents)
+func parseConnection(contents []byte) (Connection, error) {
 	values, err := splitObject(contents)
 	if err != nil {
-		return ConnectionFile{}, err
+		return Connection{}, err
 	}
 	return parseValues(values)
-}
-
-// readLimited reads the file into a buffer one byte longer than the most allowed, so a longer file
-// is told from one of exactly the most.
-func readLimited(path string) ([]byte, error) {
-	file, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return nil, ErrFileUnreadable
-	}
-	contents := make([]byte, ConnectionFileMostBytes+1)
-	count, readErr := io.ReadFull(file, contents)
-	closeErr := file.Close()
-	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
-		clear(contents)
-		return nil, ErrFileUnreadable
-	}
-	if closeErr != nil {
-		clear(contents)
-		return nil, ErrFileUnreadable
-	}
-	if count == len(contents) {
-		clear(contents)
-		return nil, ErrFileTooLarge
-	}
-	return contents[:count], nil
 }
 
 // splitObject reads the one JSON object and returns each field's raw value by name. The names are
@@ -91,7 +42,7 @@ func readLimited(path string) ([]byte, error) {
 func splitObject(contents []byte) (map[string]json.RawMessage, error) {
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	if first, err := decoder.Token(); err != nil || first != json.Delim('{') {
-		return nil, ErrFileFormat
+		return nil, ErrFormat
 	}
 	values := map[string]json.RawMessage{}
 	duplicate := false
@@ -99,11 +50,11 @@ func splitObject(contents []byte) (map[string]json.RawMessage, error) {
 		name, err := decoder.Token()
 		nameText, isText := name.(string)
 		if err != nil || !isText {
-			return nil, ErrFileFormat
+			return nil, ErrFormat
 		}
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err != nil {
-			return nil, ErrFileFormat
+			return nil, ErrFormat
 		}
 		if _, seen := values[nameText]; seen {
 			duplicate = true
@@ -111,50 +62,51 @@ func splitObject(contents []byte) (map[string]json.RawMessage, error) {
 		values[nameText] = raw
 	}
 	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
-		return nil, ErrFileFormat
+		return nil, ErrFormat
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, ErrFileFormat
+		return nil, ErrFormat
 	}
 	if duplicate {
-		return nil, ErrFileFormat
+		return nil, ErrFormat
 	}
 	named := 0
-	for _, name := range fileFields {
+	for _, name := range connectionFields {
 		if _, present := values[name]; present {
 			named++
 		}
 	}
 	if named != len(values) {
-		return nil, ErrFileFieldUnknown
+		return nil, ErrFieldUnknown
 	}
-	if named != len(fileFields) {
-		return nil, ErrFileFieldMissing
+	if named != len(connectionFields) {
+		return nil, ErrFieldMissing
 	}
 	return values, nil
 }
 
-func parseValues(values map[string]json.RawMessage) (ConnectionFile, error) {
-	var file ConnectionFile
+func parseValues(values map[string]json.RawMessage) (Connection, error) {
+	var connection Connection
 	serverID, err := strconv.ParseInt(string(values[fieldServerID]), 10, 64)
 	if err != nil {
-		return ConnectionFile{}, ErrFileFormat
+		return Connection{}, ErrFormat
 	}
 	port, err := strconv.ParseUint(string(values[fieldPort]), 10, 16)
 	if err != nil || port == 0 {
-		return ConnectionFile{}, ErrFileFormat
+		return Connection{}, ErrFormat
 	}
-	file.ServerID, file.Port = serverID, uint16(port)
-	for name, target := range map[string]*string{fieldHost: &file.Host, fieldDatabase: &file.Database,
-		fieldLogin: &file.Login, fieldPassword: &file.Password, fieldCertificate: &file.CACertificate} {
+	connection.ServerID, connection.Port = serverID, uint16(port)
+	for name, target := range map[string]*string{fieldHost: &connection.Host, fieldDatabase: &connection.Database,
+		fieldLogin: &connection.Login, fieldPassword: &connection.Password,
+		fieldCertificate: &connection.CACertificate} {
 		if err := json.Unmarshal(values[name], target); err != nil || *target == "" {
-			return ConnectionFile{}, ErrFileFormat
+			return Connection{}, ErrFormat
 		}
 	}
-	if !onlyCertificates([]byte(file.CACertificate)) {
-		return ConnectionFile{}, ErrFileFormat
+	if !onlyCertificates([]byte(connection.CACertificate)) {
+		return Connection{}, ErrFormat
 	}
-	return file, nil
+	return connection, nil
 }
 
 // onlyCertificates is true when the text is one or more CERTIFICATE blocks, each an X.509
