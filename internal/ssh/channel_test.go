@@ -327,7 +327,14 @@ func TestChannel(t *testing.T) {
 				call.client.windowToServer -= wireLength(len(chunk))
 			}
 			call.client.sendData("abc")
-			expectReceived(t, call.channel, "abc")
+			// The first letter comes only after the engine has read and discarded what is left
+			// of the 3 MiB, which has run past one hang bound under a whole test run on a loaded
+			// machine (the row alone takes 12.6 s): its read has three, still a bound on a hang
+			// and never a verdict on time.
+			if got, err := call.channel.RecvChar(t.Context(), time.Now().Add(testrun.Patient(3*testrun.HangBound))); err != nil || got != 'a' {
+				t.Fatalf("byte 0 was %q, %v, want 'a'", got, err)
+			}
+			expectReceived(t, call.channel, "bc")
 		})
 	})
 
