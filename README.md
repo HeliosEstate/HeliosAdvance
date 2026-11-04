@@ -23,8 +23,8 @@ Questions about the project, and about how AI is used in it: [docs/faq.md](docs/
 - **An OpenSSH client** (`ssh` and `ssh-keygen`) and **Plink**, from PuTTY: the outside clients
   the SSH and Telnet tests connect with.
 - **On Linux, a `telnet` client**, for the Telnet test only Linux runs.
-- **The gate tools**, at the versions pinned in `.github/tool-versions`: `golangci-lint` (its
-  released binary), `govulncheck` and `go-licenses`.
+- **The gate tools**, each by `go install` at the version pinned in `.github/tool-versions`, as CI
+  installs them: `golangci-lint`, `govulncheck` and `go-licenses`.
 
 The machine needs the IPv6 loopback address (`::1`) working, since the engine listens on it. On
 Linux, run as an ordinary user, not root, where `sudo` needs no password (one test runs the
