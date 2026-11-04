@@ -170,8 +170,10 @@ func TestLinuxRootOpen(t *testing.T) {
 				t.Fatalf("the capable copy: %v: %s", err, strings.TrimSpace(string(output)))
 			}
 			want := "refused " + strconv.Itoa(errorIndex(bootstrap.ErrKeyFileReachable))
-			if got := strings.TrimSpace(string(output)); got != want {
-				t.Fatalf("the capable copy's Open: %q, want %q (%v)", got, want, bootstrap.ErrKeyFileReachable)
+			got, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
+			if got != want {
+				t.Fatalf("the capable copy's Open: %q, want %q (%v); all it printed:\n%s", got, want,
+					bootstrap.ErrKeyFileReachable, output)
 			}
 		})
 	})

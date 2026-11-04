@@ -52,6 +52,7 @@ func TestMain(tests *testing.M) {
 		contents, err := bootstrap.Open(*openChild)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stdout, "refused", errorIndex(err))
+			_, _ = fmt.Fprintln(os.Stdout, childReport(*openChild))
 		} else {
 			_, _ = fmt.Fprintln(os.Stdout, "opened", len(contents))
 		}
@@ -75,6 +76,26 @@ func TestMain(tests *testing.M) {
 		fmt.Fprintf(os.Stderr, "removing the run's own folder: %v\n", err)
 	}
 	os.Exit(code)
+}
+
+// childReport is what a child that Open refused can say of itself, for a row's failure message:
+// the capabilities in effect, on Linux, and how its own read of the key file ended. A capable
+// child once got the key file's unreadable error on CI where the owner's was due, seen once and
+// not reproduced in 2,400 starts by a probe (QA, 2026-11-03), so the next one says why.
+func childReport(folder string) string {
+	capabilities := "unknown"
+	if status, err := os.ReadFile("/proc/self/status"); err == nil {
+		for _, line := range strings.Split(string(status), "\n") {
+			if value, found := strings.CutPrefix(line, "CapEff:"); found {
+				capabilities = strings.TrimSpace(value)
+			}
+		}
+	}
+	read := "read"
+	if _, err := os.ReadFile(filepath.Join(folder, keyFileName)); err != nil {
+		read = err.Error()
+	}
+	return fmt.Sprintf("the child: effective capabilities %s; its own read of the key file: %s", capabilities, read)
 }
 
 // buildOracle copies the oracle's Pascal source into the run's folder, builds it there as its
