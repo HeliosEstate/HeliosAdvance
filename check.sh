@@ -110,24 +110,22 @@ is_qa() {
   grep -qxF "$(git rev-parse "$1")" <<< "$grandfathered" && return 0
   [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
 }
-# Paths are read NUL-separated and git quotes nothing, so a name with a space or a quote is judged
-# like any other; renames are split into a deletion and an addition (--no-renames), so a renamed
+# Paths are read NUL-separated and git quotes nothing, and each goes back to git as :(literal), so
+# a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
+# gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
 qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
 if [ -n "$qa" ]; then
-  changed=$(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go' | tr '\0' '\n') ||
-    fail "git could not list the tests changed since the QA commit"
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
   # commit left it as it found it and HEAD holds it as the base does; gate 4a locks the base's
   # tests. The base's copy over a test this QA commit changed is still a change to it.
-  if [ -n "$changed" ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1 &&
-    forked=$(git merge-base "$qa" "$BASE"); then
-    changed=$(while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      git diff --quiet "$forked" "$qa" -- "$f" && git diff --quiet "$BASE" HEAD -- "$f" || echo "$f"
-    done <<< "$changed")
-  fi
+  git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && forked=$(git merge-base "$qa" "$BASE") || forked=""
+  changed=$(while IFS= read -r -d '' f; do
+      [ -n "$forked" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+      echo "$f"
+    done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go')
+    wait $!) || fail "git could not list the tests changed since the QA commit"
   [ -z "$changed" ] || { echo "$changed"; fail "test files approved at ${qa:0:8} were changed or deleted"; }
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
@@ -138,11 +136,8 @@ fi
 if [ "$MUTATION" = 0 ]; then
   exclude=()
   [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1 && exclude=(--not origin/development)
-  basetests=$(git diff -z --no-renames --name-only --diff-filter=MDT "$BASE...HEAD" -- '*_test.go' | tr '\0' '\n') ||
-    fail "git could not list the tests this branch changed"
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- "$f") || fail "git could not list the commits to $f"
+  while IFS= read -r -d '' f; do
+    commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- ":(literal)$f") || fail "git could not list the commits to $f"
     # A merge whose copy of the file is one of its parents' adds nothing of its own: git lists it
     # when that parent is on the base and the other side's copy differs, and every change on the
     # other side is a commit of its own, judged here or on the base. A merge that writes what
@@ -150,11 +145,12 @@ if [ "$MUTATION" = 0 ]; then
     nonqa=$(for c in $commits; do
       parents=$(git rev-list --parents -n 1 "$c" | cut -s -d' ' -f2-)
       case $parents in *' '*)
-        for p in $parents; do git diff --quiet "$p" "$c" -- "$f" && continue 2; done ;;
+        for p in $parents; do git diff --quiet "$p" "$c" -- ":(literal)$f" && continue 2; done ;;
       esac
       is_qa "$c" || echo "$c"; done)
     [ -z "$nonqa" ] || { echo "$f: $nonqa"; fail "a test file on $BASE was changed or deleted by a non-QA commit"; }
-  done <<< "$basetests"
+  done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$BASE...HEAD" -- '*_test.go')
+  wait $! || fail "git could not list the tests this branch changed"
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
 # base holds it passed this gate on its own branch before it merged; a squash merge drops the
@@ -164,8 +160,8 @@ onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
 goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
 goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
-  [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- "$f" && continue
-  last=$(git log -1 --format=%H -- "$f")
+  [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+  last=$(git log -1 --format=%H -- ":(literal)$f")
   is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
@@ -252,7 +248,7 @@ pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
   echo "Go gates checked by another job of this run; tests only"
 elif [ -n "$pkgs" ]; then
-  need golangci-lint "https://golangci-lint.run"
+  need golangci-lint "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint at the version in .github/tool-versions"
   need govulncheck "go install golang.org/x/vuln/cmd/govulncheck at the version in .github/tool-versions"
   need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
   go mod verify
