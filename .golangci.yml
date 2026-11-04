@@ -358,10 +358,11 @@ linters:
       - path: _test\.go
         linters: [gosec]
         text: G(204|304|703)
-      # The test support stops a dead run's servers and reads its owner and process files.
+      # The test support stops a dead run's servers and reads its owner and process files, and
+      # copies the bootstrap file oracle's source into the run's folder to build it there.
       - path: ^internal/testrun/
         linters: [gosec]
-        text: G(204|304)
+        text: G(204|304|703)
       # The key file's check on Windows reads the account each entry of the access list names.
       # The account sits just past the entry's fixed fields, reached only by a pointer conversion:
       # golang.org/x/sys/windows gives no other way, and its own tests convert the same way. The
