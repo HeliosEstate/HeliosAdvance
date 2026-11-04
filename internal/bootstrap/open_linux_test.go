@@ -171,6 +171,14 @@ func TestLinuxRootOpen(t *testing.T) {
 			}
 			want := "refused " + strconv.Itoa(errorIndex(bootstrap.ErrKeyFileReachable))
 			got, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
+			// Twice on CI the copy started without the capability, cause unknown (HeliosDesign
+			// #318): a copy that says it lacks it proves nothing about Open. Bit 2 is
+			// cap_dac_read_search.
+			_, report, _ := strings.Cut(string(output), "effective capabilities ")
+			capabilities, _, _ := strings.Cut(report, ";")
+			if bits, err := strconv.ParseUint(capabilities, 16, 64); got != want && err == nil && bits&(1<<2) == 0 {
+				t.Fatalf("cannot tell: the test's setup failed, the copy did not hold the capability to read any file; all it printed:\n%s", output)
+			}
 			if got != want {
 				t.Fatalf("the capable copy's Open: %q, want %q (%v); all it printed:\n%s", got, want,
 					bootstrap.ErrKeyFileReachable, output)

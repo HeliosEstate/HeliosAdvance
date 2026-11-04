@@ -109,6 +109,18 @@ func expectTakeError(t *testing.T, lease *database.Lease, err, want error, passw
 	}
 }
 
+// expectRefusedAtSignIn is expectTakeError for a refusal a real server sends while the connection
+// is being made. On Windows its server process exits as it sends the refusal, and the reset can
+// throw the refusal away first; which of the two Take meets is the operating system's timing,
+// which the contract does not pin. On Linux the refusal is exact.
+func expectRefusedAtSignIn(t *testing.T, lease *database.Lease, err, want error, password string) {
+	t.Helper()
+	if runtime.GOOS == "windows" && errors.Is(err, database.ErrUnreachable) {
+		want = database.ErrUnreachable
+	}
+	expectTakeError(t, lease, err, want, password)
+}
+
 // expectTaken checks Take returned a Lease that is not lost, and the row's new holder.
 func expectTaken(t *testing.T, lease *database.Lease, err error, created *board) lease {
 	t.Helper()
@@ -354,7 +366,7 @@ func TestTake(t *testing.T) {
 			server.control(t, "stop", "-m", "smart", "-W")
 			waitForLog(t, server, "received smart shutdown request")
 			lease, err := take(t, created.file())
-			expectTakeError(t, lease, err, database.ErrNotReady, created.password)
+			expectRefusedAtSignIn(t, lease, err, database.ErrNotReady, created.password)
 		})
 		t.Run("a standby in recovery with hot standby off: ErrNotReady", func(t *testing.T) {
 			t.Parallel()
@@ -362,7 +374,7 @@ func TestTake(t *testing.T) {
 			contents := created.file()
 			contents.Port = standby.port
 			lease, err := take(t, contents)
-			expectTakeError(t, lease, err, database.ErrNotReady, created.password)
+			expectRefusedAtSignIn(t, lease, err, database.ErrNotReady, created.password)
 		})
 	})
 
@@ -376,7 +388,7 @@ func TestTake(t *testing.T) {
 			// Windows lost the server's refusal on this row once: a failure shows the log.
 			defer func() { showLogIfFailed(t, created.server, &created.login, started) }()
 			lease, err := take(t, created.file())
-			expectTakeError(t, lease, err, database.ErrNoConnectionFree, created.password)
+			expectRefusedAtSignIn(t, lease, err, database.ErrNoConnectionFree, created.password)
 		})
 	})
 
@@ -494,15 +506,7 @@ func TestTake(t *testing.T) {
 				defer func() { showLogIfFailed(t, created.server, &contents.Login, started) }()
 				change(t, created, &contents)
 				lease, err := take(t, contents)
-				// On Windows PostgreSQL's server process exits as it sends the refusal, and the
-				// connection's reset can throw the refusal away before Take reads it; which of the
-				// two errors that gives is the operating system's timing, and the contract does not
-				// pin it. On Linux the refusal is exact.
-				want := database.ErrSignInRefused
-				if runtime.GOOS == "windows" && errors.Is(err, database.ErrUnreachable) {
-					want = database.ErrUnreachable
-				}
-				expectTakeError(t, lease, err, want, created.password)
+				expectRefusedAtSignIn(t, lease, err, database.ErrSignInRefused, created.password)
 			})
 		}
 		t.Run("a fake refusing with a message holding the canary: ErrSignInRefused, its text without the message", func(t *testing.T) {
@@ -766,14 +770,14 @@ func TestTake(t *testing.T) {
 			contents := created.file()
 			contents.Database = "nowhere_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 			lease, err := take(t, contents)
-			expectTakeError(t, lease, err, database.ErrRefused, created.password)
+			expectRefusedAtSignIn(t, lease, err, database.ErrRefused, created.password)
 		})
 		t.Run("the right to connect taken away: ErrRefused", func(t *testing.T) {
 			t.Parallel()
 			created := sharedServer(t).newBoard(t)
 			created.server.sql(t, superuser, "REVOKE CONNECT ON DATABASE "+created.database+" FROM PUBLIC")
 			lease, err := take(t, created.file())
-			expectTakeError(t, lease, err, database.ErrRefused, created.password)
+			expectRefusedAtSignIn(t, lease, err, database.ErrRefused, created.password)
 		})
 		t.Run("the right to read hadv.schema_version taken away: ErrRefused, not a *SchemaVersionError", func(t *testing.T) {
 			t.Parallel()

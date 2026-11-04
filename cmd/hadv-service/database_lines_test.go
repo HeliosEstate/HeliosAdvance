@@ -170,13 +170,14 @@ func waitForStarted(t *testing.T, program *run, index int, deadline time.Time) t
 	return read
 }
 
-// expectSignInRefusal is expectRefusal for a refused sign-in. On Windows PostgreSQL's server
-// process exits as it sends the refusal, and the connection's reset can throw the refusal away,
-// so the engine may first meet a database that does not answer: one waiting line, the same as
-// for a database that closes each connection, then the refusal at its next try, 10 seconds on,
-// inside the start limit. Which comes first is the operating system's timing and is not pinned
-// (bootstrap Part 1's page, "A refused sign-in on Windows"); on Linux the refusal is exact.
-func (program *run) expectSignInRefusal(t *testing.T) string {
+// expectRefusedAtSignIn is expectRefusal for a refusal PostgreSQL sends while the connection is
+// being made. On Windows its server process exits as it sends the refusal, and the connection's
+// reset can throw the refusal away, so the engine may first meet a database that does not answer:
+// one waiting line, the same as for a database that closes each connection, then the refusal at
+// its next try, 10 seconds on, inside the start limit. Which comes first is the operating
+// system's timing and is not pinned (bootstrap Part 1's page, "A refusal at sign-in on Windows");
+// on Linux the refusal is exact.
+func (program *run) expectRefusedAtSignIn(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS != windowsOS {
 		return program.expectRefusal(t)
@@ -354,7 +355,7 @@ func TestDatabaseProgram(t *testing.T) {
 			} {
 				program := startWithFile(t, path, nil, portOption, "0")
 				if name == "sign-in refused" {
-					reasons[name] = program.expectSignInRefusal(t)
+					reasons[name] = program.expectRefusedAtSignIn(t)
 				} else {
 					reasons[name] = program.expectRefusal(t)
 				}
@@ -385,7 +386,7 @@ func TestDatabaseProgram(t *testing.T) {
 			contents := sharedServer(t).newBoard(t).file()
 			contents.Database = "nowhere_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 			reasons := map[string]string{noFileKey: noFileReason(t)}
-			reasons["refused"] = startWithFile(t, contents.write(t), nil, portOption, "0").expectRefusal(t)
+			reasons["refused"] = startWithFile(t, contents.write(t), nil, portOption, "0").expectRefusedAtSignIn(t)
 			expectDifferent(t, reasons)
 		})
 		t.Run("a database with TLS switched off: one start_failed line, and a non-zero exit", func(t *testing.T) {
@@ -532,6 +533,14 @@ func TestDatabaseProgram(t *testing.T) {
 			} {
 				program := startWithFile(t, contents.write(t), nil, portOption, "0")
 				reasons[name], _ = program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
+			}
+			// On Windows a refusal at sign-in can be thrown away first, so these two may give the
+			// not-answering reason, which is not pinned (bootstrap Part 1's page); Linux is exact.
+			for _, name := range []string{"recovering", "no connection free"} {
+				if runtime.GOOS == windowsOS && reasons[name] == reasons["not answering"] {
+					t.Logf("%s gave the not-answering reason: its refusal was thrown away", name)
+					delete(reasons, name)
+				}
 			}
 			expectDifferent(t, reasons)
 		})
