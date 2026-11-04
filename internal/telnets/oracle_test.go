@@ -5,6 +5,7 @@ package telnets_test
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os/exec"
 	"regexp"
@@ -23,6 +24,10 @@ type sClient struct {
 	input   io.WriteCloser
 	mutex   sync.Mutex
 	output  []string
+	// started is when it was started, and arrived when each line of output came, for a row's
+	// failure message.
+	started time.Time
+	arrived []time.Time
 	// lines receives each line it prints as it arrives.
 	lines  chan string
 	exited chan struct{}
@@ -57,10 +62,11 @@ func runSClient(t *testing.T, address string, options []string) *sClient {
 	reader, writer := io.Pipe()
 	command.Stdout = writer
 	command.Stderr = writer
+	started := time.Now()
 	if err := command.Start(); err != nil {
 		t.Fatalf("starting s_client: %v", err)
 	}
-	client := &sClient{command: command, input: input, lines: make(chan string, 1024), exited: make(chan struct{})}
+	client := &sClient{command: command, input: input, started: started, lines: make(chan string, 1024), exited: make(chan struct{})}
 	go func() {
 		_ = command.Wait()
 		_ = writer.Close()
@@ -73,6 +79,7 @@ func runSClient(t *testing.T, address string, options []string) *sClient {
 			line := strings.TrimRight(scanner.Text(), "\r")
 			client.mutex.Lock()
 			client.output = append(client.output, line)
+			client.arrived = append(client.arrived, time.Now())
 			client.mutex.Unlock()
 			select {
 			case client.lines <- line:
@@ -91,6 +98,29 @@ func runSClient(t *testing.T, address string, options []string) *sClient {
 		}
 	})
 	return client
+}
+
+// timeline is when s_client was started, whether it has ended, and each line it has printed with
+// when it came, every time from since, for a row's failure message.
+func (client *sClient) timeline(since time.Time) string {
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+	ended := "still running"
+	select {
+	case <-client.exited:
+		ended = "ended"
+	default:
+	}
+	report := []string{"s_client started at " + offset(client.started, since) + ", " + ended + "; what it printed:"}
+	for index, line := range client.output {
+		report = append(report, offset(client.arrived[index], since)+"  "+line)
+	}
+	return strings.Join(report, "\n")
+}
+
+// offset is when, from since, in seconds to the millisecond, signed.
+func offset(when, since time.Time) string {
+	return fmt.Sprintf("%+.3fs", when.Sub(since).Seconds())
 }
 
 // text is everything s_client has printed so far.
