@@ -30,9 +30,11 @@ type served struct {
 	connections []connectionTimes
 }
 
-// connectionTimes is one connection's two moments; returned is zero while its Accept runs.
+// connectionTimes is one connection's moments; returned is zero while its Accept runs. limit is
+// when its Accept's own context ends, a clock apart from the row's wait, which began before the
+// connection: a row that gave up first must not read as an Accept that hung.
 type connectionTimes struct {
-	accepted, returned time.Time
+	accepted, limit, returned time.Time
 }
 
 // serveAll listens on loopback at a port the operating system picks and hands every connection to
@@ -53,17 +55,19 @@ func serveAll(t *testing.T, certificate *telnets.Certificate) *served {
 			if err != nil {
 				return
 			}
-			server.mutex.Lock()
-			index := len(server.connections)
-			server.connections = append(server.connections, connectionTimes{accepted: time.Now()})
-			server.mutex.Unlock()
+			acceptedAt := time.Now()
 			tcp, isTCP := connection.(*net.TCPConn)
 			if !isTCP {
 				_ = connection.Close()
 				continue
 			}
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), testrun.Patient(testrun.HangBound))
+			limit, _ := ctx.Deadline()
+			server.mutex.Lock()
+			index := len(server.connections)
+			server.connections = append(server.connections, connectionTimes{accepted: acceptedAt, limit: limit})
+			server.mutex.Unlock()
 			go func() {
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), testrun.Patient(testrun.HangBound))
 				defer cancel()
 				line, err := telnets.Accept(ctx, tcp, certificate)
 				returned := time.Now()
@@ -86,24 +90,49 @@ func (server *served) awaitAccept(t *testing.T, client *sClient) accepted {
 	t.Helper()
 	waited := time.Now()
 	return waitAcceptedTelling(t, server.results, waited.Add(testrun.Patient(testrun.HangBound)), func() string {
-		return server.describe(waited) + "\n" + client.describe(waited)
+		return client.describe(waited)
 	})
 }
 
-// describe gives the listener's moments, every time from since.
+// startSClient starts s_client against this listener, so its failures also say what the listener
+// saw.
+func (server *served) startSClient(t *testing.T, options ...string) *sClient {
+	t.Helper()
+	client := startSClient(t, server.address, options...)
+	client.server = server
+	return client
+}
+
+// startSClientCommands is startSClient without -ign_eof, against this listener.
+func (server *served) startSClientCommands(t *testing.T, options ...string) *sClient {
+	t.Helper()
+	client := startSClientCommands(t, server.address, options...)
+	client.server = server
+	return client
+}
+
+// describe gives the listener's moments, every time from since. For each connection whose Accept
+// has not returned it says whether that Accept's own limit had passed, since the row's wait and
+// Accept's run on two clocks.
 func (server *served) describe(since time.Time) string {
 	server.mutex.Lock()
 	defer server.mutex.Unlock()
+	now := time.Now()
 	connections := make([]string, 0, len(server.connections))
 	for _, connection := range server.connections {
-		ended := "its Accept had not returned"
-		if !connection.returned.IsZero() {
-			ended = "its Accept returned at " + offset(connection.returned, since)
+		var state string
+		switch {
+		case !connection.returned.IsZero():
+			state = "its Accept returned at " + offset(connection.returned, since)
+		case now.After(connection.limit):
+			state = "its Accept had not returned by the end of its own limit at " + offset(connection.limit, since)
+		default:
+			state = "its Accept had not returned, not yet past its own limit at " + offset(connection.limit, since)
 		}
-		connections = append(connections, offset(connection.accepted, since)+" ("+ended+")")
+		connections = append(connections, offset(connection.accepted, since)+" ("+state+")")
 	}
-	return "Times are from the wait's start. The listener began at " + offset(server.began, since) +
-		"; it accepted connections at [" + strings.Join(connections, ", ") + "]."
+	return "The listener began at " + offset(server.began, since) + "; it accepted connections at [" +
+		strings.Join(connections, ", ") + "]."
 }
 
 // certificateKind is the certificate a case is served with.
@@ -239,7 +268,7 @@ func TestTLSTable(t *testing.T) {
 			t.Run(row.name+", against "+row.certificate.name, func(t *testing.T) {
 				t.Parallel()
 				server := serveAll(t, readCertificate(t, goodFiles(t, row.certificate.key)))
-				client := startSClient(t, server.address, strings.Fields(row.options)...)
+				client := server.startSClient(t, strings.Fields(row.options)...)
 				got := server.awaitAccept(t, client)
 				seen := readHandshake(client.finish(t))
 				if row.refused != "" {
@@ -260,7 +289,7 @@ func TestTLSTable(t *testing.T) {
 				t.Parallel()
 				made := makeChain(t)
 				server := serveAll(t, readCertificate(t, made.files))
-				client := startSClient(t, server.address, version, "-showcerts")
+				client := server.startSClient(t, version, "-showcerts")
 				server.awaitAccept(t, client)
 				text := client.finish(t)
 				chain := shownChain(t, text)
@@ -271,7 +300,7 @@ func TestTLSTable(t *testing.T) {
 			t.Run(version+": no CertificateRequest, so no client certificate is asked for", func(t *testing.T) {
 				t.Parallel()
 				server := serveAll(t, readCertificate(t, goodFiles(t, ecdsaP256)))
-				client := startSClient(t, server.address, version)
+				client := server.startSClient(t, version)
 				server.awaitAccept(t, client)
 				seen := readHandshake(client.finish(t))
 				expectTaken(t, seen, "TLSv1."+strings.TrimPrefix(version, "-tls1_"), "", "")
@@ -284,7 +313,7 @@ func TestTLSTable(t *testing.T) {
 			t.Run(version+", with -reconnect: every one of the six handshakes New, no NewSessionTicket, and no session ID", func(t *testing.T) {
 				t.Parallel()
 				server := serveAll(t, readCertificate(t, goodFiles(t, ecdsaP256)))
-				client := startSClient(t, server.address, version, "-reconnect")
+				client := server.startSClient(t, version, "-reconnect")
 				for range 6 {
 					server.awaitAccept(t, client)
 				}
@@ -303,7 +332,7 @@ func TestTLSTable(t *testing.T) {
 		t.Run("TLS 1.2, a renegotiation asked for with s_client's R: refused with a fatal unexpected_message, and the connection ends", func(t *testing.T) {
 			t.Parallel()
 			server := serveAll(t, readCertificate(t, goodFiles(t, ecdsaP256)))
-			client := startSClientCommands(t, server.address, "-tls1_2")
+			client := server.startSClientCommands(t, "-tls1_2")
 			client.waitFor(t, "New, TLSv1.2", time.Now().Add(testrun.Patient(testrun.HangBound)))
 			client.send(t, "R\n")
 			got := server.awaitAccept(t, client)
