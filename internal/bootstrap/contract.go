@@ -54,8 +54,9 @@
 // The bootstrap file reference, oracle/bootstrap-file (Free Pascal, with its own AES and GCM, its
 // self-test running the published vectors), which the tests make every
 // bootstrap file with, good and broken; RFC 4648's test vectors for the key file's reader; and the
-// real file systems, whose owners, modes and access lists the tests set from outside on Linux
-// x86-64, Linux ARM64 and Windows x86-64.
+// real file systems on Linux x86-64, Linux ARM64 and Windows x86-64, whose modes and access lists,
+// and on Windows owners, the tests set from outside, and on Linux the system's own answer to
+// whether the account `nobody` may read or write the key file.
 //
 // # What it needs from its callers
 //
@@ -164,8 +165,10 @@ var (
 //   - If reading the key file's owner or permissions fails, or, on Windows, an entry of its access
 //     list that allows access is of a kind other than a plain allow entry, such as a conditional
 //     entry, then Open shall return ErrKeyFilePermissions.
-//   - If, on Linux, the key file's owner is not the engine's effective user ID, or its mode gives
-//     its group or others any access, then Open shall return ErrKeyFileReachable.
+//   - If, on Linux, the key file's mode gives its group or others any access, then Open shall
+//     return ErrKeyFileReachable.
+//   - If, on Linux, the key file's owner is not the engine's effective user ID, then Open shall
+//     return ErrKeyFileReachable. [read]
 //   - If, on Windows, the key file's owner, or any entry of its access list that allows access,
 //     whether the file's own or inherited, names anyone but SYSTEM (S-1-5-18), Administrators
 //     (S-1-5-32-544) or the user of the engine's own token, or the key file has no access list,
