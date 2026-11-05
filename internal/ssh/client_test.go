@@ -742,6 +742,43 @@ func (client *rawClient) sendExtended(data string) {
 	client.sendPacket(message(messageExtendedData).uint32Value(client.engineChannel).uint32Value(1).text(data).data)
 }
 
+// discardAll reads and throws away whatever the engine sends from now until the row ends, as any
+// SSH client keeps reading: the engine's window updates for data it is still discarding would
+// otherwise fill the connection, and a read of the engine's that sends one more would wait behind
+// them. After it starts, the row may make channel-side calls only, since it takes raw packets and
+// the client's decryption no longer matches the wire. A reading that stopped before the row ended
+// fails the row as the test's own fault, not as a stall in the engine.
+func (client *rawClient) discardAll() {
+	client.t.Helper()
+	// An earlier read left its deadline on the connection, which the reading must outlast.
+	if err := client.connection.SetReadDeadline(time.Time{}); err != nil {
+		client.t.Fatalf("clearing the read deadline: %v", err)
+	}
+	stopped := make(chan struct{})
+	var reason error
+	go func() {
+		defer close(stopped)
+		_, reason = io.Copy(io.Discard, client.connection)
+	}()
+	client.t.Cleanup(func() {
+		select {
+		case <-stopped:
+			client.t.Errorf("the caller stopped reading before the row ended, the test's own fault (%v; nil is the engine closing the connection)", reason)
+			return
+		default:
+		}
+		if err := client.connection.SetReadDeadline(time.Now()); err != nil {
+			client.t.Errorf("ending the caller's reading: %v", err)
+			return
+		}
+		select {
+		case <-stopped:
+		case <-time.After(testrun.Patient(testrun.HangBound)):
+			client.t.Errorf("the caller's reading had not ended %v after the row did", testrun.Patient(testrun.HangBound))
+		}
+	})
+}
+
 // readData reads until the channel data received holds count bytes, by deadline, and fails the
 // row on any message that is not channel data.
 func (client *rawClient) readData(count int, deadline time.Time) {

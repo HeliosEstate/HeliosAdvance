@@ -327,18 +327,9 @@ func TestChannel(t *testing.T) {
 				call.client.windowToServer -= wireLength(len(chunk))
 			}
 			call.client.sendData("abc")
-			// A caller reads what the engine sends while it waits, as any SSH client does: the
-			// engine's window updates for the flood it is still discarding would otherwise fill the
-			// connection, and its read of "a" sends one more, which would wait behind them.
-			drained := make(chan struct{})
-			go func() {
-				defer close(drained)
-				_, _ = io.Copy(io.Discard, call.client.connection)
-			}()
-			t.Cleanup(func() {
-				_ = call.client.connection.SetReadDeadline(time.Now())
-				<-drained
-			})
+			// The engine may still be discarding the flood, sending a window update for each read;
+			// unread they would fill the connection, and its read of "a" would wait behind them.
+			call.client.discardAll()
 			expectReceived(t, call.channel, "abc")
 		})
 	})
