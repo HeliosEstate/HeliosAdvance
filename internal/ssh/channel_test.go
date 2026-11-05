@@ -309,10 +309,11 @@ func TestChannel(t *testing.T) {
 			// discarding gives that room back: if the discarding stopped, the caller would stall.
 			chunk := strings.Repeat("Q", 16*1024)
 			deadline := time.Now().Add(testrun.Patient(15 * time.Second))
-			for sent := 0; sent < 3*1024*1024; sent += len(chunk) {
-				// next would wait on past a window adjust for another message, so the adjusts
-				// are read here.
-				for call.client.windowToServer < wireLength(len(chunk)) {
+			// next would wait on past a window adjust for another message, so the adjusts are read
+			// here, until there is room for what is sent next: data past the window is a breach the
+			// engine may end the connection for.
+			awaitRoom := func(need, sent int) {
+				for call.client.windowToServer < wireLength(need) {
 					payload, err := call.client.nextIgnoring(deadline)
 					if err != nil {
 						t.Fatalf("after %d bytes of extended data the engine gave no room back: %v", sent, err)
@@ -323,9 +324,14 @@ func TestChannel(t *testing.T) {
 						call.client.windowToServer += parser.uint32Value()
 					}
 				}
+			}
+			const flood = 3 * 1024 * 1024
+			for sent := 0; sent < flood; sent += len(chunk) {
+				awaitRoom(len(chunk), sent)
 				call.client.sendExtended(chunk)
 				call.client.windowToServer -= wireLength(len(chunk))
 			}
+			awaitRoom(len("abc"), flood)
 			call.client.sendData("abc")
 			// The engine may still be discarding the flood, sending a window update for each read;
 			// unread they would fill the connection, and its read of "a" would wait behind them.

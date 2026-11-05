@@ -9,6 +9,7 @@ package ssh_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -24,6 +25,7 @@ import (
 	"math/big"
 	"net"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -742,39 +744,54 @@ func (client *rawClient) sendExtended(data string) {
 	client.sendPacket(message(messageExtendedData).uint32Value(client.engineChannel).uint32Value(1).text(data).data)
 }
 
+// discardCeiling bounds what discardAll reads: far past what the engine sends a row that floods
+// it, its window updates for 3 MiB included, so only a fault reaches it.
+const discardCeiling = 64 << 20
+
 // discardAll reads and throws away whatever the engine sends from now until the row ends, as any
 // SSH client keeps reading: the engine's window updates for data it is still discarding would
 // otherwise fill the connection, and a read of the engine's that sends one more would wait behind
 // them. After it starts, the row may make channel-side calls only, since it takes raw packets and
-// the client's decryption no longer matches the wire. A reading that stopped before the row ended
-// fails the row as the test's own fault, not as a stall in the engine.
+// the client's decryption no longer matches the wire. The reading ends with the row's context; one
+// that ended sooner fails the row, saying how.
 func (client *rawClient) discardAll() {
 	client.t.Helper()
 	// An earlier read left its deadline on the connection, which the reading must outlast.
 	if err := client.connection.SetReadDeadline(time.Time{}); err != nil {
 		client.t.Fatalf("clearing the read deadline: %v", err)
 	}
+	var ending atomic.Bool
+	end := func() {
+		ending.Store(true)
+		_ = client.connection.SetReadDeadline(time.Now())
+	}
+	context.AfterFunc(client.t.Context(), end)
 	stopped := make(chan struct{})
-	var reason error
+	var early string
 	go func() {
 		defer close(stopped)
-		_, reason = io.Copy(io.Discard, client.connection)
+		read, err := io.CopyN(io.Discard, client.connection, discardCeiling)
+		switch {
+		case read == discardCeiling:
+			early = fmt.Sprintf("the engine sent more than %d bytes while the caller read, past the reading's bound", discardCeiling)
+		case ending.Load():
+		case errors.Is(err, io.EOF):
+			early = "the caller's reading ended before the row did: the connection closed"
+		default:
+			early = fmt.Sprintf("the caller's reading ended before the row did: %v", err)
+		}
 	}()
 	client.t.Cleanup(func() {
-		select {
-		case <-stopped:
-			client.t.Errorf("the caller stopped reading before the row ended, the test's own fault (%v; nil is the engine closing the connection)", reason)
-			return
-		default:
-		}
-		if err := client.connection.SetReadDeadline(time.Now()); err != nil {
-			client.t.Errorf("ending the caller's reading: %v", err)
-			return
-		}
+		// The context's end runs end on a goroutine of its own, which may not have run yet.
+		end()
 		select {
 		case <-stopped:
 		case <-time.After(testrun.Patient(testrun.HangBound)):
 			client.t.Errorf("the caller's reading had not ended %v after the row did", testrun.Patient(testrun.HangBound))
+			return
+		}
+		if early != "" {
+			client.t.Error(early)
 		}
 	})
 }
