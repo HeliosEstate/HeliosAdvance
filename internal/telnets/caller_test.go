@@ -266,6 +266,13 @@ func acceptOn(ctx context.Context, connection *net.TCPConn, certificate *telnets
 // deadline the test came late to.
 func waitAccepted(t *testing.T, done <-chan accepted, deadline time.Time) accepted {
 	t.Helper()
+	return waitAcceptedTelling(t, done, deadline, nil)
+}
+
+// waitAcceptedTelling is waitAccepted whose failure also gives what detail says, so a row whose
+// Accept never returns can show where it stopped; nil adds nothing.
+func waitAcceptedTelling(t *testing.T, done <-chan accepted, deadline time.Time, detail func() string) accepted {
+	t.Helper()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
@@ -276,6 +283,9 @@ func waitAccepted(t *testing.T, done <-chan accepted, deadline time.Time) accept
 		case got := <-done:
 			return got
 		default:
+			if detail != nil {
+				t.Fatalf("Accept had not returned by the deadline.\n%s", detail())
+			}
 			t.Fatalf("Accept had not returned by the deadline")
 			return accepted{}
 		}
