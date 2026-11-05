@@ -5,6 +5,7 @@ package telnets_test
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os/exec"
 	"regexp"
@@ -22,10 +23,21 @@ type sClient struct {
 	command *exec.Cmd
 	input   io.WriteCloser
 	mutex   sync.Mutex
-	output  []string
+	output  []printed
+	// Kept so a failure can tell a machine too slow to start s_client from one that stalled later.
+	started time.Time
+	// The listener a TLS table row started it against, so its failures also say what the listener
+	// saw; nil for a row that listens by itself.
+	server *served
 	// lines receives each line it prints as it arrives.
 	lines  chan string
 	exited chan struct{}
+}
+
+// printed is one line s_client printed and when it came, for a failure message's timeline.
+type printed struct {
+	line    string
+	arrived time.Time
 }
 
 // startSClient connects s_client to the address with the options given, killed when the test
@@ -57,10 +69,11 @@ func runSClient(t *testing.T, address string, options []string) *sClient {
 	reader, writer := io.Pipe()
 	command.Stdout = writer
 	command.Stderr = writer
+	started := time.Now()
 	if err := command.Start(); err != nil {
 		t.Fatalf("starting s_client: %v", err)
 	}
-	client := &sClient{command: command, input: input, lines: make(chan string, 1024), exited: make(chan struct{})}
+	client := &sClient{command: command, input: input, started: started, lines: make(chan string, 1024), exited: make(chan struct{})}
 	go func() {
 		_ = command.Wait()
 		_ = writer.Close()
@@ -72,7 +85,7 @@ func runSClient(t *testing.T, address string, options []string) *sClient {
 		for scanner.Scan() {
 			line := strings.TrimRight(scanner.Text(), "\r")
 			client.mutex.Lock()
-			client.output = append(client.output, line)
+			client.output = append(client.output, printed{line: line, arrived: time.Now()})
 			client.mutex.Unlock()
 			select {
 			case client.lines <- line:
@@ -93,17 +106,60 @@ func runSClient(t *testing.T, address string, options []string) *sClient {
 	return client
 }
 
+// describedLines is how many of s_client's last lines a failure message gives: with -msg it prints
+// every record, thousands of lines over six handshakes, and CI cuts a long log short.
+const describedLines = 200
+
+// describe gives, for a row that fails waiting on s_client or on Accept, what the listener saw if
+// it has one, then when s_client started, whether its output has ended, and its last lines with
+// when each came, every time from since: a machine too slow to start s_client or to connect is
+// told from a handshake that began and stalled.
+func (client *sClient) describe(since time.Time) string {
+	report := []string{"Times are from the wait's start."}
+	if client.server != nil {
+		report = append(report, client.server.describe(since))
+	}
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+	// The output ends once s_client's last line has been read, not when the process exits.
+	output := "its output still open"
+	select {
+	case <-client.exited:
+		output = "its output ended"
+	default:
+	}
+	first := max(0, len(client.output)-describedLines)
+	report = append(report, "s_client started at "+offset(client.started, since)+", "+output+"; what it printed:")
+	if first > 0 {
+		report = append(report, fmt.Sprintf("(its first %d lines left out)", first))
+	}
+	for _, each := range client.output[first:] {
+		report = append(report, offset(each.arrived, since)+"  "+each.line)
+	}
+	return strings.Join(report, "\n")
+}
+
+// offset is when, from since, signed, so every time in one failure message reads from one moment.
+func offset(when, since time.Time) string {
+	return fmt.Sprintf("%+.3fs", when.Sub(since).Seconds())
+}
+
 // text is everything s_client has printed so far.
 func (client *sClient) text() string {
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
-	return strings.Join(client.output, "\n")
+	lines := make([]string, 0, len(client.output))
+	for _, each := range client.output {
+		lines = append(lines, each.line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // waitFor waits, by the deadline, for a line s_client prints that starts with the prefix, and
 // returns it.
 func (client *sClient) waitFor(t *testing.T, prefix string, deadline time.Time) string {
 	t.Helper()
+	waited := time.Now()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	for {
@@ -124,9 +180,9 @@ func (client *sClient) waitFor(t *testing.T, prefix string, deadline time.Time) 
 				}
 				break
 			}
-			t.Fatalf("s_client ended before it printed %q:\n%s", prefix, client.text())
+			t.Fatalf("s_client ended before it printed %q.\n%s", prefix, client.describe(waited))
 		case <-timer.C:
-			t.Fatalf("s_client had not printed %q by the deadline:\n%s", prefix, client.text())
+			t.Fatalf("s_client had not printed %q by the deadline.\n%s", prefix, client.describe(waited))
 		}
 	}
 }
@@ -144,12 +200,13 @@ func (client *sClient) send(t *testing.T, text string) {
 func (client *sClient) finish(t *testing.T) string {
 	t.Helper()
 	_ = client.input.Close()
+	waited := time.Now()
 	timer := time.NewTimer(testrun.Patient(testrun.HangBound))
 	defer timer.Stop()
 	select {
 	case <-client.exited:
 	case <-timer.C:
-		t.Fatalf("s_client had not ended within %v:\n%s", testrun.Patient(testrun.HangBound), client.text())
+		t.Fatalf("s_client had not ended within %v.\n%s", testrun.Patient(testrun.HangBound), client.describe(waited))
 	}
 	return client.text()
 }
