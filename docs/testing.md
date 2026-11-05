@@ -94,6 +94,36 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   nowhere reads the program's own sockets from the system's table (on Linux from /proc, on
   Windows from netstat, by its process and a foreign address of 0.0.0.0:0 or [::]:0), never a
   dial to a freed port; a table that cannot be read fails the row.
+- The lines do not say when a closed connection's place in the count of open connections is
+  freed. A row that dials the next caller right after one ends tries again, bounded by the hang
+  bound, while that caller is closed at once with nothing written, as the Listener's own rows do.
+  A row that dialed once failed on the Linux ARM64 runner.
+- On the Windows runner, filling the socket buffers does not keep a write blocked: a small write
+  to a loopback caller that stopped reading went through within about a second, whatever the
+  buffer sizes, where on Linux it stayed blocked. A row that needs a write to fail on full buffers
+  says "cannot tell" on Windows when the write went through.
+
+## Files and their permissions
+
+- A row sets a file's permissions from outside the engine, with the system's own tools where its
+  package may not import more: chmod, setfacl and sudo on Linux; icacls, and PowerShell for a file
+  with no access list at all, which icacls cannot write, on Windows.
+- On Windows a file opened through `os.Root` lets others delete it, so removing its folder succeeds
+  while it is still open. A row that checks a file or folder was closed opens it with no sharing at
+  all, which fails while any other handle is open, however that handle shares.
+- CI's elevated Windows runner opens a file or folder whatever its access list says, an empty one
+  included, and reads past a deny entry: on Windows, no access list makes a file or folder that
+  will not open. Its token holds the backup privilege, enabled, and Go opens every file with
+  backup intent, which gets past another handle that holds the file with no sharing but only
+  reads it. A row that needs a file that will not open holds it with no sharing, for reading and
+  writing, until it ends; one that needs a folder holds it with no sharing for reading, which
+  `os.OpenRoot` cannot get past. Either still shows as there.
+- cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
+  run through cmd, such as `mklink /J`, is given names relative to its working folder.
+- A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on
+  Windows) counts the reading of the count too. A row that bounds what the engine reads takes out
+  the bytes the reading before it read, and first proves, with two readings and nothing between,
+  that this is all a reading adds.
 
 ## Reading a run
 
@@ -126,9 +156,13 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 
 ## Runners
 
-Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user. A test that can run on Linux
-alone is named `TestLinux…`, and one that needs a Linux container oracle `TestOracle…`: Windows
-CI skips both. Green is `bash check.sh`, never `go test` alone.
+Linux x86-64, Linux ARM64 and Windows x86-64. CI's Linux runners run as an ordinary user who may
+use sudo without a password; CI's Windows runner runs as its built-in administrator, elevated. A
+test that can run on Linux alone is named `TestLinux…`, one that needs root through sudo
+`TestLinuxRoot…`, one that needs a Linux container oracle `TestOracle…`, and one that needs an
+elevated Windows process `TestWindowsElevated…`. Windows CI skips `TestOracle…` and `TestLinux…`;
+a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSKIP`. Green is
+`bash check.sh`, never `go test` alone.
 
 ## A run's own folder
 

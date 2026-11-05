@@ -94,6 +94,7 @@ linters:
             - "!**/internal/telnets/**"
             - "!**/internal/listener/**"
             - "!**/internal/database/**"
+            - "!**/internal/bootstrap/**"
             - "!**/cmd/hadv-service/**"
             - "!**/tools/**"
             - "!**/internal/testrun/*_windows.go"
@@ -228,6 +229,18 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/database$
             # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
+        bootstrap:
+          files: ["**/internal/bootstrap/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            # The key file's owner and access list on Windows, which the standard library cannot
+            # read (bootstrap Part 1).
+            - golang.org/x/sys/windows$
+            # Its own path, so its black-box tests in package bootstrap_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/bootstrap$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         hadv-service:
           files: ["**/cmd/hadv-service/**"]
           list-mode: strict
@@ -241,9 +254,12 @@ linters:
             # It reads the TLS certificate and key and pairs the Telnet over TLS listener's
             # sockets with its way in (Part 8).
             - github.com/heliosestate/heliosadvance/internal/telnets$
-            # It reads the connection file and takes the lease before it listens, and closes the
-            # listeners when the lease is lost (database Part 1).
+            # It parses the connection settings and takes the lease before it listens, and closes
+            # the listeners when the lease is lost (database Part 1, bootstrap Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
+            # It opens the bootstrap folder the command line names and hands the unsealed
+            # connection settings to the database unit (bootstrap Part 1).
+            - github.com/heliosestate/heliosadvance/internal/bootstrap$
             # The test support, for its tests alone (check.sh's gate 4i).
             - github.com/heliosestate/heliosadvance/internal/testrun$
         # The test support's Windows files, which find and end a dead run's programs (the
@@ -346,6 +362,17 @@ linters:
       - path: ^internal/testrun/
         linters: [gosec]
         text: G(204|304)
+      # The key file's check on Windows reads the account each entry of the access list names.
+      # The account sits just past the entry's fixed fields, reached only by a pointer conversion:
+      # golang.org/x/sys/windows gives no other way, and its own tests convert the same way. The
+      # developer's decision, 2026-11-04, for this one file, in place of reading the accounts out
+      # of the access list's text form, which would put a parser inside the check.
+      - path: ^internal/bootstrap/keyfile_windows\.go$
+        linters: [depguard]
+        text: "'unsafe'"
+      - path: ^internal/bootstrap/keyfile_windows\.go$
+        linters: [gosec]
+        text: G103
 
 formatters:
   enable:
