@@ -14,3 +14,4 @@ loop-identities
 qa-signers
 qa-grandfathered
 internal/testrun/*
+oracle/*
