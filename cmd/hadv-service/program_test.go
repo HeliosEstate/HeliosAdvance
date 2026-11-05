@@ -3,8 +3,8 @@
 
 // The program run from outside: TestMain builds cmd/hadv-service once and prepares its database,
 // and each row starts the built program with its own options and a bootstrap folder for a row of
-// its own, reads its standard error as the local log, drives it with the scripted Telnet caller
-// over loopback, and waits for it to exit.
+// its own, reads its standard output as the local log, keeps its standard error apart, drives it
+// with the scripted Telnet caller over loopback, and waits for it to exit.
 package main_test
 
 import (
@@ -96,12 +96,14 @@ type run struct {
 	// lines receives each line of the local log as it arrives.
 	lines chan string
 	// exited is closed once the log has ended and the program has exited.
-	exited   chan struct{}
-	mutex    sync.Mutex
-	log      []byte
-	entries  []logEntry
-	exitCode int
-	exitedAt time.Time
+	exited chan struct{}
+	// standardError is what the program wrote to standard error, whole once it has exited.
+	standardError *boundedBuffer
+	mutex         sync.Mutex
+	log           []byte
+	entries       []logEntry
+	exitCode      int
+	exitedAt      time.Time
 }
 
 // logEntry is one line of the local log and when the test read it.
@@ -132,23 +134,24 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 	command.SysProcAttr = processAttributes()
 	command.WaitDelay = testrun.Patient(testrun.HangBound)
 	// A program built with the race detector sleeps a second at exit by default, waiting for late
-	// reports, which would read as a slow exit; a race it finds still reaches the log and fails
-	// the row.
+	// reports, which would read as a slow exit.
 	if testrun.Race {
 		if command.Env == nil {
 			command.Env = os.Environ()
 		}
 		command.Env = append(command.Env, "GORACE=atexit_sleep_ms=0")
 	}
-	stderr, err := command.StderrPipe()
+	stdout, err := command.StdoutPipe()
 	if err != nil {
-		t.Fatalf("the program's standard error: %v", err)
+		t.Fatalf("the program's standard output: %v", err)
 	}
+	standardError := &boundedBuffer{}
+	command.Stderr = standardError
 	if err := command.Start(); err != nil {
 		t.Fatalf("starting the program: %v", err)
 	}
-	program := &run{command: command, lines: make(chan string, 64), exited: make(chan struct{})}
-	go program.read(stderr)
+	program := &run{command: command, lines: make(chan string, 64), exited: make(chan struct{}), standardError: standardError}
+	go program.read(stdout)
 	t.Cleanup(func() {
 		select {
 		case <-program.exited:
@@ -156,13 +159,56 @@ func startCommand(t *testing.T, command *exec.Cmd) *run {
 			_ = command.Process.Kill()
 			<-program.exited
 		}
+		expectNoCrashReport(t, standardError.String())
 	})
 	return program
 }
 
+// crashReports are how Go's runtime starts what it writes to standard error for a race the race
+// detector found, a panic, and a fatal error.
+var crashReports = []string{"WARNING: DATA RACE", "panic: ", "fatal error: "}
+
+// expectNoCrashReport fails the row when the program's standard error holds a crash report. Go's
+// runtime writes these to standard error, which is not the local log, so no check of the log would
+// see them.
+func expectNoCrashReport(t *testing.T, standardError string) {
+	t.Helper()
+	for _, report := range crashReports {
+		if strings.Contains(standardError, report) {
+			t.Errorf("the program's standard error holds a crash report, %q:\n%s", report, standardError)
+			return
+		}
+	}
+}
+
+// mostStandardError bounds what a row keeps of the program's standard error: room for a race
+// report or a panic.
+const mostStandardError = 1 << 20
+
+// boundedBuffer keeps the first mostStandardError bytes written to it and takes the rest without
+// keeping it, so a program that floods standard error is neither blocked nor kept whole.
+type boundedBuffer struct {
+	mutex sync.Mutex
+	kept  []byte
+}
+
+func (buffer *boundedBuffer) Write(data []byte) (int, error) {
+	buffer.mutex.Lock()
+	defer buffer.mutex.Unlock()
+	room := max(0, mostStandardError-len(buffer.kept))
+	buffer.kept = append(buffer.kept, data[:min(room, len(data))]...)
+	return len(data), nil
+}
+
+func (buffer *boundedBuffer) String() string {
+	buffer.mutex.Lock()
+	defer buffer.mutex.Unlock()
+	return string(buffer.kept)
+}
+
 // read keeps the whole log, hands each line on as it arrives, and waits for the exit.
-func (program *run) read(stderr io.Reader) {
-	reader := bufio.NewReader(stderr)
+func (program *run) read(stdout io.Reader) {
+	reader := bufio.NewReader(stdout)
 	for {
 		line, err := reader.ReadString('\n')
 		program.mutex.Lock()
@@ -448,7 +494,12 @@ func (program *run) lineCount() int {
 func (program *run) expectLog(t *testing.T, want ...string) []string {
 	t.Helper()
 	<-program.exited
-	text := program.text()
+	return expectLogText(t, program.text(), want...)
+}
+
+// expectLogText checks a whole local log, read from wherever it went, as expectLog does.
+func expectLogText(t *testing.T, text string, want ...string) []string {
+	t.Helper()
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		t.Fatalf("the local log does not end in LF: %q", text)
 	}
