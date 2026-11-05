@@ -473,7 +473,10 @@ func expectProcessEnds(t *testing.T, process *os.Process) {
 		}
 	case <-timer.C:
 		select {
-		case <-ended:
+		case err := <-ended:
+			if err != nil {
+				t.Fatalf("waiting for the service's process to end: %v", err)
+			}
 		default:
 			t.Fatalf("the service's process had not ended %v after the service stopped", bound)
 		}
