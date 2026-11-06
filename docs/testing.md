@@ -108,6 +108,14 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - A row sets a file's permissions from outside the engine, with the system's own tools where its
   package may not import more: chmod, setfacl and sudo on Linux; icacls, and PowerShell for a file
   with no access list at all, which icacls cannot write, on Windows.
+- Whether another account may reach a file on Linux is asked of the system itself, as the account
+  `nobody` through `sudo -n -u nobody`, running `test` with `-r`, `-w` or `-x`, which answers for
+  that account, access-list entries included. The row reads the answer as exactly yes or no, so a
+  sudo that cannot run fails the row and never reads as a "no".
+- To ask about a file, `nobody` needs search (x, never read) on every folder above it. A row gives
+  that to each folder from the file's own up to the run's own; above it, `/tmp` lets anyone search,
+  and Go's numbered temporary folder is 0755 already. The row first asks that `nobody` may search
+  the file's folder, so every later answer is about the file alone.
 - On Windows a file opened through `os.Root` lets others delete it, so removing its folder succeeds
   while it is still open. A row that checks a file or folder was closed opens it with no sharing at
   all, which fails while any other handle is open, however that handle shares.

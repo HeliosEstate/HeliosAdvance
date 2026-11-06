@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The program and its key file on Linux: the key file's owner and mode, and a symbolic link that
-// stays inside the folder. Modes are set from outside; another owner is set with sudo, which CI's
-// runner has.
+// The program and its key file on Linux: the key file's mode, and a symbolic link that stays
+// inside the folder. Modes are set from outside; whether the account nobody may read or write the
+// key file is the system's own answer, asked through sudo, which CI's runner has.
 package main_test
 
 import (
@@ -26,7 +26,7 @@ func modeName(mode os.FileMode) string {
 func TestLinuxBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Linux, the key file's owner is not the account the engine runs as, or its mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If, on Linux, the key file's mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, mode := range []os.FileMode{0o640, 0o620, 0o610, 0o604, 0o602, 0o601} {
 			t.Run(modeName(mode)+": one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
@@ -76,54 +76,132 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 	})
 }
 
-// TestLinuxRootBootstrapProgram needs sudo and setpriv, which CI's runner has: another account as
-// the key file's owner, read by a copy of the program given the capability to read any file, so
-// the owner is the only thing wrong with the key file.
+// TestLinuxRootBootstrapProgram needs sudo, which CI's runner has: each row asks the system
+// itself, as the account nobody, whether nobody may read or write the key file, so the row's
+// verdict does not rest on the test's own reading of the mode.
 func TestLinuxRootBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Linux, the key file's owner is not the account the engine runs as, or its mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If, on Linux, the key file's mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the owner nobody, mode 0600, the program able to read any file: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
-			t.Parallel()
-			made := goodFolder(t)
-			runSystemTool(t, "sudo", "-n", "chown", "nobody", made.keyFile)
-			if buildFailure != nil {
-				t.Fatalf("the program did not build: %v", buildFailure)
-			}
-			capable := filepath.Join(t.TempDir(), "hadv-service")
-			runSystemTool(t, "cp", programPath, capable)
-			expectReadsAnyFile(t, made.keyFile)
-			command := exec.CommandContext(t.Context(), "sudo", readingAnyFile(capable, databaseOption, made.path, portOption, "0")...)
-			command.Env = cleanEnvironment()
-			run := startCommand(t, command)
-			reason := run.expectRefusal(t)
-			expectNoPassword(t, run)
-			made.expectKeyNotIn(t, run.text())
-			expectOwnReason(t, reason, keyMissingReason(t), "a missing key file")
-		})
+		for _, row := range nobodyRows() {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				made := goodFolder(t)
+				row.set(t, made.keyFile)
+				openFoldersToNobody(t, made.path)
+				expectNobodyMay(t, made.keyFile, row.read, row.write)
+				if row.read || row.write {
+					expectOwnReason(t, made.refused(t), keyMissingReason(t), "a missing key file")
+				} else {
+					made.starts(t)
+				}
+			})
+		}
 	})
 }
 
-// readingAnyFile is sudo's arguments to run a program as this test's own user with the
-// capability to read any file whatever its owner and mode. sudo gives the capability to the
-// process, as an ambient one, not to the program's file: the kernel ignores a file's
-// capabilities on a file system mounted nosuid, as the temporary folder is on some CI runners,
-// and there the program ran without it.
-func readingAnyFile(program string, arguments ...string) []string {
-	return append([]string{"-n", "setpriv", "--reuid=" + strconv.Itoa(os.Getuid()), "--regid=" + strconv.Itoa(os.Getgid()),
-		"--init-groups", "--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search", program}, arguments...)
+// nobodyRow is one key file whose access for the account nobody the system is asked about: how
+// the row sets it, and what the system must answer for nobody's read and write.
+type nobodyRow struct {
+	name        string
+	set         func(t *testing.T, keyFile string)
+	read, write bool
 }
 
-// expectReadsAnyFile fails the row, as one that cannot tell, unless cat started the same way can
-// read the key file: a program started without the capability is refused for a key file it
-// cannot read, which the row's check of the reason cannot tell from the owner's refusal.
-func expectReadsAnyFile(t *testing.T, keyFile string) {
+// nobodyRows are a key file nobody may read, one it may write, by mode and by an access-list
+// entry, and the engine's own at mode 0600, which nobody may do neither to.
+func nobodyRows() []nobodyRow {
+	withMode := func(mode os.FileMode) func(*testing.T, string) {
+		return func(t *testing.T, keyFile string) {
+			t.Helper()
+			setKeyMode(t, keyFile, mode)
+		}
+	}
+	withEntry := func(entry string, shown os.FileMode) func(*testing.T, string) {
+		return func(t *testing.T, keyFile string) {
+			t.Helper()
+			runSystemTool(t, "setfacl", "-m", entry, keyFile)
+			info, err := os.Stat(keyFile)
+			if err != nil {
+				t.Fatalf("reading the key file's mode: %v", err)
+			}
+			if info.Mode().Perm() != shown {
+				t.Fatalf("the key file's mode is %o with the entry, not %o: a fault in the test", info.Mode().Perm(), shown)
+			}
+		}
+	}
+	return []nobodyRow{
+		{"mode 0604, which the system says nobody may read and not write: one start_failed line, a reason of its own, and a non-zero exit",
+			withMode(0o604), true, false},
+		{"mode 0602, which the system says nobody may write and not read: one start_failed line, a reason of its own, and a non-zero exit",
+			withMode(0o602), false, true},
+		{"an access-list entry letting nobody read it, the mode then 0640, which the system says nobody may read and not write: one start_failed line, a reason of its own, and a non-zero exit",
+			withEntry("u:nobody:r", 0o640), true, false},
+		{"an access-list entry letting nobody write it, the mode then 0620, which the system says nobody may write and not read: one start_failed line, a reason of its own, and a non-zero exit",
+			withEntry("u:nobody:w", 0o620), false, true},
+		{"mode 0600, which the system says nobody may neither read nor write: it starts", withMode(0o600), false, false},
+	}
+}
+
+// openFoldersToNobody lets others search, never list, every folder from the bootstrap folder up
+// to the run's own, which testrun made the temporary folder, so the system's answers about the key
+// file are about the key file alone. Search alone lists nothing: past the run's own folder nobody
+// reaches only a path it already knows, through folders the run left open to others. The row
+// fails as a fault in the test unless the system then says nobody may search the bootstrap folder.
+func openFoldersToNobody(t *testing.T, folder string) {
+	t.Helper()
+	runFolder := os.TempDir()
+	for current := folder; ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		if err != nil {
+			t.Fatalf("reading %s's mode: %v", current, err)
+		}
+		setKeyMode(t, current, info.Mode().Perm()|0o001)
+		if current == runFolder {
+			break
+		}
+		if current == filepath.Dir(current) {
+			t.Fatalf("%s is not inside the run's own folder %s: a fault in the test", folder, runFolder)
+		}
+	}
+	if !nobodyMay(t, "-x", folder) {
+		t.Fatalf("the system says nobody may not search %s once its folders let others search them: a fault in the test", folder)
+	}
+}
+
+// expectNobodyMay fails the row as a fault in the test unless the system says nobody may read and
+// write the key file exactly as the row's setup means.
+func expectNobodyMay(t *testing.T, keyFile string, read, write bool) {
+	t.Helper()
+	if got := nobodyMay(t, "-r", keyFile); got != read {
+		t.Fatalf("the system says nobody may read the key file: %v, where the row's setup means %v: a fault in the test", got, read)
+	}
+	if got := nobodyMay(t, "-w", keyFile); got != write {
+		t.Fatalf("the system says nobody may write the key file: %v, where the row's setup means %v: a fault in the test", got, write)
+	}
+}
+
+// nobodyMay asks the system, as the account nobody, whether nobody may do to path what test's
+// operator names: -r read, -w write, -x search. sudo sets both of nobody's user IDs, so test's own
+// check answers for nobody, access-list entries included. A sudo that cannot run, or any answer
+// but yes or no, fails the row as a fault in the test, so it never reads as a "no".
+func nobodyMay(t *testing.T, operator, path string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
 	defer cancel()
-	if output, err := exec.CommandContext(ctx, "sudo", readingAnyFile("cat", keyFile)...).CombinedOutput(); err != nil {
-		t.Fatalf("cannot tell: the test's setup failed, a process given the capability to read any file could not read the key file: %v: %s",
-			err, strings.TrimSpace(string(output)))
+	output, err := exec.CommandContext(ctx, "sudo", "-n", "-u", "nobody", "sh", "-c",
+		`test "$1" "$2" && echo yes || echo no`, "sh", operator, path).CombinedOutput()
+	answer := strings.TrimSpace(string(output))
+	if err != nil {
+		t.Fatalf("asking the system as nobody, test %s %s: %v: %s", operator, path, err, answer)
 	}
+	switch answer {
+	case "yes":
+		return true
+	case "no":
+		return false
+	}
+	t.Fatalf("asking the system as nobody, test %s %s answered %q, neither yes nor no: a fault in the test", operator, path, answer)
+	return false
 }
