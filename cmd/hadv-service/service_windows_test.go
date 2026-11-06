@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -123,7 +124,17 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 	icacls(t, program, "/grant", serviceAccount+":(RX)")
 	if !setup.withoutBootstrap {
 		icacls(t, keyFile, "/setowner", "*"+administratorsSID)
-		icacls(t, keyFile, "/inheritance:r", "/grant:r", "*"+administratorsSID+":(F)", serviceAccount+":(R)")
+		// Written whole: on CI's runner icacls /inheritance:r with /grant:r kept the inherited
+		// entries as the file's own, the runner's account among them, which the engine refuses.
+		account, _, _, err := syscall.LookupSID("", serviceAccount)
+		if err != nil {
+			t.Fatalf("looking up %s: %v", serviceAccount, err)
+		}
+		accountSID, err := account.String()
+		if err != nil {
+			t.Fatalf("reading %s's SID: %v", serviceAccount, err)
+		}
+		setAccessList(t, keyFile, "D:P(A;;FA;;;"+administratorsSID+")(A;;FR;;;"+accountSID+")")
 		icacls(t, bootstrap, "/grant", serviceAccount+":(OI)(CI)(RX)")
 	}
 	icacls(t, logFolder, "/grant", serviceAccount+":(OI)(CI)(M)")
@@ -512,7 +523,7 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 			service := installService(t, serviceSetup{settings: created.file()})
 			since := time.Now()
 			service.startRunning(t)
-			tried := server.waitForTry(t, created.login, since, time.Now().Add(testrun.Patient(serviceStartBound)))
+			tried := server.waitForTry(t, created.login, since, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if time.Now().After(tried.Add(tryLimit - leaseMargin)) {
 				t.Fatalf("cannot tell: the test read the engine's first try %v after it, too near the try's own end", time.Since(tried))
 			}

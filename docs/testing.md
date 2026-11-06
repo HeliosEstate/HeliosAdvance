@@ -118,6 +118,9 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   reads it. A row that needs a file that will not open holds it with no sharing, for reading and
   writing, until it ends; one that needs a folder holds it with no sharing for reading, which
   `os.OpenRoot` cannot get past. Either still shows as there.
+- On CI's Windows runner, icacls given `/inheritance:r` and `/grant:r` in one call kept the
+  inherited entries as the file's own, the runner's account among them. A row that needs an exact
+  access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
 - A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on
