@@ -76,9 +76,9 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 	})
 }
 
-// TestLinuxRootBootstrapProgram needs sudo, which CI's runner has: each row asks the system
-// itself, as the account nobody, whether nobody may read or write the key file, so the row's
-// verdict does not rest on the test's own reading of the mode.
+// TestLinuxRootBootstrapProgram needs sudo, which CI's runner has: each row first asks the system
+// itself, as the account nobody, whether nobody may read or write the key file, which proves the
+// row's setup gives nobody exactly that access, and only then judges the program.
 func TestLinuxRootBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
@@ -147,24 +147,38 @@ func nobodyRows() []nobodyRow {
 // openFoldersToNobody lets others search, never list, every folder from the bootstrap folder up
 // to the run's own, which testrun made the temporary folder, so the system's answers about the key
 // file are about the key file alone. Search alone lists nothing: past the run's own folder nobody
-// reaches only a path it already knows, through folders the run left open to others. The row
-// fails as a fault in the test unless the system then says nobody may search the bootstrap folder.
+// reaches only a path it already knows. The row's own folders get their modes back when it ends;
+// the run's own folder keeps others' search until testrun removes it, since the rows beside this
+// one still need it. The row fails as a fault in the test unless the system then says nobody may
+// search the bootstrap folder.
 func openFoldersToNobody(t *testing.T, folder string) {
 	t.Helper()
 	runFolder := os.TempDir()
-	for current := folder; ; current = filepath.Dir(current) {
-		info, err := os.Stat(current)
-		if err != nil {
-			t.Fatalf("reading %s's mode: %v", current, err)
-		}
-		setKeyMode(t, current, info.Mode().Perm()|0o001)
-		if current == runFolder {
-			break
-		}
+	var own []string
+	for current := folder; current != runFolder; current = filepath.Dir(current) {
 		if current == filepath.Dir(current) {
 			t.Fatalf("%s is not inside the run's own folder %s: a fault in the test", folder, runFolder)
 		}
+		own = append(own, current)
 	}
+	for _, path := range own {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("reading %s's mode: %v", path, err)
+		}
+		mode := info.Mode().Perm()
+		setKeyMode(t, path, mode|0o001)
+		t.Cleanup(func() {
+			if err := os.Chmod(path, mode); err != nil {
+				t.Errorf("giving %s its mode back: %v", path, err)
+			}
+		})
+	}
+	info, err := os.Stat(runFolder)
+	if err != nil {
+		t.Fatalf("reading %s's mode: %v", runFolder, err)
+	}
+	setKeyMode(t, runFolder, info.Mode().Perm()|0o001)
 	if !nobodyMay(t, "-x", folder) {
 		t.Fatalf("the system says nobody may not search %s once its folders let others search them: a fault in the test", folder)
 	}
@@ -184,24 +198,30 @@ func expectNobodyMay(t *testing.T, keyFile string, read, write bool) {
 
 // nobodyMay asks the system, as the account nobody, whether nobody may do to path what test's
 // operator names: -r read, -w write, -x search. sudo sets both of nobody's user IDs, so test's own
-// check answers for nobody, access-list entries included. A sudo that cannot run, or any answer
-// but yes or no, fails the row as a fault in the test, so it never reads as a "no".
+// check answers for nobody, access-list entries included. The shell prints test's own exit code,
+// read from standard output alone: 0 is yes, 1 is no. Anything else, such as test's 2 for a
+// question it cannot ask, or a sudo that cannot run, which prints none, fails the row as a fault
+// in the test, so it never reads as a "no".
 func nobodyMay(t *testing.T, operator, path string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "sudo", "-n", "-u", "nobody", "sh", "-c",
-		`test "$1" "$2" && echo yes || echo no`, "sh", operator, path).CombinedOutput()
-	answer := strings.TrimSpace(string(output))
+	var complaints strings.Builder
+	command := exec.CommandContext(ctx, "sudo", "-n", "-u", "nobody", "sh", "-c",
+		`test "$1" "$2"; echo "$?"`, "sh", operator, path)
+	command.Stderr = &complaints
+	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("asking the system as nobody, test %s %s: %v: %s", operator, path, err, answer)
+		t.Fatalf("asking the system as nobody, test %s %s: %v: %s", operator, path, err, strings.TrimSpace(complaints.String()))
 	}
-	switch answer {
-	case "yes":
+	switch code := strings.TrimSpace(string(output)); code {
+	case "0":
 		return true
-	case "no":
+	case "1":
+		return false
+	default:
+		t.Fatalf("asking the system as nobody, test %s %s ended with %q, neither 0 nor 1: a fault in the test; it wrote: %s",
+			operator, path, code, strings.TrimSpace(complaints.String()))
 		return false
 	}
-	t.Fatalf("asking the system as nobody, test %s %s answered %q, neither yes nor no: a fault in the test", operator, path, answer)
-	return false
 }
