@@ -108,6 +108,17 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - A row sets a file's permissions from outside the engine, with the system's own tools where its
   package may not import more: chmod, setfacl and sudo on Linux; icacls, and PowerShell for a file
   with no access list at all, which icacls cannot write, on Windows.
+- Whether another account may reach a file on Linux is asked of the system itself, as the account
+  `nobody` through `sudo -n -u nobody`, running `test` with `-r`, `-w` or `-x`, which answers for
+  that account, access-list entries included. The shell prints `test`'s exit code, and the row
+  reads standard output alone: 0 is yes, 1 is no, and anything else, a sudo that cannot run
+  included, fails the row, so it never reads as a "no".
+- To ask about a file, `nobody` needs search (x, never read) on every folder above it. A row gives
+  that to each folder from the file's own up to the run's own, and gives its own folders their
+  modes back when it ends; the run's own folder, which rows beside it share, keeps search until the
+  run removes it. The folders above the run's own are those of the temporary folder the run started
+  in, `/tmp` on CI's runners, which lets anyone search. The row first asks that `nobody` may search
+  the file's folder, so every later answer is about the file alone.
 - On Windows a file opened through `os.Root` lets others delete it, so removing its folder succeeds
   while it is still open. A row that checks a file or folder was closed opens it with no sharing at
   all, which fails while any other handle is open, however that handle shares.
