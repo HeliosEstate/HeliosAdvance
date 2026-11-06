@@ -111,22 +111,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # The versions are pinned in .github/tool-versions, one place for every workflow. The linter
-      # is the released binary on every runner: its own documentation says a go install build is
-      # not guaranteed to work. Its install script serves Windows (a zip, unpacked with unzip, an
-      # .exe) and wants a POSIX path, which cygpath gives from Go's Windows-form GOPATH. Only the
-      # job that runs the gates installs them.
-      - name: Install gates
-        if: matrix.gates
-        run: |
-          source .github/tool-versions
-          bin="$(go env GOPATH)/bin"
-          [ "$RUNNER_OS" = Windows ] && bin="$(cygpath -u "$(go env GOPATH)")/bin"
-          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$GOLANGCI_LINT/install.sh" | sh -s -- -b "$bin" "$GOLANGCI_LINT"
-          golangci-lint --version
-          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
-          go install github.com/google/go-licenses/v2@"$GO_LICENSES"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # The gate tools are not installed here: check.sh installs each at the version pinned in
+      # .github/tool-versions, by go install, the same on every machine. Go's module proxy and
+      # checksum database fix what a version holds, so a moved tag cannot change what runs here, as
+      # an install script fetched by its tag and piped to sh could (the developer's "yes",
+      # 2026-11-03, over the linter's released binary, whose documentation does not support a go
+      # install build).
       # Plink, an outside Telnet client that Part 4's Telnet rows drive as an oracle, is on no
       # runner's image; only the program's rows drive it. Linux takes it from Ubuntu's signed
       # archive for the image; Windows takes PuTTY's own installer through winget at a fixed
@@ -141,6 +131,28 @@ jobs:
             export PATH="/c/Program Files/PuTTY:$PATH"
           else sudo apt-get update -q && sudo apt-get install -y -q putty-tools; fi
           plink -V
+      # Free Pascal, which builds the bootstrap file oracle (oracle/bootstrap-file) the tests make
+      # every bootstrap file with, on all three systems (bootstrap Part 1). The
+      # tests build the oracle themselves and run its self-test. Linux takes it from Ubuntu's signed
+      # archive; Windows takes the project's own installer through winget at a fixed version,
+      # checked against the SHA256 in winget's manifest (the developer, 2026-11-03). On Windows the
+      # compiler's folder is handed to the step that runs the tests alone, and put after that
+      # step's own PATH, never on every later step's: it carries a gcc of its own, 2.95, without the
+      # C headers, which ahead of the runner's gcc failed every race build with "stddef.h: No such
+      # file or directory", as PostgreSQL's folder is kept from shadowing the runner's programs.
+      - name: Install Free Pascal
+        if: matrix.group != 'listener'
+        id: freepascal
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            winget install --id FreePascal.FreePascalCompiler -e --version 3.2.2 --silent --disable-interactivity --accept-source-agreements --accept-package-agreements
+            bin=/c/FPC/3.2.2/bin/i386-win32
+            "$bin/fpc" -iV
+            echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          else
+            sudo apt-get update -q && sudo apt-get install -y -q fp-compiler
+            fpc -iV
+          fi
       # PostgreSQL, the database tests' oracle (database Part 1, HeliosAdvance #159). Each test run
       # makes its own throwaway server in a temporary folder with initdb and pg_ctl, as the
       # ordinary user, so it can stop and start it and change its sign-in rules; no system
@@ -190,6 +202,7 @@ jobs:
           ONLY: ${{ matrix.pkgs }}
           EXCEPT: ${{ matrix.except }}
           PGDIR: ${{ steps.postgres.outputs.bin }}
+          FPCDIR: ${{ steps.freepascal.outputs.bin }}
           BASE: origin/${{ github.base_ref || 'development' }}
           TIMED: ${{ runner.temp }}/timed.txt
         run: |
@@ -199,6 +212,8 @@ jobs:
           echo "testing: $PKGS"
           export PKGS
           [ -n "$PGDIR" ] && export PATH="$PGDIR:$PATH"
+          # After the runner's own programs, so its gcc stays the one cgo finds.
+          [ -n "$FPCDIR" ] && export PATH="$PATH:$FPCDIR"
           bash check.sh
       # Each timed row's place in its window, kept with the run (#258's item 7), so a margin is read
       # from ordinary runs, never from a probe branch; and each line where a row cannot tell (#217).

@@ -12,6 +12,36 @@ BASE="${BASE:-origin/development}"
 MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
+# pinned name module pin: prints the path of the Go tool name at the version .github/tool-versions
+# pins as pin, built by the Go in use, installed into a folder of its own for that version and that
+# Go when it is missing there. Whatever version is on the path is never run, so every machine runs
+# what CI runs, and a pin moved by its pull request moves every machine (the developer, 2026-11-05:
+# "it should install it if it's missing"). The install is a go install: Go's module proxy and
+# checksum database fix what a version holds, as in CI, unless the machine's own Go settings turn
+# them off. It goes to a folder beside its own and is renamed into place, so a check running beside
+# this one never runs a half-written tool. Each tool's version and the Go that built it go to the
+# log. It runs inside $(...), where set -e does not hold, so every step fails by itself.
+pinned() {
+  local version goenv gopath goversion hostos sep dir tmp
+  version=$(sed -n "s/^$3=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "$3 in .github/tool-versions is not a module version like v1.2.3, so $1 cannot be run at its pin"
+  goenv=$(go env GOPATH GOVERSION GOHOSTOS | tr -d '\r') || fail "go env failed, so $1 has no folder"
+  { read -r gopath; read -r goversion; read -r hostos; } <<< "$goenv"
+  # A GOPATH of several entries installs into its first, as go install does.
+  sep=:; [ "$hostos" = windows ] && sep=';'
+  gopath=${gopath%%"$sep"*}
+  [ -n "$gopath" ] && [ -n "$goversion" ] && [ -n "$hostos" ] || fail "go env gave no GOPATH, GOVERSION or GOHOSTOS, so $1 has no folder"
+  dir="$gopath/hadv-tools/$1/$version-$goversion"
+  if [ ! -x "$dir/$1" ]; then
+    mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
+    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install $1 into"
+    GOBIN="$tmp" go install "$2@$version" >&2 || { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
+    mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
+  fi
+  [ -x "$dir/$1" ] || fail "$1 $version is not in $dir: remove that folder and run the check again"
+  echo "check: $1 $version, built by $goversion" >&2
+  echo "$dir/$1"
+}
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
 # cannot run fails: fetch the base, or name in BASE the commit to judge from.
 if [ "$MUTATION" = 0 ]; then
@@ -110,24 +140,22 @@ is_qa() {
   grep -qxF "$(git rev-parse "$1")" <<< "$grandfathered" && return 0
   [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
 }
-# Paths are read NUL-separated and git quotes nothing, so a name with a space or a quote is judged
-# like any other; renames are split into a deletion and an addition (--no-renames), so a renamed
+# Paths are read NUL-separated and git quotes nothing, and each goes back to git as :(literal), so
+# a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
+# gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
 qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
 if [ -n "$qa" ]; then
-  changed=$(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go' | tr '\0' '\n') ||
-    fail "git could not list the tests changed since the QA commit"
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
   # commit left it as it found it and HEAD holds it as the base does; gate 4a locks the base's
   # tests. The base's copy over a test this QA commit changed is still a change to it.
-  if [ -n "$changed" ] && git rev-parse -q --verify "$BASE" >/dev/null 2>&1 &&
-    forked=$(git merge-base "$qa" "$BASE"); then
-    changed=$(while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      git diff --quiet "$forked" "$qa" -- "$f" && git diff --quiet "$BASE" HEAD -- "$f" || echo "$f"
-    done <<< "$changed")
-  fi
+  git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && forked=$(git merge-base "$qa" "$BASE") || forked=""
+  changed=$(while IFS= read -r -d '' f; do
+      [ -n "$forked" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+      echo "$f"
+    done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go')
+    wait $!) || fail "git could not list the tests changed since the QA commit"
   [ -z "$changed" ] || { echo "$changed"; fail "test files approved at ${qa:0:8} were changed or deleted"; }
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
@@ -138,11 +166,8 @@ fi
 if [ "$MUTATION" = 0 ]; then
   exclude=()
   [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1 && exclude=(--not origin/development)
-  basetests=$(git diff -z --no-renames --name-only --diff-filter=MDT "$BASE...HEAD" -- '*_test.go' | tr '\0' '\n') ||
-    fail "git could not list the tests this branch changed"
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- "$f") || fail "git could not list the commits to $f"
+  while IFS= read -r -d '' f; do
+    commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- ":(literal)$f") || fail "git could not list the commits to $f"
     # A merge whose copy of the file is one of its parents' adds nothing of its own: git lists it
     # when that parent is on the base and the other side's copy differs, and every change on the
     # other side is a commit of its own, judged here or on the base. A merge that writes what
@@ -150,11 +175,12 @@ if [ "$MUTATION" = 0 ]; then
     nonqa=$(for c in $commits; do
       parents=$(git rev-list --parents -n 1 "$c" | cut -s -d' ' -f2-)
       case $parents in *' '*)
-        for p in $parents; do git diff --quiet "$p" "$c" -- "$f" && continue 2; done ;;
+        for p in $parents; do git diff --quiet "$p" "$c" -- ":(literal)$f" && continue 2; done ;;
       esac
       is_qa "$c" || echo "$c"; done)
     [ -z "$nonqa" ] || { echo "$f: $nonqa"; fail "a test file on $BASE was changed or deleted by a non-QA commit"; }
-  done <<< "$basetests"
+  done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$BASE...HEAD" -- '*_test.go')
+  wait $! || fail "git could not list the tests this branch changed"
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
 # base holds it passed this gate on its own branch before it merged; a squash merge drops the
@@ -164,8 +190,8 @@ onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
 goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
 goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
-  [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- "$f" && continue
-  last=$(git log -1 --format=%H -- "$f")
+  [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+  last=$(git log -1 --format=%H -- ":(literal)$f")
   is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
@@ -252,9 +278,9 @@ pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
   echo "Go gates checked by another job of this run; tests only"
 elif [ -n "$pkgs" ]; then
-  need golangci-lint "https://golangci-lint.run"
-  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck at the version in .github/tool-versions"
-  need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
+  lint=$(pinned golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint GOLANGCI_LINT)
+  vulncheck=$(pinned govulncheck golang.org/x/vuln/cmd/govulncheck GOVULNCHECK)
+  licencecheck=$(pinned go-licenses github.com/google/go-licenses/v2 GO_LICENSES)
   go mod verify
   # Every module the engine is built from, indirect ones included, carries a licence that can
   # be combined with AGPL-3.0-only; the engine's own module is the AGPL-3.0 one.
@@ -264,7 +290,7 @@ elif [ -n "$pkgs" ]; then
   # fails on every standard package. The root of the Go in use is passed to it.
   goroot=$(go env GOROOT)
   for os in windows linux; do
-    GOROOT=$goroot GOOS=$os go-licenses check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
+    GOROOT=$goroot GOOS=$os "$licencecheck" check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
       fail "a module's licence ($os build) is not one AGPL-3.0-only can carry: $licences"
   done
   # With one main package, go build writes its program into the clone; build into a temporary
@@ -273,21 +299,35 @@ elif [ -n "$pkgs" ]; then
   go build -o "$buildout/" ./...
   rm -rf "$buildout"
   go vet ./...
-  golangci-lint run ./...
+  # The developer's .golangci.yml by name: found on its own, the linter prefers a .golangci.yaml,
+  # .toml or .json beside it, which any branch could add, and every rule would be gone unseen.
+  "$lint" run --config .golangci.yml ./...
   # Files built for one platform are linted only when GOOS names it, and the loop runs this
   # on Windows: lint the other platform too, so a Linux-only file's faults show before CI. With
   # cgo off, since a C compiler for this platform cannot preprocess the other platform's cgo
   # files in the standard library; the engine has no cgo, so its own files lint the same.
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
-  CGO_ENABLED=0 GOOS=$other golangci-lint run ./...
+  CGO_ENABLED=0 GOOS=$other "$lint" run --config .golangci.yml ./...
   go run ./tools/namecheck .
-  govulncheck ./...
+  "$vulncheck" ./...
 fi
 if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
-  # Windows, and CI sets the same pattern for its Windows runner.
-  [ "$(go env GOOS)" = windows ] && TESTSKIP=${TESTSKIP-'^(TestOracle|TestLinux)'}
+  # Windows, and CI sets the same pattern for its Windows runner. The rows that need an elevated
+  # process (TestWindowsElevated…) are skipped too when this one is not: CI's Windows runner is
+  # elevated and runs them, while the loop's run and the developer's are not, and would fail them
+  # for a right they lack rather than for a fault. Windows is asked whether this
+  # process's token holds the Administrators group, which only an elevated token does; anything but
+  # "True" counts as not elevated. A skip is always said, never silent.
+  if [ "$(go env GOOS)" = windows ] && [ -z "${TESTSKIP+set}" ]; then
+    elevated=$(powershell.exe -NoProfile -Command '([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)' 2>/dev/null | tr -d '\r')
+    if [ "$elevated" = True ]; then TESTSKIP='^(TestOracle|TestLinux)'
+    else
+      TESTSKIP='^(TestOracle|TestLinux|TestWindowsElevated)'
+      echo "check: this process is not elevated, so the TestWindowsElevated rows are skipped; CI runs them"
+    fi
+  fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
   # every failure from load on record came with every package at once (HeliosDesign #258).
   if [ -n "${TIMED:-}" ]; then
@@ -317,7 +357,7 @@ if [ -n "$pkgs" ]; then
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
   elif [ "$MUTATION" = 1 ] && { [ -n "${MUTATE:-}" ] || git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; }; then
-    need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
+    mutator=$(pinned gremlins github.com/go-gremlins/gremlins/cmd/gremlins GREMLINS)
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
     # could see its fault. The run still fails when gremlins fails or prints no result lines, since
@@ -337,7 +377,7 @@ if [ -n "$pkgs" ]; then
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
     mutants=
     for target in "${targets[@]}"; do
-      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" "$mutator" unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
       echo "$out"
       grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
       mutants+="$out"$'\n'

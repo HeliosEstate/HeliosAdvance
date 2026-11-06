@@ -73,18 +73,18 @@ jobs:
             qa/*)
               echo "packages=$(git diff --name-only --no-renames --diff-filter=MD "$base" HEAD -- '*_test.go' '*/testdata/*' | sed 's|/testdata/.*|/x|' | xargs -r -n1 dirname | sort -u | engine | sed 's|^|./|' | tr '\n' ' ')" >> "$GITHUB_OUTPUT" ;;
           esac
-      # The version is pinned in .github/tool-versions, one place for every workflow.
-      - name: Install gremlins
-        if: steps.scope.outputs.diff || steps.scope.outputs.packages
-        run: |
-          source .github/tool-versions
-          go install github.com/go-gremlins/gremlins/cmd/gremlins@"$GREMLINS"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # gremlins is not installed here: check.sh --mutation installs it at the version pinned in
+      # .github/tool-versions.
       # Plink, the outside Telnet client Part 4's Telnet rows drive as an oracle, is not on the
       # runner's image; it comes from Ubuntu's signed archive, as in check.yml.
       - name: Install Plink
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
         run: sudo apt-get update -q && sudo apt-get install -y -q putty-tools && plink -V
+      # Free Pascal, which builds the bootstrap file oracle the tests make every bootstrap file
+      # with; from Ubuntu's signed archive, as in check.yml.
+      - name: Install Free Pascal
+        if: steps.scope.outputs.diff || steps.scope.outputs.packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q fp-compiler && fpc -iV
       # PostgreSQL's tools, the database tests' oracle: the image's newest, on no PATH.
       - name: PostgreSQL's tools
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
