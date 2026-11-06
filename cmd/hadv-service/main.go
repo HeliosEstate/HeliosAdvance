@@ -276,7 +276,9 @@ func newKindListener[K listener.KindConnection](ctx context.Context, targets []t
 		}
 		return kindConnection, nil
 	}
-	kindListener, err := listener.New(sockets, open, count)
+	// Until Languages Part 1's build, the program loads no language, so every Listener gets nil
+	// Texts and every call it serves fails.
+	kindListener, err := listener.New(sockets, open, count, nil)
 	if err != nil {
 		return nil, nil, errors.Join(err, closeAll(sockets))
 	}

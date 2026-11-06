@@ -10,12 +10,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/session"
 	"github.com/heliosestate/heliosadvance/internal/textio"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
-// builds before the package is built and the build never needs to change the contract.
+// builds before the package is built and the build never needs to change the contract. Until
+// Languages Part 1's build, New takes the Texts and hands them to session.Run, but does not refuse
+// nil Texts.
 
 type listenerState struct {
 	stopContext context.Context
@@ -23,6 +26,7 @@ type listenerState struct {
 	sockets     []*net.TCPListener
 	open        Open
 	count       *ConnectionCount
+	texts       *language.Texts
 	goroutines  sync.WaitGroup
 	startOnce   sync.Once
 	stopOnce    sync.Once
@@ -41,7 +45,8 @@ func newCount() *ConnectionCount {
 
 // The stop context is made here, not in start, so that a Stop before Start has something to
 // cancel.
-func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount) (*Listener, error) {
+func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount,
+	texts *language.Texts) (*Listener, error) {
 	if len(sockets) == 0 || slices.Contains(sockets, nil) || open == nil || count == nil {
 		return nil, ErrNoListeners
 	}
@@ -51,6 +56,7 @@ func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount) 
 	state.sockets = slices.Clone(sockets)
 	state.open = open
 	state.count = count
+	state.texts = texts
 	return listener, nil
 }
 
@@ -138,7 +144,7 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 	if err != nil || kindConnection == nil {
 		return
 	}
-	if ending, err := session.Run(ctx, textio.New(kindConnection)); err != nil || ending != session.Answered {
+	if ending, err := session.Run(ctx, textio.New(kindConnection), state.texts); err != nil || ending != session.Answered {
 		return
 	}
 	//nolint:errcheck // the connection is closed next whatever the kind's close returns
