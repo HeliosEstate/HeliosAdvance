@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The program run from outside: TestMain builds cmd/hadv-service once and prepares its database,
-// and each row starts the built program with its own options and a connection file for a row of
+// and each row starts the built program with its own options and a bootstrap folder for a row of
 // its own, reads its standard error as the local log, drives it with the scripted Telnet caller
 // over loopback, and waits for it to exit.
 package main_test
@@ -60,12 +60,13 @@ func TestMain(tests *testing.M) {
 		os.Exit(1)
 	}
 	oracleFailure = prepareOracle()
+	bootstrapOraclePath, bootstrapOracleFailure = testrun.BuildBootstrapOracle(runFolder, filepath.Join("..", "..", "oracle", "bootstrap-file"))
 	directory, err := os.MkdirTemp("", "hadv-service-test-")
 	if err != nil {
 		buildFailure = err
 	} else {
 		name := "hadv-service"
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == windowsOS {
 			name += ".exe"
 		}
 		programPath = filepath.Join(directory, name)
@@ -109,7 +110,7 @@ type logEntry struct {
 	read time.Time
 }
 
-// startProgram starts the built program with a connection file for a row of its own on the
+// startProgram starts the built program with a bootstrap folder for a row of its own on the
 // shared board, then the given options, killed when the test ends.
 func startProgram(t *testing.T, options ...string) *run {
 	t.Helper()
@@ -207,8 +208,8 @@ func telnetAlone(t *testing.T, listeners []string) []string {
 	return telnet
 }
 
-// freedPortTries bounds startOnFreedPort: the race it tries again on was met once in all of PR
-// 129's runs (HeliosDesign #190), so a row that meets it this often is broken, not unlucky.
+// freedPortTries bounds startOnFreedPort: the race it tries again on was met once in all the runs
+// of the build that brought these rows, so a row that meets it this often is broken, not unlucky.
 const freedPortTries = 5
 
 // startOnFreedPort holds a port free at both loopback addresses, closes the hosts the row names
@@ -382,8 +383,11 @@ func (program *run) text() string {
 	return string(program.log)
 }
 
+// startFailedKey is the local log's key for a refusal to start.
+const startFailedKey = "start_failed"
+
 // logKeys are the only keys the local log may hold.
-var logKeys = []string{"started", "start_failed", "waiting", "lease_lost"}
+var logKeys = []string{"started", startFailedKey, "waiting", "lease_lost"}
 
 // waitForLine waits, by the deadline, for the local log's line at index, and returns its key, its
 // value and when it was read. A program that exits first, or a line that does not come, fails
@@ -481,7 +485,7 @@ func (program *run) expectRefusal(t *testing.T) string {
 	case <-timer.C:
 	}
 	code, _ := program.exit(t, time.Now().Add(startLimit))
-	values := program.expectLog(t, "start_failed")
+	values := program.expectLog(t, startFailedKey)
 	if code == 0 {
 		t.Fatalf("the program refused to start but exited with 0; its log:\n%s", program.text())
 	}

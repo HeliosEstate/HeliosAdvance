@@ -14,15 +14,16 @@ The engine, the board's server program.
 The engine's first layer accepts a Telnet caller, answers the caller's option requests, writes a
 greeting and hangs up. Part 2 replaces how it ends a call, and Part 4 what it sends at accept and
 which options it takes. The database's Part 1 makes it take its server's lease before it listens,
-and adds two lines to the local log.
+and adds two lines to the local log. The bootstrap's Part 1 names the bootstrap folder in place of
+the connection file.
 
 #### Greeting a caller
 
 What the engine sends at accept, and which option requests it takes or refuses, are Part 4's
 lines.
 
-- When it starts with a connection file and no other command-line option, the engine shall listen
-  for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.
+- When it starts with a bootstrap folder and no other command-line option, the engine shall
+  listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.
 - The engine shall send at most one reply to each option request.
 - If, during negotiation, the caller sends anything that is not an option request, AYT, AO or IP,
   then the engine shall discard it without reply.
@@ -309,28 +310,27 @@ servers meet.
 
 The engine connects to its database, signs in, checks the schema version and its server's row,
 and holds its server's lease while it listens. Where the database is and how to sign in come from
-a connection file named on the command line. Part 1 changes two of hadv-service Part 1's lines, on
-starting and on the local log.
+the bootstrap file, in the bootstrap folder named on the command line (the bootstrap's Part 1).
+Part 1 changes two of hadv-service Part 1's lines, on starting and on the local log.
 
-#### The connection file
+#### The connection settings
 
-- If it starts without a connection file on the command line, then the engine shall write one
+- If it starts without a bootstrap folder on the command line, then the engine shall write one
   `start_failed` line saying so, and exit with a non-zero code.
-- If the connection file is missing, unreadable, over 64 KiB, not in the connection file's
-  format, or missing a field or holding one the format does not name, then the engine shall write
-  one `start_failed` line saying which, and exit with a non-zero code.
-- If, on Linux, the connection file's mode lets its group or others read it, then the engine
-  shall write one `start_failed` line saying so, and exit with a non-zero code.
-- The engine shall take where it connects, its login and its password from the connection file
+- If the JSON object the bootstrap file seals is not in its format, or is missing a field or holds
+  one the format does not name, then the engine shall write one `start_failed` line saying which,
+  and exit with a non-zero code.
+- The engine shall take where it connects, its login and its password from the bootstrap file
   alone.
-- The engine shall not write the connection file's password to the local log.
+- The engine shall not write the bootstrap file's password, or the key in the key file, to the
+  local log.
 
 #### Signing in
 
 - The engine shall connect to the database only over TLS, and sign in only by SCRAM-SHA-256 with
-  channel binding, under the login the connection file names.
-- If the database's certificate does not chain to the certificate authority in the connection
-  file or does not name the file's host, the database asks for any other way of signing in, or it
+  channel binding, under the login the bootstrap file names.
+- If the database's certificate does not chain to the certificate authority in the bootstrap file
+  or does not name the file's host, the database asks for any other way of signing in, or it
   refuses the sign-in, then the engine shall write one `start_failed` line saying which, and exit
   with a non-zero code.
 - If its login holds any right on the database beyond those each part grants a server's login,
@@ -343,7 +343,7 @@ starting and on the local log.
 
 - If `hadv.schema_version` is missing or holds a version other than 1 or 2, then the engine shall
   write one `start_failed` line naming the version it found, and exit with a non-zero code.
-- If `hadv.servers` holds no row for the connection file's server ID, then the engine shall write
+- If `hadv.servers` holds no row for the bootstrap file's server ID, then the engine shall write
   one `start_failed` line saying so, and exit with a non-zero code.
 
 #### Waiting for the database
@@ -367,3 +367,45 @@ starting and on the local log.
   listener, write one `lease_lost` line, and try to take the lease again every 10 seconds.
 - When it receives a stop signal while it holds its server's lease, the engine shall set the
   lease end to the database's current time before it exits, unless the database does not answer.
+
+## bootstrap
+
+The bootstrap folder: the encrypted bootstrap file that tells the engine where its database is and
+how to sign in, and the key file holding the key it is sealed under.
+
+### Part 1: The bootstrap file and its key file
+
+The engine opens the bootstrap folder named on its command line, checks the key file's owner and
+permissions, and unseals the bootstrap file with the key in the key file. Part 1 changes one of
+hadv-service Part 1's lines and several of the database's Part 1, on where the connection
+settings come from.
+
+#### The bootstrap folder
+
+- If the bootstrap folder is missing or unreadable, or the bootstrap file or the key file in it
+  is missing, unreadable or a link leading out of the bootstrap folder, then the engine shall
+  write one `start_failed` line saying which, and exit with a non-zero code.
+- If the bootstrap file is over 64 KiB, then the engine shall write one `start_failed` line
+  saying so, and exit with a non-zero code.
+
+#### The key file's checks
+
+- If, on Linux, the key file's mode gives its group or others any access, then the engine shall
+  write one `start_failed` line saying so, and exit with a non-zero code.
+- If, on Windows, the key file's owner, or any entry of its access list that allows access, names
+  anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no
+  access list, then the engine shall write one `start_failed` line saying so, and exit with a
+  non-zero code.
+- If the engine is unable to confirm that no account but those above has access to the key
+  file, such as on Windows an access-list entry of a kind it does not judge, then the engine shall
+  write one `start_failed` line saying so, and exit with a non-zero code.
+- If the key file is not in the key file's form, or holds a key of 32 zero bytes, then the engine
+  shall write one `start_failed` line saying so, and exit with a non-zero code.
+
+#### The bootstrap file
+
+- If the bootstrap file's header is not format version 1's for the key file, or the bootstrap
+  file is too short for its header, nonce and tag, then the engine shall write one `start_failed`
+  line saying so, without reading the key file, and exit with a non-zero code.
+- If the bootstrap file does not unseal under the key in the key file, then the engine shall
+  write one `start_failed` line saying so, and exit with a non-zero code.

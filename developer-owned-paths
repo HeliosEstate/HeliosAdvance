@@ -7,7 +7,7 @@ internal/database/schema.sql
 lang/*
 CLAUDE.md
 check.sh
-.golangci.yml
+.golangci.*
 .claude/*
 developer-owned-paths
 security-paths
@@ -15,3 +15,4 @@ loop-identities
 qa-signers
 qa-grandfathered
 internal/testrun/*
+oracle/*
