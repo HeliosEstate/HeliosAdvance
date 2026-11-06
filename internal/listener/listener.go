@@ -5,6 +5,7 @@ package listener
 
 import (
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"sync"
@@ -17,8 +18,10 @@ import (
 
 // The contract's operations hand their work to the unexported functions below, so the contract
 // builds before the package is built and the build never needs to change the contract. Until
-// Languages Part 1's build, New takes the Texts and hands them to session.Run, but does not refuse
-// nil Texts.
+// Languages Part 1's build, New refuses nil Texts with an error of its own, never one the contract
+// names, and a Listener hands no Texts to session.Run.
+
+var errNotBuilt = errors.New("listener: not built yet")
 
 type listenerState struct {
 	stopContext context.Context
@@ -26,7 +29,6 @@ type listenerState struct {
 	sockets     []*net.TCPListener
 	open        Open
 	count       *ConnectionCount
-	texts       *language.Texts
 	goroutines  sync.WaitGroup
 	startOnce   sync.Once
 	stopOnce    sync.Once
@@ -50,13 +52,15 @@ func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount,
 	if len(sockets) == 0 || slices.Contains(sockets, nil) || open == nil || count == nil {
 		return nil, ErrNoListeners
 	}
+	if texts == nil {
+		return nil, errNotBuilt
+	}
 	listener := &Listener{}
 	state := &listener.state
 	state.stopContext, state.cancel = context.WithCancel(context.Background())
 	state.sockets = slices.Clone(sockets)
 	state.open = open
 	state.count = count
-	state.texts = texts
 	return listener, nil
 }
 
@@ -144,7 +148,7 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 	if err != nil || kindConnection == nil {
 		return
 	}
-	if ending, err := session.Run(ctx, textio.New(kindConnection), state.texts); err != nil || ending != session.Answered {
+	if ending, err := session.Run(ctx, textio.New(kindConnection), nil); err != nil || ending != session.Answered {
 		return
 	}
 	//nolint:errcheck // the connection is closed next whatever the kind's close returns
