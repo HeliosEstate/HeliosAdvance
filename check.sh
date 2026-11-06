@@ -12,6 +12,36 @@ BASE="${BASE:-origin/development}"
 MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
+# pinned name module pin: prints the path of the Go tool name at the version .github/tool-versions
+# pins as pin, built by the Go in use, installed into a folder of its own for that version and that
+# Go when it is missing there. Whatever version is on the path is never run, so every machine runs
+# what CI runs, and a pin moved by its pull request moves every machine (the developer, 2026-11-05:
+# "it should install it if it's missing"). The install is a go install: Go's module proxy and
+# checksum database fix what a version holds, as in CI, unless the machine's own Go settings turn
+# them off. It goes to a folder beside its own and is renamed into place, so a check running beside
+# this one never runs a half-written tool. Each tool's version and the Go that built it go to the
+# log. It runs inside $(...), where set -e does not hold, so every step fails by itself.
+pinned() {
+  local version goenv gopath goversion hostos sep dir tmp
+  version=$(sed -n "s/^$3=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "$3 in .github/tool-versions is not a module version like v1.2.3, so $1 cannot be run at its pin"
+  goenv=$(go env GOPATH GOVERSION GOHOSTOS | tr -d '\r') || fail "go env failed, so $1 has no folder"
+  { read -r gopath; read -r goversion; read -r hostos; } <<< "$goenv"
+  # A GOPATH of several entries installs into its first, as go install does.
+  sep=:; [ "$hostos" = windows ] && sep=';'
+  gopath=${gopath%%"$sep"*}
+  [ -n "$gopath" ] && [ -n "$goversion" ] && [ -n "$hostos" ] || fail "go env gave no GOPATH, GOVERSION or GOHOSTOS, so $1 has no folder"
+  dir="$gopath/hadv-tools/$1/$version-$goversion"
+  if [ ! -x "$dir/$1" ]; then
+    mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
+    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install $1 into"
+    GOBIN="$tmp" go install "$2@$version" >&2 || { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
+    mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
+  fi
+  [ -x "$dir/$1" ] || fail "$1 $version is not in $dir: remove that folder and run the check again"
+  echo "check: $1 $version, built by $goversion" >&2
+  echo "$dir/$1"
+}
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
 # cannot run fails: fetch the base, or name in BASE the commit to judge from.
 if [ "$MUTATION" = 0 ]; then
@@ -248,9 +278,9 @@ pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
   echo "Go gates checked by another job of this run; tests only"
 elif [ -n "$pkgs" ]; then
-  need golangci-lint "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint at the version in .github/tool-versions"
-  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck at the version in .github/tool-versions"
-  need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
+  lint=$(pinned golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint GOLANGCI_LINT)
+  vulncheck=$(pinned govulncheck golang.org/x/vuln/cmd/govulncheck GOVULNCHECK)
+  licencecheck=$(pinned go-licenses github.com/google/go-licenses/v2 GO_LICENSES)
   go mod verify
   # Every module the engine is built from, indirect ones included, carries a licence that can
   # be combined with AGPL-3.0-only; the engine's own module is the AGPL-3.0 one.
@@ -260,7 +290,7 @@ elif [ -n "$pkgs" ]; then
   # fails on every standard package. The root of the Go in use is passed to it.
   goroot=$(go env GOROOT)
   for os in windows linux; do
-    GOROOT=$goroot GOOS=$os go-licenses check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
+    GOROOT=$goroot GOOS=$os "$licencecheck" check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
       fail "a module's licence ($os build) is not one AGPL-3.0-only can carry: $licences"
   done
   # With one main package, go build writes its program into the clone; build into a temporary
@@ -271,15 +301,15 @@ elif [ -n "$pkgs" ]; then
   go vet ./...
   # The developer's .golangci.yml by name: found on its own, the linter prefers a .golangci.yaml,
   # .toml or .json beside it, which any branch could add, and every rule would be gone unseen.
-  golangci-lint run --config .golangci.yml ./...
+  "$lint" run --config .golangci.yml ./...
   # Files built for one platform are linted only when GOOS names it, and the loop runs this
   # on Windows: lint the other platform too, so a Linux-only file's faults show before CI. With
   # cgo off, since a C compiler for this platform cannot preprocess the other platform's cgo
   # files in the standard library; the engine has no cgo, so its own files lint the same.
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
-  CGO_ENABLED=0 GOOS=$other golangci-lint run --config .golangci.yml ./...
+  CGO_ENABLED=0 GOOS=$other "$lint" run --config .golangci.yml ./...
   go run ./tools/namecheck .
-  govulncheck ./...
+  "$vulncheck" ./...
 fi
 if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
@@ -327,7 +357,7 @@ if [ -n "$pkgs" ]; then
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
   elif [ "$MUTATION" = 1 ] && { [ -n "${MUTATE:-}" ] || git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; }; then
-    need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
+    mutator=$(pinned gremlins github.com/go-gremlins/gremlins/cmd/gremlins GREMLINS)
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
     # could see its fault. The run still fails when gremlins fails or prints no result lines, since
@@ -347,7 +377,7 @@ if [ -n "$pkgs" ]; then
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
     mutants=
     for target in "${targets[@]}"; do
-      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" "$mutator" unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
       echo "$out"
       grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
       mutants+="$out"$'\n'

@@ -75,6 +75,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # Free Pascal, which builds the bootstrap file oracle (oracle/bootstrap-file) that a target
+      # makes its seeds with, from Ubuntu's signed archive as in check.yml. Without it such a target
+      # fails before it fuzzes, and the failure is filed as a finding. Every target gets it, so a
+      # new target that uses the oracle needs nothing named here.
+      - name: Install Free Pascal
+        shell: bash
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q fp-compiler
+          fpc -iV
       # The test code runs here with the same trust as merged code in check.yml. Its output stays
       # in a file; the public log gets nothing from it.
       - name: Fuzz for ten minutes
