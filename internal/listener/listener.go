@@ -5,17 +5,23 @@ package listener
 
 import (
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/session"
 	"github.com/heliosestate/heliosadvance/internal/textio"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
-// builds before the package is built and the build never needs to change the contract.
+// builds before the package is built and the build never needs to change the contract. Until
+// Languages Part 1's build, New refuses nil Texts with an error of its own, never one the contract
+// names, and a Listener hands no Texts to session.Run.
+
+var errNotBuilt = errors.New("listener: not built yet")
 
 type listenerState struct {
 	stopContext context.Context
@@ -41,9 +47,13 @@ func newCount() *ConnectionCount {
 
 // The stop context is made here, not in start, so that a Stop before Start has something to
 // cancel.
-func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount) (*Listener, error) {
+func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount,
+	texts *language.Texts) (*Listener, error) {
 	if len(sockets) == 0 || slices.Contains(sockets, nil) || open == nil || count == nil {
 		return nil, ErrNoListeners
+	}
+	if texts == nil {
+		return nil, errNotBuilt
 	}
 	listener := &Listener{}
 	state := &listener.state
@@ -138,7 +148,7 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 	if err != nil || kindConnection == nil {
 		return
 	}
-	if ending, err := session.Run(ctx, textio.New(kindConnection)); err != nil || ending != session.Answered {
+	if ending, err := session.Run(ctx, textio.New(kindConnection), nil); err != nil || ending != session.Answered {
 		return
 	}
 	//nolint:errcheck // the connection is closed next whatever the kind's close returns
