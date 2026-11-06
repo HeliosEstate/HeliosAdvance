@@ -16,29 +16,30 @@ need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # pins as pin, built by the Go in use, installed into a folder of its own for that version and that
 # Go when it is missing there. Whatever version is on the path is never run, so every machine runs
 # what CI runs, and a pin moved by its pull request moves every machine (the developer, 2026-11-05:
-# "it should install it if it's missing"). The install is a go install, which Go's module proxy and
-# checksum database fix, with the caller's GOFLAGS, GOOS and GOARCH cleared so none is built into
-# the tool; it goes to a folder beside its own and is renamed into place, so a check running beside
-# this one never runs a half-written tool. It runs inside $(...), where set -e does not hold, so
-# every step fails by itself.
+# "it should install it if it's missing"). The install is a go install: Go's module proxy and
+# checksum database fix what a version holds, as in CI, unless the machine's own Go settings turn
+# them off. It goes to a folder beside its own and is renamed into place, so a check running beside
+# this one never runs a half-written tool. Each tool's version and the Go that built it go to the
+# log. It runs inside $(...), where set -e does not hold, so every step fails by itself.
 pinned() {
-  local version gopath sep goversion dir tmp
+  local version goenv gopath goversion hostos sep dir tmp
   version=$(sed -n "s/^$3=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
-  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$3 in .github/tool-versions is not a version like v1.2.3, so $1 cannot be run at its pin"
-  gopath=$(go env GOPATH) && goversion=$(go env GOVERSION) || fail "go env failed, so $1 has no folder"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "$3 in .github/tool-versions is not a module version like v1.2.3, so $1 cannot be run at its pin"
+  goenv=$(go env GOPATH GOVERSION GOHOSTOS | tr -d '\r') || fail "go env failed, so $1 has no folder"
+  { read -r gopath; read -r goversion; read -r hostos; } <<< "$goenv"
   # A GOPATH of several entries installs into its first, as go install does.
-  sep=:; [ "$(go env GOHOSTOS)" = windows ] && sep=';'
+  sep=:; [ "$hostos" = windows ] && sep=';'
   gopath=${gopath%%"$sep"*}
-  [ -n "$gopath" ] && [ -n "$goversion" ] || fail "go env gave no GOPATH or GOVERSION, so $1 has no folder"
+  [ -n "$gopath" ] && [ -n "$goversion" ] && [ -n "$hostos" ] || fail "go env gave no GOPATH, GOVERSION or GOHOSTOS, so $1 has no folder"
   dir="$gopath/hadv-tools/$1/$version-$goversion"
   if [ ! -x "$dir/$1" ]; then
     mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
     tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install $1 into"
-    GOFLAGS='' GOOS='' GOARCH='' GOBIN="$tmp" go install "$2@$version" >&2 ||
-      { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
+    GOBIN="$tmp" go install "$2@$version" >&2 || { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
     mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
   fi
   [ -x "$dir/$1" ] || fail "$1 $version is not in $dir: remove that folder and run the check again"
+  echo "check: $1 $version, built by $goversion" >&2
   echo "$dir/$1"
 }
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
