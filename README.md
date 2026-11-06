@@ -27,8 +27,9 @@ Questions about the project, and about how AI is used in it: [docs/faq.md](docs/
   bootstrap file with. On Windows, put its folder after the one holding the system's C compiler on
   the `PATH`: it carries an old `gcc` of its own, which ahead of the system's breaks race builds.
 - **On Linux, `setfacl`** (the `acl` package), for the key file's access-list rows.
-- **The gate tools**, each by `go install` at the version pinned in `.github/tool-versions`, as CI
-  installs them: `golangci-lint`, `govulncheck` and `go-licenses`.
+- **Nothing for the gate tools:** `check.sh` installs `golangci-lint`, `govulncheck` and
+  `go-licenses` itself, each at the version pinned in `.github/tool-versions`, into a folder of
+  its own under the `GOPATH`, and never runs a copy on the `PATH`.
 
 The machine needs the IPv6 loopback address (`::1`) working, since the engine listens on it. On
 Linux, run as an ordinary user, not root, where `sudo` needs no password (the rows named
@@ -40,4 +41,5 @@ On Windows, run `bash check.sh` from Git for Windows' bash, which brings the `ss
 `TestWindowsElevated…` unless bash runs elevated (as administrator), with a line saying so.
 
 `bash check.sh --mutation` also runs mutation testing on what changed since `origin/development`.
-It needs `gremlins`, at the version in `.github/tool-versions`, and runs on Linux only.
+It installs `gremlins` the same way, at the version in `.github/tool-versions`, and runs on Linux
+only.

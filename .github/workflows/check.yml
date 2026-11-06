@@ -111,21 +111,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # The versions are pinned in .github/tool-versions, one place for every workflow. Every gate,
-      # the linter included, is a go install at its pinned version: Go's module proxy and checksum
-      # database fix what a version holds, so a moved tag cannot change what runs here, as an
-      # install script fetched by its tag and piped to sh could (the developer's "yes", 2026-11-03,
-      # over the linter's released binary, whose documentation does not support a go install
-      # build). Only the job that runs the gates installs them.
-      - name: Install gates
-        if: matrix.gates
-        run: |
-          source .github/tool-versions
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@"$GOLANGCI_LINT"
-          golangci-lint --version
-          go install golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK"
-          go install github.com/google/go-licenses/v2@"$GO_LICENSES"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # The gate tools are not installed here: check.sh installs each at the version pinned in
+      # .github/tool-versions, by go install, the same on every machine. Go's module proxy and
+      # checksum database fix what a version holds, so a moved tag cannot change what runs here, as
+      # an install script fetched by its tag and piped to sh could (the developer's "yes",
+      # 2026-11-03, over the linter's released binary, whose documentation does not support a go
+      # install build).
       # Plink, an outside Telnet client that Part 4's Telnet rows drive as an oracle, is on no
       # runner's image; only the program's rows drive it. Linux takes it from Ubuntu's signed
       # archive for the image; Windows takes PuTTY's own installer through winget at a fixed

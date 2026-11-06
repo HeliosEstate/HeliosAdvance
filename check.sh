@@ -13,24 +13,32 @@ MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # pinned name module pin: prints the path of the Go tool name at the version .github/tool-versions
-# pins as pin, installed into a folder of its own for that version when it is missing there; run as
-# an assignment, whose failure ends the check under set -e. Whatever version is on the path is never run, so every machine runs what CI runs,
-# and a pin moved by its pull request moves every machine (the developer, 2026-11-05: "it should
-# install it if it's missing"). The install is a go install, which Go's module proxy and checksum
-# database fix, as in CI; it goes to a folder beside the version's and is renamed into place, so a
-# check running beside this one never runs a half-written tool.
+# pins as pin, built by the Go in use, installed into a folder of its own for that version and that
+# Go when it is missing there. Whatever version is on the path is never run, so every machine runs
+# what CI runs, and a pin moved by its pull request moves every machine (the developer, 2026-11-05:
+# "it should install it if it's missing"). The install is a go install, which Go's module proxy and
+# checksum database fix, with the caller's GOFLAGS, GOOS and GOARCH cleared so none is built into
+# the tool; it goes to a folder beside its own and is renamed into place, so a check running beside
+# this one never runs a half-written tool. It runs inside $(...), where set -e does not hold, so
+# every step fails by itself.
 pinned() {
-  local version dir tmp
-  version=$(sed -n "s/^$3=//p" .github/tool-versions | tr -d '\r')
-  [ -n "$version" ] || fail "no $3 pin in .github/tool-versions, so $1 cannot be run at its pinned version"
-  dir="$(go env GOPATH)/hadv-tools/$1/$version"
+  local version gopath sep goversion dir tmp
+  version=$(sed -n "s/^$3=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$3 in .github/tool-versions is not a version like v1.2.3, so $1 cannot be run at its pin"
+  gopath=$(go env GOPATH) && goversion=$(go env GOVERSION) || fail "go env failed, so $1 has no folder"
+  # A GOPATH of several entries installs into its first, as go install does.
+  sep=:; [ "$(go env GOHOSTOS)" = windows ] && sep=';'
+  gopath=${gopath%%"$sep"*}
+  [ -n "$gopath" ] && [ -n "$goversion" ] || fail "go env gave no GOPATH or GOVERSION, so $1 has no folder"
+  dir="$gopath/hadv-tools/$1/$version-$goversion"
   if [ ! -x "$dir/$1" ]; then
-    mkdir -p "${dir%/*}"
-    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX")
-    GOBIN="$tmp" go install "$2@$version" >&2 || { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
+    mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
+    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install $1 into"
+    GOFLAGS='' GOOS='' GOARCH='' GOBIN="$tmp" go install "$2@$version" >&2 ||
+      { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
     mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
   fi
-  [ -x "$dir/$1" ] || fail "$1 $version is not in $dir after its install"
+  [ -x "$dir/$1" ] || fail "$1 $version is not in $dir: remove that folder and run the check again"
   echo "$dir/$1"
 }
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
