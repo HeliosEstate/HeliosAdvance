@@ -22,8 +22,10 @@ permissions:
   contents: read
 
 # A new push to the same pull request supersedes the run in flight, whose report would be stale.
+# The event is in the name too: a milestone's whole-engine run and a manual run both run on
+# development, and one must not cancel the other's report.
 concurrency:
-  group: mutation-${{ github.ref }}
+  group: mutation-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
