@@ -53,7 +53,7 @@ items | while IFS= read -r item; do
     continue
   fi
   # No --label: with it, gh asks the search index, which lagged minutes behind a new issue, and
-  # one item became three issues (#52, #54, #57, 2026-10-22). Without it gh reads the issues
+  # one item became three issues (2026-10-22). Without it gh reads the issues
   # themselves; the key marker is in noticed issues alone.
   existing=$(gh issue list --state all --limit 1000 --json number,body \
     -q ".[] | select(.body | contains(\"noticed-key: $key\")) | .number" | head -1)

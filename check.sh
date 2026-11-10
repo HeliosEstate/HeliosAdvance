@@ -269,6 +269,47 @@ leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/inter
   grep -vE '_test\.go$|^\./internal/testrun/' || true)
 [ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
 
+# 4j. A comment says its reason, never an issue's or a pull request's number for a reader to look
+# up (the developer, 2026-10-03: "I do not want IDs in public documents. Comments, etc, should be
+# readable without having to go reference something else."). Reviews kept missing such numbers
+# by eye, as with the width above. A backstop, not the test of the rule, which stays review's: it
+# reads one line at a time, from the comment's marker to the line's end. That is after // in Go
+# files and go.mod files, so a Go block comment goes unread whole; after // in Free Pascal files,
+# or after { or (* up to its close on that line; and from a # that opens the line or follows a
+# space or tab in shell, workflow, Dockerfile and Makefile files. So the lines inside a block
+# comment go unread, and quotes are not parsed: a string after the marker counts as comment, so
+# reword it. A comment fails when it holds a number after a lone hash sign (not in Free Pascal,
+# where a hash sign and a number make a character), after a repository's name, "PR", "pull
+# request" or "issue" (joined, spaced, or with "number" or "no."), or after /issues/ or /pull/ in
+# a link. A lone hash sign before a number fails even as an ordinal: write "first", not the number.
+numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' |
+  xargs -0 -r awk '
+  FNR == 1 { slash = (FILENAME ~ /(\.go|(^|\/)go\.mod)$/); pas = (FILENAME ~ /\.pas$/) }
+  {
+    text = ""
+    if (slash) {
+      if ((at = index($0, "//"))) text = substr($0, at + 2)
+    } else if (pas) {
+      if (match($0, /\/\/|\{|\(\*/)) {
+        opener = substr($0, RSTART, RLENGTH); text = substr($0, RSTART + RLENGTH)
+        closer = (opener == "{") ? "}" : (opener == "(*") ? "*)" : ""
+        if (closer != "" && (at = index(text, closer))) text = substr(text, 1, at - 1)
+      }
+    } else if (match($0, /(^|[ \t])#/)) {
+      text = substr($0, RSTART + RLENGTH - 1)
+    }
+    if (text == "") next
+    text = tolower(text)
+    # A standard named with a hash sign, such as PKCS #1 or PKCS#8, is not a lookup.
+    gsub(/pkcs ?#[0-9]+/, "", text)
+    if ((!pas && text ~ /(^|[^a-z0-9&\/])#[0-9]+([^a-z0-9]|$)/) ||
+        text ~ /(^|[^a-z0-9])(helios(design|advance|loop)|pr|issue|pull)#[0-9]+/ ||
+        text ~ /(^|[^a-z0-9])(prs?|pull[ -]requests?|issues?)[ -](number |no\. ?)?#?[0-9]+([^a-z0-9]|$)/ ||
+        text ~ /\/(issues|pull)\/[0-9]+/)
+      print FILENAME ":" FNR ": " $0
+  }')
+[ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
