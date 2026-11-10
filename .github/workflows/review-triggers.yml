@@ -7,8 +7,7 @@
 # crypto, os/exec, net, unsafe, syscall or golang.org/x/sys outside a test. The labels only say
 # which reviews a head needs, and the run's summary says it for that head: the loop can take a
 # label off, so nothing relies on one. Whether the reviews were done for the head is the
-# reviewing session's record, which `gh signoff` itself reads (the developer, 2026-10-28,
-# HeliosDesign #203).
+# reviewing session's record, which `gh signoff` itself reads (the developer, 2026-10-28).
 # The run's summary also lists each line the pull request adds that silences a linter (nolint or
 # #nosec), skips a test, carries a build tag, or imports unsafe or C, each a decision for the
 # developer by name (developer, 2026-10-07: "fail loud"); a line from a QA commit, which he read
@@ -97,7 +96,7 @@ jobs:
           # Found as check.sh's lock gate finds them: the trailer is a paragraph of its own, so
           # git's trailer parsing does not see it; and a trailer counts only on a commit signed by
           # a key in qa-signers or listed in qa-grandfathered, both read from the base, since
-          # anyone can type it (the codebase review, issue 82).
+          # anyone can type it.
           signers=$(mktemp)
           git show "$BASE:qa-signers" > "$signers" 2>/dev/null || : > "$signers"
           grandfathered=$(git show "$BASE:qa-grandfathered" 2>/dev/null || true)

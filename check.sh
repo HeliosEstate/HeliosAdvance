@@ -244,6 +244,22 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 }')
 [ -z "$long" ] || { echo "$long"; fail "a comment line runs past 100 columns: wrap it, or shorten a nolint's reason"; }
 
+# 4i. A comment says its reason, never an issue's or a pull request's number for a reader to look
+# up (the developer, 2026-10-03: "I do not want IDs in public documents. Comments, etc, should be
+# readable without having to go reference something else."). Reviews kept missing such numbers
+# by eye, as with the width above. A comment in a Go, shell or workflow file fails when it holds a
+# number after a hash sign, or after "PR", "pull request" or "issue".
+numbered=$(git ls-files -z '*.go' '*.sh' '*.yml' '*.yaml' | xargs -0 -r awk '
+  FNR == 1 { go = (FILENAME ~ /\.go$/) }
+  {
+    if (go) { at = index($0, "//"); if (!at) next; text = substr($0, at + 2) }
+    else { if (!match($0, /(^|[ \t])#/)) next; text = substr($0, RSTART + RLENGTH) }
+    if (text ~ /(^|[^A-Za-z0-9&\/])#[0-9]+([^A-Za-z0-9]|$)/ ||
+        text ~ /(^|[^A-Za-z0-9])(PR|[Pp]ull request|[Ii]ssue)s? #?[0-9]+([^A-Za-z0-9]|$)/)
+      print FILENAME ":" FNR ": " $0
+  }')
+[ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
+
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
