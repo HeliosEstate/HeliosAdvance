@@ -137,15 +137,19 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   itself: 8 bytes of its own wake-up for the network poller, on another thread, at moments its
   scheduler picks. On Windows it comes only through a raw pointer, which the imports refuse, or
   by asking another program, which timed out on CI's runner three times.
-- On Linux the row runs its case again in the test binary under `strace -ff -y`, which names the
-  file behind every read and writes each thread's reads to a file of its own, so no read is split
-  by another thread's; the row adds up the reads by file, fails on one the account does not show
-  whole, and checks the child passed the row. strace is on CI's Linux images.
-- On Windows the row holds the file locked from the byte past its limit onward (`LockFileEx`)
-  through a handle of its own while the engine reads it, and first reads that byte through
-  another handle to prove the lock holds. A read that reaches a locked byte is refused even where
-  the file ends before it. The lock tells how far the engine read, not how much: a file read
-  twice within its limit passes it, and only Linux's count catches that.
+- On Linux the row runs its case again in the test binary under `strace -ff --seccomp-bpf -y`,
+  which names the file behind every read, stops the child only at the reads traced, and writes
+  each thread's reads to a file of its own, so no read is split by another thread's. The row adds
+  up the reads by file and checks the child passed the row. It fails on a read the account does
+  not show whole only when that read is of a file the row bounds: the runtime's own threads have
+  reads broken off or left unfinished at moments their scheduler picks. strace is on CI's Linux
+  images.
+- On Windows a read-bound row proves the refusal alone (the developer, 2026-11-10), named
+  `TestWindows…` beside its `TestLinux…` row: nothing there tells what the engine read of one
+  file. A byte-range lock from the byte past the limit fails a sound reader that asks for more
+  than it gets back, since a read is refused when the range it asks for reaches the lock, even
+  where the file ends before it. This holds where the engine reads the file with the same code on
+  both systems; a read on Windows alone would be bound by no row.
 
 ## Reading a run
 
