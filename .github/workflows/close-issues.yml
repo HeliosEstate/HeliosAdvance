@@ -1,6 +1,6 @@
 # Closes the issue a merged PR names. GitHub's own "Closes #n" acts only on a merge into the
 # default branch; while that was not development, work merged into development left its issue
-# open until the loop next started (#15 after #46 in an earlier attempt). With development the
+# open until the loop next started, as it did in an earlier attempt. With development the
 # default branch this is a backstop: it acts only on an issue still open. The PR body is
 # trusted because a merge into development needs the developer's signoff.
 name: close-issues

@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Open's lines on Linux: the key file's owner and mode, a named pipe in place of either file, a
-// symbolic link that stays inside the folder, and every descriptor closed on return. Modes are
-// set from outside Open; another owner is set with sudo, which CI's runner has.
+// Open's lines on Linux: the key file's mode, a named pipe in place of either file, a symbolic
+// link that stays inside the folder, and every descriptor closed on return. Modes are set from
+// outside Open; whether the account nobody may read or write the key file is the system's own
+// answer, asked through sudo, which CI's runner has.
 package bootstrap_test
 
 import (
@@ -23,7 +24,7 @@ import (
 func TestLinuxOpen(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Linux, the key file's owner is not the engine's effective user ID, or its mode gives its group or others any access, then Open shall return ErrKeyFileReachable.", func(t *testing.T) {
+	t.Run("If, on Linux, the key file's mode gives its group or others any access, then Open shall return ErrKeyFileReachable.", func(t *testing.T) {
 		t.Parallel()
 		for _, mode := range []os.FileMode{0o640, 0o620, 0o610, 0o604, 0o602, 0o601} {
 			t.Run("mode "+strconv.FormatUint(uint64(mode), 8)+": ErrKeyFileReachable", func(t *testing.T) {
@@ -150,59 +151,150 @@ func run(t *testing.T, name string, arguments ...string) {
 	}
 }
 
-// TestLinuxRootOpen needs sudo and setpriv, which CI's runner has: another account as the key
-// file's owner, read by a copy of this test binary given the capability to read any file, so the
-// owner is the only thing wrong with the key file.
+// TestLinuxRootOpen needs sudo, which CI's runner has: each row first asks the system itself, as
+// the account nobody, whether nobody may read or write the key file, which proves the row's setup
+// gives nobody exactly that access, and only then judges Open.
 func TestLinuxRootOpen(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Linux, the key file's owner is not the engine's effective user ID, or its mode gives its group or others any access, then Open shall return ErrKeyFileReachable.", func(t *testing.T) {
+	t.Run("If, on Linux, the key file's mode gives its group or others any access, then Open shall return ErrKeyFileReachable.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the owner nobody, mode 0600, read by a process that may read any file: ErrKeyFileReachable", func(t *testing.T) {
-			t.Parallel()
-			made := makeFolder(t)
-			run(t, "sudo", "-n", "chown", "nobody", made.keyFile)
-			output, err := capableOpen(t, made.folder)
-			if err != nil {
-				t.Fatalf("the capable copy: %v: %s", err, strings.TrimSpace(string(output)))
-			}
-			want := "refused " + strconv.Itoa(errorIndex(bootstrap.ErrKeyFileReachable))
-			got, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
-			// A copy that says it lacks the capability proves nothing about Open: the test's
-			// setup failed. Bit 2 is cap_dac_read_search.
-			_, report, _ := strings.Cut(string(output), "effective capabilities ")
-			capabilities, _, _ := strings.Cut(report, ";")
-			if bits, err := strconv.ParseUint(capabilities, 16, 64); got != want && err == nil && bits&(1<<2) == 0 {
-				t.Fatalf("cannot tell: the test's setup failed, the copy did not hold the capability to read any file; all it printed:\n%s", output)
-			}
-			if got != want {
-				t.Fatalf("the capable copy's Open: %q, want %q (%v); all it printed:\n%s", got, want,
-					bootstrap.ErrKeyFileReachable, output)
-			}
-		})
+		for _, row := range nobodyRows() {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				made := makeFolder(t)
+				row.set(t, made.keyFile)
+				openFoldersToNobody(t, made.folder)
+				expectNobodyMay(t, made.keyFile, row.read, row.write)
+				if row.read || row.write {
+					made.expectRefused(t, bootstrap.ErrKeyFileReachable)
+				} else {
+					made.expectOpened(t)
+				}
+			})
+		}
 	})
 }
 
-// capableOpen copies this test binary into the row's folder, inside the run's own, runs the copy
-// as a child that opens folder, as this test's own user with the capability to read any file
-// whatever its owner and mode, and returns all it printed. sudo gives the capability to the
-// process, as an ambient one, not to the copy's file: the kernel ignores a file's capabilities on
-// a file system mounted nosuid, as the temporary folder is on some CI runners, and there the copy
-// ran without it.
-func capableOpen(t *testing.T, folder string) ([]byte, error) {
-	t.Helper()
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("finding this test binary: %v", err)
+// nobodyRow is one key file whose access for the account nobody the system is asked about: how
+// the row sets it, and what the system must answer for nobody's read and write.
+type nobodyRow struct {
+	name        string
+	set         func(t *testing.T, keyFile string)
+	read, write bool
+}
+
+// nobodyRows are a key file nobody may read, one it may write, by mode and by an access-list
+// entry, and the engine's own at mode 0600, which nobody may do neither to.
+func nobodyRows() []nobodyRow {
+	withMode := func(mode os.FileMode) func(*testing.T, string) {
+		return func(t *testing.T, keyFile string) {
+			t.Helper()
+			setMode(t, keyFile, mode)
+		}
 	}
-	child := filepath.Join(t.TempDir(), "open-child")
-	run(t, "cp", self, child)
+	withEntry := func(entry string, shown os.FileMode) func(*testing.T, string) {
+		return func(t *testing.T, keyFile string) {
+			t.Helper()
+			run(t, "setfacl", "-m", entry, keyFile)
+			info, err := os.Stat(keyFile)
+			if err != nil {
+				t.Fatalf("reading the key file's mode: %v", err)
+			}
+			if info.Mode().Perm() != shown {
+				t.Fatalf("the key file's mode is %o with the entry, not %o: a fault in the test", info.Mode().Perm(), shown)
+			}
+		}
+	}
+	return []nobodyRow{
+		{"mode 0604, which the system says nobody may read and not write: ErrKeyFileReachable", withMode(0o604), true, false},
+		{"mode 0602, which the system says nobody may write and not read: ErrKeyFileReachable", withMode(0o602), false, true},
+		{"an access-list entry letting nobody read it, the mode then 0640, which the system says nobody may read and not write: ErrKeyFileReachable",
+			withEntry("u:nobody:r", 0o640), true, false},
+		{"an access-list entry letting nobody write it, the mode then 0620, which the system says nobody may write and not read: ErrKeyFileReachable",
+			withEntry("u:nobody:w", 0o620), false, true},
+		{"mode 0600, which the system says nobody may neither read nor write: opens", withMode(0o600), false, false},
+	}
+}
+
+// openFoldersToNobody lets others search, never list, every folder from the bootstrap folder up
+// to the run's own, which testrun made the temporary folder, so the system's answers about the key
+// file are about the key file alone. Search alone lists nothing: past the run's own folder nobody
+// reaches only a path it already knows. The row's own folders get their modes back when it ends;
+// the run's own folder keeps others' search until testrun removes it, since the rows beside this
+// one still need it. The row fails as a fault in the test unless the system then says nobody may
+// search the bootstrap folder.
+func openFoldersToNobody(t *testing.T, folder string) {
+	t.Helper()
+	runFolder := os.TempDir()
+	var own []string
+	for current := folder; current != runFolder; current = filepath.Dir(current) {
+		if current == filepath.Dir(current) {
+			t.Fatalf("%s is not inside the run's own folder %s: a fault in the test", folder, runFolder)
+		}
+		own = append(own, current)
+	}
+	for _, path := range own {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("reading %s's mode: %v", path, err)
+		}
+		mode := info.Mode().Perm()
+		setMode(t, path, mode|0o001)
+		t.Cleanup(func() {
+			if err := os.Chmod(path, mode); err != nil {
+				t.Errorf("giving %s its mode back: %v", path, err)
+			}
+		})
+	}
+	info, err := os.Stat(runFolder)
+	if err != nil {
+		t.Fatalf("reading %s's mode: %v", runFolder, err)
+	}
+	setMode(t, runFolder, info.Mode().Perm()|0o001)
+	if !nobodyMay(t, "-x", folder) {
+		t.Fatalf("the system says nobody may not search %s once its folders let others search them: a fault in the test", folder)
+	}
+}
+
+// expectNobodyMay fails the row as a fault in the test unless the system says nobody may read and
+// write the key file exactly as the row's setup means.
+func expectNobodyMay(t *testing.T, keyFile string, read, write bool) {
+	t.Helper()
+	if got := nobodyMay(t, "-r", keyFile); got != read {
+		t.Fatalf("the system says nobody may read the key file: %v, where the row's setup means %v: a fault in the test", got, read)
+	}
+	if got := nobodyMay(t, "-w", keyFile); got != write {
+		t.Fatalf("the system says nobody may write the key file: %v, where the row's setup means %v: a fault in the test", got, write)
+	}
+}
+
+// nobodyMay asks the system, as the account nobody, whether nobody may do to path what test's
+// operator names: -r read, -w write, -x search. sudo sets both of nobody's user IDs, so test's own
+// check answers for nobody, access-list entries included. The shell prints test's own exit code,
+// read from standard output alone: 0 is yes, 1 is no. Anything else, such as test's 2 for a
+// question it cannot ask, or a sudo that cannot run, which prints none, fails the row as a fault
+// in the test, so it never reads as a "no".
+func nobodyMay(t *testing.T, operator, path string) bool {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
 	defer cancel()
-	command := exec.CommandContext(ctx, "sudo", "-n", "setpriv",
-		"--reuid="+strconv.Itoa(os.Getuid()), "--regid="+strconv.Itoa(os.Getgid()), "--init-groups",
-		"--inh-caps=+dac_read_search", "--ambient-caps=+dac_read_search", child, "-"+openChildFlag+"="+folder)
-	// Ending sudo does not end the copy it started, which would hold the output open.
-	command.WaitDelay = testrun.Patient(testrun.HangBound)
-	return command.CombinedOutput()
+	var complaints strings.Builder
+	command := exec.CommandContext(ctx, "sudo", "-n", "-u", "nobody", "sh", "-c",
+		`test "$1" "$2"; echo "$?"`, "sh", operator, path)
+	command.Stderr = &complaints
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("asking the system as nobody, test %s %s: %v: %s", operator, path, err, strings.TrimSpace(complaints.String()))
+	}
+	switch code := strings.TrimSpace(string(output)); code {
+	case "0":
+		return true
+	case "1":
+		return false
+	default:
+		t.Fatalf("asking the system as nobody, test %s %s ended with %q, neither 0 nor 1: a fault in the test; it wrote: %s",
+			operator, path, code, strings.TrimSpace(complaints.String()))
+		return false
+	}
 }
