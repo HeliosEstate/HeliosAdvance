@@ -12,6 +12,36 @@ BASE="${BASE:-origin/development}"
 MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
+# pinned name module pin: prints the path of the Go tool name at the version .github/tool-versions
+# pins as pin, built by the Go in use, installed into a folder of its own for that version and that
+# Go when it is missing there. Whatever version is on the path is never run, so every machine runs
+# what CI runs, and a pin moved by its pull request moves every machine (the developer, 2026-11-05:
+# "it should install it if it's missing"). The install is a go install: Go's module proxy and
+# checksum database fix what a version holds, as in CI, unless the machine's own Go settings turn
+# them off. It goes to a folder beside its own and is renamed into place, so a check running beside
+# this one never runs a half-written tool. Each tool's version and the Go that built it go to the
+# log. It runs inside $(...), where set -e does not hold, so every step fails by itself.
+pinned() {
+  local version goenv gopath goversion hostos sep dir tmp
+  version=$(sed -n "s/^$3=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "$3 in .github/tool-versions is not a module version like v1.2.3, so $1 cannot be run at its pin"
+  goenv=$(go env GOPATH GOVERSION GOHOSTOS | tr -d '\r') || fail "go env failed, so $1 has no folder"
+  { read -r gopath; read -r goversion; read -r hostos; } <<< "$goenv"
+  # A GOPATH of several entries installs into its first, as go install does.
+  sep=:; [ "$hostos" = windows ] && sep=';'
+  gopath=${gopath%%"$sep"*}
+  [ -n "$gopath" ] && [ -n "$goversion" ] && [ -n "$hostos" ] || fail "go env gave no GOPATH, GOVERSION or GOHOSTOS, so $1 has no folder"
+  dir="$gopath/hadv-tools/$1/$version-$goversion"
+  if [ ! -x "$dir/$1" ]; then
+    mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
+    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install $1 into"
+    GOBIN="$tmp" go install "$2@$version" >&2 || { rm -rf "$tmp"; fail "$1 $version could not be installed from $2"; }
+    mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
+  fi
+  [ -x "$dir/$1" ] || fail "$1 $version is not in $dir: remove that folder and run the check again"
+  echo "check: $1 $version, built by $goversion" >&2
+  echo "$dir/$1"
+}
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
 # cannot run fails: fetch the base, or name in BASE the commit to judge from.
 if [ "$MUTATION" = 0 ]; then
@@ -114,7 +144,22 @@ is_qa() {
 # a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
 # gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
-qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
+# The anchor is this branch's own newest QA commit, one the base does not hold, when it has one;
+# otherwise the newest in the whole history, as before. Taken from the whole history alone, a QA
+# commit the base gained since, from another issue's tests, came first in a merge with the base,
+# and every test this branch's own QA commits approved read as changed. Where the branch has no
+# QA commit of its own (a push to the base or to main, a branch already merged), nothing changes.
+first_qa() {
+  local log c
+  log=$(git log --format=%H --grep='^Helios-Role: qa$' "$@") ||
+    fail "git could not list the QA commits, so the approved tests cannot be checked"
+  for c in $log; do is_qa "$c" && { echo "$c"; return 0; }; done
+  return 0
+}
+qa=""
+git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && qa=$(first_qa "$BASE..HEAD")
+[ -n "$qa" ] || qa=$(first_qa)
+[ -n "$qa" ] || echo "check: no QA commit in this history, so no test is locked by one yet" >&2
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
@@ -217,13 +262,13 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
-# with everything green (HeliosAdvance #160). Each of the engine's paths in the file is judged,
-# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
-# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
-# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
-# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
-# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
-# developer's, and his review of every change to it is the check for that.
+# with everything green. Each of the engine's paths in the file is judged, written plainly,
+# quoted, in a one-line list or mapping, or on the line after a folded marker, once comments are
+# taken off; a deny entry's own lines are left out, since there $ narrows what is blocked. The
+# dependencies rule's module-wide entry, ending in /, is the one exception, and there is one. This
+# catches what a merge or a slip brings back, not a disguise (a shortened path, a reference to
+# another rule's list, an escape, a # inside quotes): the file is the developer's, and his review
+# of every change to it is the check for that.
 [ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
 paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
   grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
@@ -239,6 +284,47 @@ leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/inter
   grep -vE '_test\.go$|^\./internal/testrun/' || true)
 [ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
 
+# 4j. A comment says its reason, never an issue's or a pull request's number for a reader to look
+# up (the developer, 2026-10-03: "I do not want IDs in public documents. Comments, etc, should be
+# readable without having to go reference something else."). Reviews kept missing such numbers
+# by eye, as with the width above. A backstop, not the test of the rule, which stays review's: it
+# reads one line at a time, from the comment's marker to the line's end. That is after // in Go
+# files and go.mod files, so a Go block comment goes unread whole; after // in Free Pascal files,
+# or after { or (* up to its close on that line; and from a # that opens the line or follows a
+# space or tab in shell, workflow, Dockerfile and Makefile files. So the lines inside a block
+# comment go unread, and quotes are not parsed: a string after the marker counts as comment, so
+# reword it. A comment fails when it holds a number after a lone hash sign (not in Free Pascal,
+# where a hash sign and a number make a character), after a repository's name, "PR", "pull
+# request" or "issue" (joined, spaced, or with "number" or "no."), or after /issues/ or /pull/ in
+# a link. A lone hash sign before a number fails even as an ordinal: write "first", not the number.
+numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' |
+  xargs -0 -r awk '
+  FNR == 1 { slash = (FILENAME ~ /(\.go|(^|\/)go\.mod)$/); pas = (FILENAME ~ /\.pas$/) }
+  {
+    text = ""
+    if (slash) {
+      if ((at = index($0, "//"))) text = substr($0, at + 2)
+    } else if (pas) {
+      if (match($0, /\/\/|\{|\(\*/)) {
+        opener = substr($0, RSTART, RLENGTH); text = substr($0, RSTART + RLENGTH)
+        closer = (opener == "{") ? "}" : (opener == "(*") ? "*)" : ""
+        if (closer != "" && (at = index(text, closer))) text = substr(text, 1, at - 1)
+      }
+    } else if (match($0, /(^|[ \t])#/)) {
+      text = substr($0, RSTART + RLENGTH - 1)
+    }
+    if (text == "") next
+    text = tolower(text)
+    # A standard named with a hash sign, such as PKCS #1 or PKCS#8, is not a lookup.
+    gsub(/pkcs ?#[0-9]+/, "", text)
+    if ((!pas && text ~ /(^|[^a-z0-9&\/])#[0-9]+([^a-z0-9]|$)/) ||
+        text ~ /(^|[^a-z0-9])(helios(design|advance|loop)|pr|issue|pull)#[0-9]+/ ||
+        text ~ /(^|[^a-z0-9])(prs?|pull[ -]requests?|issues?)[ -](number |no\. ?)?#?[0-9]+([^a-z0-9]|$)/ ||
+        text ~ /\/(issues|pull)\/[0-9]+/)
+      print FILENAME ":" FNR ": " $0
+  }')
+[ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
+
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
 # when the change set holds only Markdown, docs/, developer-owned-paths and .github/ other
@@ -248,9 +334,9 @@ pkgs=$(go list ./... 2>&1) || { echo "$pkgs"; fail "go list failed"; }
 if [ -n "$pkgs" ] && [ "${GATES:-1}" = 0 ]; then
   echo "Go gates checked by another job of this run; tests only"
 elif [ -n "$pkgs" ]; then
-  need golangci-lint "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint at the version in .github/tool-versions"
-  need govulncheck "go install golang.org/x/vuln/cmd/govulncheck at the version in .github/tool-versions"
-  need go-licenses "go install github.com/google/go-licenses/v2@v2.0.1"
+  lint=$(pinned golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint GOLANGCI_LINT)
+  vulncheck=$(pinned govulncheck golang.org/x/vuln/cmd/govulncheck GOVULNCHECK)
+  licencecheck=$(pinned go-licenses github.com/google/go-licenses/v2 GO_LICENSES)
   go mod verify
   # Every module the engine is built from, indirect ones included, carries a licence that can
   # be combined with AGPL-3.0-only; the engine's own module is the AGPL-3.0 one.
@@ -260,7 +346,7 @@ elif [ -n "$pkgs" ]; then
   # fails on every standard package. The root of the Go in use is passed to it.
   goroot=$(go env GOROOT)
   for os in windows linux; do
-    GOROOT=$goroot GOOS=$os go-licenses check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
+    GOROOT=$goroot GOOS=$os "$licencecheck" check ./... --allowed_licenses="$licences" --ignore github.com/heliosestate/heliosadvance ||
       fail "a module's licence ($os build) is not one AGPL-3.0-only can carry: $licences"
   done
   # With one main package, go build writes its program into the clone; build into a temporary
@@ -269,15 +355,17 @@ elif [ -n "$pkgs" ]; then
   go build -o "$buildout/" ./...
   rm -rf "$buildout"
   go vet ./...
-  golangci-lint run ./...
+  # The developer's .golangci.yml by name: found on its own, the linter prefers a .golangci.yaml,
+  # .toml or .json beside it, which any branch could add, and every rule would be gone unseen.
+  "$lint" run --config .golangci.yml ./...
   # Files built for one platform are linted only when GOOS names it, and the loop runs this
   # on Windows: lint the other platform too, so a Linux-only file's faults show before CI. With
   # cgo off, since a C compiler for this platform cannot preprocess the other platform's cgo
   # files in the standard library; the engine has no cgo, so its own files lint the same.
   other=linux; [ "$(go env GOOS)" = linux ] && other=windows
-  CGO_ENABLED=0 GOOS=$other golangci-lint run ./...
+  CGO_ENABLED=0 GOOS=$other "$lint" run --config .golangci.yml ./...
   go run ./tools/namecheck .
-  govulncheck ./...
+  "$vulncheck" ./...
 fi
 if [ -n "$pkgs" ]; then
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
@@ -297,14 +385,13 @@ if [ -n "$pkgs" ]; then
     fi
   fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
-  # every failure from load on record came with every package at once (HeliosDesign #258).
+  # every failure from load on record came with every package at once.
   if [ -n "${TIMED:-}" ]; then
-    # CI keeps every timed row's place in its window (#258), and every line where a row says it
-    # cannot tell and sets its check aside, since such a pass proves nothing (HeliosDesign #217): a
-    # passing run's logs show only in Go's -json stream, so those lines go to $TIMED, a few KB. The
-    # rows TESTSKIP skips by name are named above. The console gets each package's result, and a
-    # failed package's whole output, so a crash or a hang that Go does not pin on one test still
-    # shows its cause.
+    # CI keeps every timed row's place in its window, and every line where a row says it cannot
+    # tell and sets its check aside, since such a pass proves nothing: a passing run's logs show
+    # only in Go's -json stream, so those lines go to $TIMED, a few KB. The rows TESTSKIP skips by
+    # name are named above. The console gets each package's result, and a failed package's whole
+    # output, so a crash or a hang that Go does not pin on one test still shows its cause.
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
     go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
@@ -320,12 +407,12 @@ if [ -n "$pkgs" ]; then
     go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
   fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
-    # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
+    # gremlins v0.6.0 misreads coverage on Windows (its coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
   elif [ "$MUTATION" = 1 ] && { [ -n "${MUTATE:-}" ] || git diff --name-only "$BASE...HEAD" -- '*.go' ':!*_test.go' ':!internal/testrun/*' 2>/dev/null | grep -q .; }; then
-    need gremlins "go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"
+    mutator=$(pinned gremlins github.com/go-gremlins/gremlins/cmd/gremlins GREMLINS)
     # A report, not a gate (the developer, 2026-10-22): QA reads the survivors beside its broken
     # copies, and a survivor becomes a test only when a caller, the sysop, the log or stored data
     # could see its fault. The run still fails when gremlins fails or prints no result lines, since
@@ -337,15 +424,15 @@ if [ -n "$pkgs" ]; then
     # test support, proved by the rows that use it; so is tools/, the gates' own tools.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
-    # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
-    # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
-    # The run on a diff stays at the repository root (.): a package path matches no diff entry (its
-    # 278). MUTATE names whole packages instead (a QA change to existing rows, a milestone), each
-    # mutated in full.
+    # unmutated. With no context lines, git writes one hunk per run of edits. Kept until a
+    # gremlins release fixes it.
+    # The run on a diff stays at the repository root (.): gremlins matches a package path to no
+    # diff entry. MUTATE names whole packages instead (a QA change to existing rows, a
+    # milestone), each mutated in full.
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
     mutants=
     for target in "${targets[@]}"; do
-      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" gremlins unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" "$mutator" unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
       echo "$out"
       grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
       mutants+="$out"$'\n'

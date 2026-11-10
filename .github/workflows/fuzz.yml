@@ -1,5 +1,5 @@
-# Fuzzes every fuzz target each night, ten minutes each (HeliosDesign #258's CI work, the
-# developer's approval of 2026-10-30). check.sh runs each target's seeds alone, so without this no
+# Fuzzes every fuzz target each night, ten minutes each (the developer's approval of
+# 2026-10-30). check.sh runs each target's seeds alone, so without this no
 # run ever fuzzes, and the rule for a parser of a caller's bytes, a fuzz target that fuzzes, would
 # hold in name only. The targets are found by listing, so a new one is fuzzed without anyone
 # naming it here. Each night starts from the seeds in the repository and keeps nothing: inputs kept
@@ -11,7 +11,7 @@
 # replays it go to alerts of their own in code scanning, which only those with write access see.
 # The fix is tested as every security fix is: its pull request adds the input to the target's
 # seeds, red until the engine is fixed. Once it merges, a run of this workflow by hand with the
-# alert's category closes the alert (HeliosDesign #274 holds closing it automatically). The input
+# alert's category closes the alert (closing it automatically is planned, not built). The input
 # becomes public with that pull request, as any security fix's test does.
 name: fuzz
 
@@ -75,6 +75,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # Free Pascal, which builds the bootstrap file oracle (oracle/bootstrap-file) that a target
+      # makes its seeds with, from Ubuntu's signed archive as in check.yml. Without it such a target
+      # fails before it fuzzes, and the failure is filed as a finding. Every target gets it, so a
+      # new target that uses the oracle needs nothing named here.
+      - name: Install Free Pascal
+        shell: bash
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q fp-compiler
+          fpc -iV
       # The test code runs here with the same trust as merged code in check.yml. Its output stays
       # in a file; the public log gets nothing from it.
       - name: Fuzz for ten minutes

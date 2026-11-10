@@ -6,7 +6,7 @@
 internal/database/schema.sql
 CLAUDE.md
 check.sh
-.golangci.yml
+.golangci.*
 .claude/*
 developer-owned-paths
 security-paths

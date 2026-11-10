@@ -427,9 +427,8 @@ settings come from.
 
 #### The key file's checks
 
-- If, on Linux, the key file's owner is not the account the engine runs as, or its mode gives its
-  group or others any access, then the engine shall write one `start_failed` line saying so, and
-  exit with a non-zero code.
+- If, on Linux, the key file's mode gives its group or others any access, then the engine shall
+  write one `start_failed` line saying so, and exit with a non-zero code.
 - If, on Windows, the key file's owner, or any entry of its access list that allows access, names
   anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no
   access list, then the engine shall write one `start_failed` line saying so, and exit with a
