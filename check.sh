@@ -272,25 +272,24 @@ leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/inter
 # 4j. A comment says its reason, never an issue's or a pull request's number for a reader to look
 # up (the developer, 2026-10-03: "I do not want IDs in public documents. Comments, etc, should be
 # readable without having to go reference something else."). Reviews kept missing such numbers
-# by eye, as with the width above. Read: the comments of Go and Free Pascal files (after //, and
-# inside a block comment that opens a line or follows code), and of shell, workflow, Dockerfile
-# and Makefile files (from a # that opens the line or follows a space). A comment fails when it
-# holds a number after a lone hash sign, after a repository's name, "PR", "pull request" or
-# "issue" (joined, spaced, or with "number" or "no."), or after /issues/ or /pull/ in a link. A
-# lone hash sign before a number fails even as an ordinal: write "first", not the number.
-# Quotes are not parsed: a string on the line after the marker counts as comment, so reword it.
-numbered=$(git ls-files -z '*.go' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' | xargs -0 -r awk '
-  FNR == 1 { slash = (FILENAME ~ /\.(go|pas)$/); pas = (FILENAME ~ /\.pas$/); block = "" }
+# by eye, as with the width above. A backstop, not the test of the rule, which stays review's: it
+# reads one line at a time, from the comment's marker to the line's end. That is after // in Go
+# files and go.mod; after //, { or (* in Free Pascal files; and from a # that opens the line or
+# follows a space in shell, workflow, Dockerfile and Makefile files. So the lines inside a block
+# comment go unread, and quotes are not parsed: a string after the marker counts as comment, so
+# reword it. A comment fails when it holds a number after a lone hash sign, after a repository's
+# name, "PR", "pull request" or "issue" (joined, spaced, or with "number" or "no."), or after
+# /issues/ or /pull/ in a link. A lone hash sign before a number fails even as an ordinal: write
+# "first", not the number.
+numbered=$(git ls-files -z '*.go' 'go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' |
+  xargs -0 -r awk '
+  FNR == 1 { slash = (FILENAME ~ /(\.go|go\.mod)$/); pas = (FILENAME ~ /\.pas$/) }
   {
     text = ""
-    if (block != "") {
-      text = $0
-      if (index($0, block)) block = ""
-    } else if (slash) {
+    if (slash) {
       if ((at = index($0, "//"))) text = substr($0, at + 2)
-      else if ((at = index($0, "/*"))) { text = substr($0, at + 2); if (!index(text, "*/")) block = "*/" }
-      else if (pas && (at = index($0, "(*"))) { text = substr($0, at + 2); if (!index(text, "*)")) block = "*)" }
-      else if (pas && (at = index($0, "{"))) { text = substr($0, at + 1); if (!index(text, "}")) block = "}" }
+    } else if (pas) {
+      if (match($0, /\/\/|\{|\(\*/)) text = substr($0, RSTART + RLENGTH)
     } else if (match($0, /(^|[ \t])#/)) {
       text = substr($0, RSTART + RLENGTH - 1)
     }
@@ -299,7 +298,7 @@ numbered=$(git ls-files -z '*.go' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' 
     # A standard named with a hash sign, such as PKCS #1 or PKCS#8, is not a lookup.
     gsub(/pkcs ?#[0-9]+/, "", text)
     if (text ~ /(^|[^a-z0-9&\/])#[0-9]+([^a-z0-9]|$)/ ||
-        text ~ /(helios(design|advance|loop)|pr|issue|pull)#[0-9]+/ ||
+        text ~ /(^|[^a-z0-9])(helios(design|advance|loop)|pr|issue|pull)#[0-9]+/ ||
         text ~ /(^|[^a-z0-9])(prs?|pull[ -]requests?|issues?)[ -](number |no\. ?)?#?[0-9]+([^a-z0-9]|$)/ ||
         text ~ /\/(issues|pull)\/[0-9]+/)
       print FILENAME ":" FNR ": " $0
