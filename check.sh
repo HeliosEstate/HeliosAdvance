@@ -144,7 +144,22 @@ is_qa() {
 # a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
 # gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
-qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
+# The anchor is this branch's own newest QA commit, one the base does not hold, when it has one;
+# otherwise the newest in the whole history, as before. Taken from the whole history alone, a QA
+# commit the base gained since, from another issue's tests, came first in a merge with the base,
+# and every test this branch's own QA commits approved read as changed. Where the branch has no
+# QA commit of its own (a push to the base or to main, a branch already merged), nothing changes.
+first_qa() {
+  local log c
+  log=$(git log --format=%H --grep='^Helios-Role: qa$' "$@") ||
+    fail "git could not list the QA commits, so the approved tests cannot be checked"
+  for c in $log; do is_qa "$c" && { echo "$c"; return 0; }; done
+  return 0
+}
+qa=""
+git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && qa=$(first_qa "$BASE..HEAD")
+[ -n "$qa" ] || qa=$(first_qa)
+[ -n "$qa" ] || echo "check: no QA commit in this history, so no test is locked by one yet" >&2
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
@@ -247,13 +262,13 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
-# with everything green (HeliosAdvance #160). Each of the engine's paths in the file is judged,
-# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
-# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
-# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
-# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
-# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
-# developer's, and his review of every change to it is the check for that.
+# with everything green. Each of the engine's paths in the file is judged, written plainly,
+# quoted, in a one-line list or mapping, or on the line after a folded marker, once comments are
+# taken off; a deny entry's own lines are left out, since there $ narrows what is blocked. The
+# dependencies rule's module-wide entry, ending in /, is the one exception, and there is one. This
+# catches what a merge or a slip brings back, not a disguise (a shortened path, a reference to
+# another rule's list, an escape, a # inside quotes): the file is the developer's, and his review
+# of every change to it is the check for that.
 [ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
 paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
   grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
@@ -268,6 +283,47 @@ wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true
 leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/internal/testrun"' . |
   grep -vE '_test\.go$|^\./internal/testrun/' || true)
 [ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
+
+# 4j. A comment says its reason, never an issue's or a pull request's number for a reader to look
+# up (the developer, 2026-10-03: "I do not want IDs in public documents. Comments, etc, should be
+# readable without having to go reference something else."). Reviews kept missing such numbers
+# by eye, as with the width above. A backstop, not the test of the rule, which stays review's: it
+# reads one line at a time, from the comment's marker to the line's end. That is after // in Go
+# files and go.mod files, so a Go block comment goes unread whole; after // in Free Pascal files,
+# or after { or (* up to its close on that line; and from a # that opens the line or follows a
+# space or tab in shell, workflow, Dockerfile and Makefile files. So the lines inside a block
+# comment go unread, and quotes are not parsed: a string after the marker counts as comment, so
+# reword it. A comment fails when it holds a number after a lone hash sign (not in Free Pascal,
+# where a hash sign and a number make a character), after a repository's name, "PR", "pull
+# request" or "issue" (joined, spaced, or with "number" or "no."), or after /issues/ or /pull/ in
+# a link. A lone hash sign before a number fails even as an ordinal: write "first", not the number.
+numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' |
+  xargs -0 -r awk '
+  FNR == 1 { slash = (FILENAME ~ /(\.go|(^|\/)go\.mod)$/); pas = (FILENAME ~ /\.pas$/) }
+  {
+    text = ""
+    if (slash) {
+      if ((at = index($0, "//"))) text = substr($0, at + 2)
+    } else if (pas) {
+      if (match($0, /\/\/|\{|\(\*/)) {
+        opener = substr($0, RSTART, RLENGTH); text = substr($0, RSTART + RLENGTH)
+        closer = (opener == "{") ? "}" : (opener == "(*") ? "*)" : ""
+        if (closer != "" && (at = index(text, closer))) text = substr(text, 1, at - 1)
+      }
+    } else if (match($0, /(^|[ \t])#/)) {
+      text = substr($0, RSTART + RLENGTH - 1)
+    }
+    if (text == "") next
+    text = tolower(text)
+    # A standard named with a hash sign, such as PKCS #1 or PKCS#8, is not a lookup.
+    gsub(/pkcs ?#[0-9]+/, "", text)
+    if ((!pas && text ~ /(^|[^a-z0-9&\/])#[0-9]+([^a-z0-9]|$)/) ||
+        text ~ /(^|[^a-z0-9])(helios(design|advance|loop)|pr|issue|pull)#[0-9]+/ ||
+        text ~ /(^|[^a-z0-9])(prs?|pull[ -]requests?|issues?)[ -](number |no\. ?)?#?[0-9]+([^a-z0-9]|$)/ ||
+        text ~ /\/(issues|pull)\/[0-9]+/)
+      print FILENAME ":" FNR ": " $0
+  }')
+[ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
@@ -329,14 +385,13 @@ if [ -n "$pkgs" ]; then
     fi
   fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
-  # every failure from load on record came with every package at once (HeliosDesign #258).
+  # every failure from load on record came with every package at once.
   if [ -n "${TIMED:-}" ]; then
-    # CI keeps every timed row's place in its window (#258), and every line where a row says it
-    # cannot tell and sets its check aside, since such a pass proves nothing (HeliosDesign #217): a
-    # passing run's logs show only in Go's -json stream, so those lines go to $TIMED, a few KB. The
-    # rows TESTSKIP skips by name are named above. The console gets each package's result, and a
-    # failed package's whole output, so a crash or a hang that Go does not pin on one test still
-    # shows its cause.
+    # CI keeps every timed row's place in its window, and every line where a row says it cannot
+    # tell and sets its check aside, since such a pass proves nothing: a passing run's logs show
+    # only in Go's -json stream, so those lines go to $TIMED, a few KB. The rows TESTSKIP skips by
+    # name are named above. The console gets each package's result, and a failed package's whole
+    # output, so a crash or a hang that Go does not pin on one test still shows its cause.
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
     go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
@@ -352,7 +407,7 @@ if [ -n "$pkgs" ]; then
     go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
   fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
-    # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
+    # gremlins v0.6.0 misreads coverage on Windows (its coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
@@ -369,11 +424,11 @@ if [ -n "$pkgs" ]; then
     # test support, proved by the rows that use it; so is tools/, the gates' own tools.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
-    # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
-    # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
-    # The run on a diff stays at the repository root (.): a package path matches no diff entry (its
-    # 278). MUTATE names whole packages instead (a QA change to existing rows, a milestone), each
-    # mutated in full.
+    # unmutated. With no context lines, git writes one hunk per run of edits. Kept until a
+    # gremlins release fixes it.
+    # The run on a diff stays at the repository root (.): gremlins matches a package path to no
+    # diff entry. MUTATE names whole packages instead (a QA change to existing rows, a
+    # milestone), each mutated in full.
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
     mutants=
     for target in "${targets[@]}"; do
