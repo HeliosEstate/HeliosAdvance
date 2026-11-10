@@ -4,6 +4,7 @@
 package servicemanager
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -33,7 +34,7 @@ func notifySystemdReady() {
 }
 
 func sendReady(socket string) error {
-	connection, err := net.Dial("unixgram", socket)
+	connection, err := (&net.Dialer{}).DialContext(context.Background(), "unixgram", socket)
 	if err != nil {
 		return err
 	}

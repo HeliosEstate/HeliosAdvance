@@ -60,7 +60,7 @@ func serve(stopContext context.Context, ready servicemanager.Ready, log func(key
 			log("start_failed", err.Error())
 			return exitFailed
 		}
-		//nolint:contextcheck // a Listener lives for one lease; its owner stops it with Stop, which waits
+		//nolint:contextcheck // a Listener lives one lease; its owner stops it with Stop
 		startAll(listeners)
 		log("started", strings.Join(addresses, ","))
 		ready()
