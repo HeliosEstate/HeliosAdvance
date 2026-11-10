@@ -8,7 +8,7 @@
 #   (CI, a file for the timed rows' place-in-window lines), MUTATE (CI, with --mutation: whole
 #   packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
-script=$(realpath -- "$0")
+if [ "${1:-}" = --self-test ]; then script=$(realpath -- "$0"); fi
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
 MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
@@ -26,6 +26,8 @@ self_test() {
   # Not local: the trap that removes it runs after this function has returned.
   t=$(mktemp -d) || fail "could not make the self-test's folder"
   trap 'cd / && rm -rf "$t"' EXIT
+  # Run from inside a git hook, these would point every git command here at that repository.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   ssh-keygen -q -t ed25519 -N '' -C qa -f "$t/key" || fail "ssh-keygen could not make the self-test's key"
   plain='func TestX(t *testing.T) { t.Log() }'
   main='func TestMain(m *testing.M) { m.Run() }'
@@ -41,7 +43,8 @@ self_test() {
     esac
     GIT_AUTHOR_NAME=$who GIT_AUTHOR_EMAIL=$email GIT_AUTHOR_DATE=$date \
       GIT_COMMITTER_NAME=$who GIT_COMMITTER_EMAIL=$email GIT_COMMITTER_DATE=$date \
-      git -c commit.gpgsign=false -c gpg.format=ssh -c user.signingkey="$t/key" "$@" >/dev/null ||
+      git -c commit.gpgsign=false -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen \
+        -c user.signingkey="$t/key" "$@" >/dev/null ||
       fail "self-test: git $* failed"
   }
   dev() { as dev commit -q -m "$1"; }
@@ -65,18 +68,22 @@ self_test() {
     printf 'linters:\n  settings:\n    depguard:\n      rules:\n        main:\n          allow:\n            - %s\n' \
       github.com/heliosestate/heliosadvance/ > .golangci.yml
     mkdir owned && echo owned > owned/file
-    git add -A && test_file a/a_test.go && test_file b/b_test.go
+    git add -A && test_file a/a_test.go && test_file b/b_test.go || fail "self-test: no base"
     dev base; git branch main; sync development main
   }
   # expect case want base event [flag]: runs this script over the repository as CI would, and fails
-  # the self-test unless its last line starts with want.
+  # the self-test unless its last line starts with want and it exits as want says: 0 for green.
   expect() {
-    local got
-    got=$(GITHUB_EVENT_NAME=$4 BASE=$3 SKIP_GO=1 bash "$script" ${5:+"$5"} 2>&1 | tail -1) || true
-    case $got in
-      "$2"*) echo "self-test: $1: $got" ;;
-      *) echo "self-test: $1: wanted \"$2\", got: $got" >&2; failed=1 ;;
-    esac
+    local out status=0 got refused=0 to_refuse=0
+    out=$(GITHUB_EVENT_NAME=$4 BASE=$3 SKIP_GO=1 bash "$script" ${5:+"$5"} 2>&1) || status=$?
+    got=$(tail -1 <<< "$out")
+    [ "$status" = 0 ] || refused=1
+    [ "$2" = green ] || to_refuse=1
+    if [[ $got == "$2"* ]] && [ "$refused" = "$to_refuse" ]; then
+      echo "self-test: $1: $got"
+    else
+      echo "self-test: $1: wanted \"$2\", got (exit $status): $got" >&2; failed=1
+    fi
   }
 
   fresh; git checkout -q -b f; test_file c/c_test.go; dev c
@@ -112,6 +119,10 @@ self_test() {
   git checkout -q f
   expect "the loop merges the base in, then the base moves on" green origin/development push
 
+  fresh; git checkout -q -b f; change owned/file; as loop commit -q -m owned
+  expect "the loop changes an owned file" \
+    "FAIL: a loop-authored or loop-committed commit touched a developer-owned path" origin/development push
+
   fresh; git checkout -q -b g; test_file c/c_test.go; qa c
   git checkout -q -b f development; as loop merge -q --no-ff --no-edit g
   expect "the loop merges a commit the base does not have" \
@@ -144,11 +155,12 @@ self_test() {
   git checkout -q --detach origin/main; as dev merge -q --no-ff --no-edit origin/development
   expect "a release into main, a loop's catch-up merge on development" green origin/main pull_request
 
-  # Only development's commits are judged as development judged them: a pull request into main
-  # from any other branch is judged against main.
-  fresh; git checkout -q -b h main; change a/a_test.go; dev a
+  # Only a head development holds whole is a release. One commit more makes it a change like any
+  # other into main, judged against main, so development's own edit to a test counts again.
+  fresh; change a/a_test.go; dev "a, squashed"; sync development
+  git checkout -q -b h development; test_file c/c_test.go; dev c
   git checkout -q --detach origin/main; as dev merge -q --no-ff --no-edit h
-  expect "a pull request into main from another branch edits a test" \
+  expect "a pull request into main with a commit development lacks" \
     "FAIL: a test file on origin/main was changed or deleted by a non-QA commit" origin/main pull_request
 
   fresh; git checkout -q -b f; test_file c/c_test.go; qa c
@@ -161,7 +173,8 @@ self_test() {
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
 }
-[ "${1:-}" = --self-test ] && { self_test; exit 0; }
+# Called from an if's body, not an && list, so set -e holds inside it.
+if [ "${1:-}" = --self-test ]; then self_test; exit 0; fi
 # pinned name module pin: prints the path of the Go tool name at the version .github/tool-versions
 # pins as pin, built by the Go in use, installed into a folder of its own for that version and that
 # Go when it is missing there. Whatever version is on the path is never run, so every machine runs
@@ -237,24 +250,29 @@ mapfile -t loops < <(list_of loop-identities | sed -e 's/#.*//' -e 's/[[:space:]
 # author and makes the loop the committer.
 is_loop_address() { local id; for id in "${loops[@]}"; do case "$1" in *"+$id@"*|"$id@"*) return 0 ;; esac; done; return 1; }
 is_loop() { is_loop_address "$1" || is_loop_address "${2:-}"; }
-# Into main, the commits already on development passed gates 3, 4, 4a and 4b there, judged against
-# development; a release is judged the same way, so only what it adds beyond development counts.
-# Judged against main, which lags, every catch-up merge of the loop's on development merges
-# commits main lacks, and two tests approved side by side on development read as changed since the
-# newer QA commit: a release would fail with nothing wrong. Gates 3 and 4a leave development's
-# commits out (exclude); gates 4 and 4b take their anchor and copies from development (lock_base).
-exclude=(); lock_base=$BASE
-if [ "$MUTATION" = 0 ] && [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
-  exclude=(--not origin/development); lock_base=origin/development
-fi
+tip=HEAD
 if [ "$MUTATION" = 0 ]; then
   # On a pull request CI checks out GitHub's merge of the branch into the base, which GitHub
   # authors as whoever opened the PR, and which a branch behind the base shows as touching
   # owned paths: judge the branch's own commits, up to its head, the merge's second parent.
-  tip=HEAD
   if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     tip=$(git rev-parse -q --verify 'HEAD^2') || fail "a pull request's checkout is not GitHub's merge"
   fi
+fi
+# A release is a change into main that development already holds whole. Every commit it brings
+# passed gates 3, 4, 4a and 4b on development, judged against development, so a release is judged
+# the same way: only what it adds beyond development counts. Judged against main, which lags,
+# every catch-up merge of the loop's on development merges commits main lacks, and two tests
+# approved side by side on development read as changed since the newer QA commit: a release would
+# fail with nothing wrong. Gates 3 and 4a leave development's commits out (exclude); gates 4 and 4b
+# take their anchor and copies from development (lock_base). Anything else into main, a head
+# holding a commit development lacks, is judged against main.
+exclude=(); lock_base=$BASE
+if [ "$MUTATION" = 0 ] && [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1 &&
+  git merge-base --is-ancestor "$tip" origin/development; then
+  exclude=(--not origin/development); lock_base=origin/development
+fi
+if [ "$MUTATION" = 0 ]; then
   # git's output is taken whole first, so a git that fails fails the gate instead of reading as
   # no commits (the codebase review, 2026-10-24).
   touched=$(git log --no-merges --format='%h %ae %ce' "$BASE..$tip" "${exclude[@]}" -- "${owned[@]}") ||
