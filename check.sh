@@ -135,9 +135,14 @@ if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-signers" 2>/dev/null; then g
 elif [ -f qa-signers ]; then cp qa-signers "$signers"; fi
 if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-grandfathered" 2>/dev/null; then grandfathered=$(git show "$BASE:qa-grandfathered")
 elif [ -f qa-grandfathered ]; then grandfathered=$(cat qa-grandfathered); else grandfathered=; fi
+# A commit git cannot read, or a signature that cannot be checked at all, fails the check: read as
+# "not a QA commit", it would move the gates' anchor or drop it without a word.
+[ -s "$signers" ] && need ssh-keygen "OpenSSH's, which git uses to check a QA commit's signature"
 is_qa() {
-  git log -1 --format=%B "$1" | grep -q '^Helios-Role: qa$' || return 1
-  grep -qxF "$(git rev-parse "$1")" <<< "$grandfathered" && return 0
+  local body
+  body=$(git log -1 --format=%B "$1") || fail "git could not read commit $1, so it cannot be judged"
+  grep -q '^Helios-Role: qa$' <<< "$body" || return 1
+  grep -qxF "$1" <<< "$grandfathered" && return 0
   [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
 }
 # Paths are read NUL-separated and git quotes nothing, and each goes back to git as :(literal), so
@@ -157,21 +162,50 @@ first_qa() {
   return 0
 }
 qa=""
-git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && qa=$(first_qa "$BASE..HEAD")
+onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
+[ "$onbase" = 1 ] && qa=$(first_qa "$BASE..HEAD")
 [ -n "$qa" ] || qa=$(first_qa)
 [ -n "$qa" ] || echo "check: no QA commit in this history, so no test is locked by one yet" >&2
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
-  # commit left it as it found it and HEAD holds it as the base does; gate 4a locks the base's
-  # tests. The base's copy over a test this QA commit changed is still a change to it.
-  git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && forked=$(git merge-base "$qa" "$BASE") || forked=""
+  # commit left it as it found it and HEAD holds it as the base held it when this branch last took
+  # it in; gate 4a locks the base's tests. That copy is the merge base's, not the base's today: a
+  # test the base changed after this branch's last merge from it is not this branch's change. The
+  # base's copy over a test this QA commit changed is still a change to it.
+  forked=""; merged=""
+  if [ "$onbase" = 1 ]; then forked=$(git merge-base "$qa" "$BASE"); merged=$(git merge-base HEAD "$BASE"); fi
   changed=$(while IFS= read -r -d '' f; do
-      [ -n "$forked" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+      [ -n "$forked" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" && git diff --quiet "$merged" HEAD -- ":(literal)$f" && continue
       echo "$f"
     done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go')
     wait $!) || fail "git could not list the tests changed since the QA commit"
   [ -z "$changed" ] || { echo "$changed"; fail "test files approved at ${qa:0:8} were changed or deleted"; }
+fi
+# A test an earlier QA commit of this branch approved stays locked through the later ones, which
+# the anchor above alone cannot see: each commit since the branch's first QA commit, other than a
+# QA commit, is judged one by one. A merge whose copy of a file is one of its parents' adds nothing
+# of its own, as in gate 4a. A test a QA commit of this branch held is approved from then on.
+if [ "$onbase" = 1 ]; then
+  ownlog=$(git log --format=%H --grep='^Helios-Role: qa$' "$BASE..HEAD") ||
+    fail "git could not list this branch's QA commits"
+  own=$(for c in $ownlog; do is_qa "$c" && echo "$c"; done; true)
+  if [ -n "$own" ]; then
+    first=$(tail -n 1 <<< "$own")
+    later=$(git rev-list "$first..HEAD" --not "$BASE") || fail "git could not list this branch's commits after its first QA commit"
+    edited=$(for c in $later; do
+        grep -qxF "$c" <<< "$own" && continue
+        parents=$(git rev-list --parents -n 1 "$c" | cut -s -d' ' -f2-)
+        while IFS= read -r -d '' f; do
+          for p in $parents; do git diff --quiet "$p" "$c" -- ":(literal)$f" && continue 2; done
+          for q in $own; do
+            git merge-base --is-ancestor "$q" "$c" && git cat-file -e "$q:$f" 2>/dev/null && { echo "$f: ${c:0:8}"; continue 2; }
+          done
+        done < <(git diff -z --no-renames --name-only --diff-filter=MDT "${parents%% *}" "$c" -- '*_test.go')
+        wait $! || fail "git could not list the tests commit $c changed"
+      done; true)
+    [ -z "$edited" ] || { echo "$edited"; fail "a test this branch's QA commits approved was changed or deleted by a non-QA commit"; }
+  fi
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
 # file already on the base is locked for every branch: only a QA commit may change or delete it.
@@ -201,7 +235,6 @@ fi
 # base holds it passed this gate on its own branch before it merged; a squash merge drops the
 # trailer that showed it. A name ending in an operating system or a processor, as Go lists them,
 # is a build constraint as much as a //go:build line (developer, 2026-10-27).
-onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
 goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
 goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
