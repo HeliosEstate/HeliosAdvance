@@ -135,18 +135,22 @@ if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-signers" 2>/dev/null; then g
 elif [ -f qa-signers ]; then cp qa-signers "$signers"; fi
 if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-grandfathered" 2>/dev/null; then grandfathered=$(git show "$BASE:qa-grandfathered")
 elif [ -f qa-grandfathered ]; then grandfathered=$(cat qa-grandfathered); else grandfathered=; fi
-# A commit git cannot read fails the check, and so does a missing ssh-keygen, which git needs to
-# check a signature: either, read as "not a QA commit", would move the gates' anchor or drop it
-# without a word. A signature check that runs and fails is still read as "not a QA commit", since
-# git does not tell a bad signature from a check that broke.
-[ -s "$signers" ] && need ssh-keygen "OpenSSH's, which git uses to check a QA commit's signature"
+# A commit git cannot read fails the check, and so does a missing ssh-keygen when a signature must
+# be checked: either, read as "not a QA commit", would move the gates' anchor or drop it without a
+# word. git is told to use ssh-keygen itself, whatever its own settings name. A signature check
+# that runs and fails is still read as "not a QA commit", since git does not tell a bad signature
+# from a check that broke.
 is_qa() {
-  local body
+  local body id
   [ -n "$1" ] || return 1
   body=$(git log -1 --format=%B "$1") || fail "git could not read commit $1, so it cannot be judged"
   grep -q '^Helios-Role: qa$' <<< "$body" || return 1
-  grep -qxF "$1" <<< "$grandfathered" && return 0
-  [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
+  id=$(git rev-parse "$1^{commit}") || fail "git could not read commit $1, so it cannot be judged"
+  grep -qxF "$id" <<< "$grandfathered" && return 0
+  [ -s "$signers" ] || return 1
+  need ssh-keygen "OpenSSH's, which git uses to check a QA commit's signature"
+  git -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen -c gpg.ssh.allowedSignersFile="$signers" \
+    verify-commit "$id" >/dev/null 2>&1
 }
 # Paths are read NUL-separated and git quotes nothing, and each goes back to git as :(literal), so
 # a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
@@ -166,6 +170,11 @@ first_qa() {
 }
 qa=""
 onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
+# merged is the base as this branch last took it in, the merge base of HEAD and the base: gates 4
+# and 4b spare a test held as it was there, so a test the base changed after this branch's last
+# merge from it is not read as this branch's change. Empty when it cannot be found: none is spared.
+merged=""
+if [ "$onbase" = 1 ]; then merged=$(git merge-base HEAD "$BASE") || merged=""; fi
 [ "$onbase" = 1 ] && qa=$(first_qa "$BASE..HEAD")
 [ -n "$qa" ] || qa=$(first_qa)
 [ -n "$qa" ] || echo "check: no QA commit in this history, so no test is locked by one yet" >&2
@@ -173,15 +182,10 @@ if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
   # commit left it as it found it and HEAD holds it as the base held it when this branch last took
-  # it in; gate 4a locks the base's tests. That copy is the merge base's, not the base's today: a
-  # test the base changed after this branch's last merge from it is not this branch's change. The
-  # base's copy over a test this QA commit changed is still a change to it.
-  # With no merge base to read, no test is spared: each one changed since the QA commit is named.
-  forked=""; merged=""
-  if [ "$onbase" = 1 ]; then
-    forked=$(git merge-base "$qa" "$BASE") || forked=""
-    merged=$(git merge-base HEAD "$BASE") || merged=""
-  fi
+  # it in (merged, above); gate 4a locks the base's tests. The base's copy over a test this QA
+  # commit changed is still a change to it.
+  forked=""
+  if [ "$onbase" = 1 ]; then forked=$(git merge-base "$qa" "$BASE") || forked=""; fi
   changed=$(while IFS= read -r -d '' f; do
       [ -n "$forked" ] && [ -n "$merged" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" &&
         git diff --quiet "$merged" HEAD -- ":(literal)$f" && continue
@@ -215,13 +219,13 @@ if [ "$MUTATION" = 0 ]; then
   wait $! || fail "git could not list the tests this branch changed"
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
-# base holds it passed this gate on its own branch before it merged; a squash merge drops the
-# trailer that showed it. A name ending in an operating system or a processor, as Go lists them,
+# base held it when this branch last took it in (merged, above) passed this gate on its own branch
+# before it merged; a squash merge drops the trailer that showed it. A name ending in an operating system or a processor, as Go lists them,
 # is a build constraint as much as a //go:build line (developer, 2026-10-27).
 goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
 goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
-  [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+  [ -n "$merged" ] && git diff --quiet "$merged" HEAD -- ":(literal)$f" && continue
   last=$(git log -1 --format=%H -- ":(literal)$f")
   is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
