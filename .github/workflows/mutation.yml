@@ -43,10 +43,10 @@ jobs:
         with:
           go-version-file: go.mod
       # What to mutate, or nothing. A build is judged whole, from where it left development, never
-      # by its last push alone: judged by the push, a push of tests alone, or a merge of development
-      # bringing no engine code, mutated nothing, and a report that failed or was cancelled by that
-      # push was never made again. A build whose changes are only tests or a contract's
-      # declarations starts nothing; nor does a QA change that only adds rows. The
+      # by its last push alone. Judged by its last push alone, a push of tests, or a merge of
+      # development bringing no engine code, mutated nothing, so a report that push cancelled, or
+      # one an earlier push failed to make, never came. A build whose changes are only tests or a
+      # contract's declarations starts nothing; nor does a QA change that only adds rows. The
       # engine's code is internal/, but for the test support; cmd/'s tests run the built program,
       # which mutation testing cannot see into. A QA change counts a renamed test, or a changed file
       # its rows read from testdata/, as a changed test. A milestone mutates the whole module, which
