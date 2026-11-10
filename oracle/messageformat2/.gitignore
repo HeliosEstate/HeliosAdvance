@@ -1,0 +1,5 @@
+# Unicode's own files, fetched by check.sh at the pin and never committed: the suite is not this
+# repository's code.
+*.json
+LICENSE
+.fetch.*
