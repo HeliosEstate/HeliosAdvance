@@ -132,13 +132,17 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
 - A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on
-  Windows) counts the reading of the count too. A row that bounds what the engine reads takes out
-  the bytes the reading before it read, and first proves, with two readings and nothing between,
-  that this is all a reading adds.
+  Windows) also holds what the Go runtime reads for itself: 8 bytes of its own wake-up for the
+  network poller, on another thread, at moments its scheduler picks, a collection alone among
+  them. A bound on what the engine reads is a bound on the bytes read from each file (the
+  developer, 2026-11-10): the row runs its case again in the test binary under `strace -ff -y`,
+  which names the file behind every read and writes each thread's reads to a file of its own, so
+  no read is split by another thread's; the row adds up the reads by file, fails on one the
+  account does not show whole, and checks the child passed the row.
 - A new row that counts the bytes read is Linux's alone, named `TestLinux…` (the developer,
   2026-11-06): on Windows the count comes only through a raw pointer, which the imports refuse,
-  or by asking another program, which timed out on CI's runner three times. WSL's Linux has no
-  /proc/self/io, so a broken copy only such a row catches is run on CI, on a branch of its own.
+  or by asking another program, which timed out on CI's runner three times. strace is on CI's
+  Linux images and on the laptop's WSL Linux.
 
 ## Reading a run
 
@@ -183,9 +187,11 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
 
 - A test binary that starts servers or programs calls `testrun.Enter` first in its TestMain and
   `testrun.Leave` last: everything it makes lands in its own folder, and nothing outlives the run.
-  One binary needs none: the Listener's, whose only child, on Linux alone, is the test binary run
-  again under a descriptor limit, which makes nothing on disk but, under `-cover`, the coverage
-  counters written where the parent's go, and ends when its input closes.
+  Two binaries need none, since their only child, on Linux alone, is the test binary run again
+  and makes nothing on disk but, under `-cover`, the coverage counters written where the
+  parent's go: the Listener's, run under a descriptor limit and ended when its input closes, and
+  the language unit's, run under strace, which writes its account into the row's own temporary
+  folder, and ended by its own test timeout.
   A run killed or timed out leaves its folder, servers and programs, and the next run takes them.
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has

@@ -2,15 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Load's lines on Linux that need the system's own links and modes: a language's folder or file
-// a symbolic link out of the lang folder, a file link that stays inside it, and the count of bytes
-// this process has read, from /proc/self/io.
+// a symbolic link out of the lang folder, and a file link that stays inside it.
 package language_test
 
 import (
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -30,27 +27,6 @@ func makeUnopenable(t *testing.T, path string) {
 			t.Errorf("giving %s its mode back: %v", path, err)
 		}
 	})
-}
-
-// bytesRead is the bytes this process has read, rchar in /proc/self/io, and how many bytes this
-// reading of it read.
-func bytesRead(t *testing.T) (count int64, length int64) {
-	t.Helper()
-	text, err := os.ReadFile("/proc/self/io")
-	if err != nil {
-		t.Fatalf("reading this process's count of bytes read: %v", err)
-	}
-	for line := range strings.SplitSeq(string(text), "\n") {
-		if value, found := strings.CutPrefix(line, "rchar: "); found {
-			count, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				t.Fatalf("reading rchar %q: %v", value, err)
-			}
-			return count, int64(len(text))
-		}
-	}
-	t.Fatalf("no rchar in /proc/self/io: %q", text)
-	return 0, 0
 }
 
 // outside makes a folder beside the lang folder, outside it, holding fr-fr/fr-fr.toml, the full
