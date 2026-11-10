@@ -141,15 +141,16 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   which names the file behind every read, stops the child only at the reads traced, and writes
   each thread's reads to a file of its own, so no read is split by another thread's. The row adds
   up the reads by file and checks the child passed the row. It fails on a read the account does
-  not show whole only when that read is of a file the row bounds: the runtime's own threads have
-  reads broken off or left unfinished at moments their scheduler picks. strace is on CI's Linux
-  images.
-- On Windows a read-bound row proves the refusal alone (the developer, 2026-11-10), named
-  `TestWindows…` beside its `TestLinux…` row: nothing there tells what the engine read of one
-  file. A byte-range lock from the byte past the limit fails a sound reader that asks for more
-  than it gets back, since a read is refused when the range it asks for reaches the lock, even
-  where the file ends before it. This holds where the engine reads the file with the same code on
-  both systems; a read on Windows alone would be bound by no row.
+  not show whole, or whose descriptor it does not name, when that read may be of the folder's
+  files the row reads; the runtime's own threads have reads of their pipes restarted
+  (`= ? ERESTARTSYS`) at moments their scheduler picks, and those name the pipe. strace is on
+  CI's Linux images.
+- On Windows the rows of a read-bound line prove its refusal alone (the developer, 2026-11-10),
+  so the bound is a `TestLinux…` row's: nothing there tells what the engine read of one file. A
+  byte-range lock from the byte past the limit fails a sound reader that asks for more than it
+  gets back, since a read is refused when the range it asks for reaches the lock, even where the
+  file ends before it. This holds where the engine reads the file with the same code on both
+  systems; a read on Windows alone would be bound by no row.
 
 ## Reading a run
 

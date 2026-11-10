@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
+// What Open reads of an oversized file, on Linux: no more than its line's bound of it. A row runs
+// again in a child, this test binary under strace, which names the file behind every read, and
+// adds up the bytes read from the line's file in the row's folder. The count is that file's own:
+// the process's whole count also holds what the Go runtime reads for itself, on another thread,
+// at moments its scheduler picks. Open reads both files with the same code on every system; on
+// Windows the lines' refusals are proved by TestOpen's rows alone.
 package bootstrap_test
 
 import (
@@ -15,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/bootstrap"
 	"github.com/heliosestate/heliosadvance/internal/testrun"
 )
 
@@ -22,9 +29,9 @@ import (
 // what the read returned, a count of bytes or -1 with an error after it.
 var traceRead = regexp.MustCompile(`^(?:read|pread64|readv|preadv|preadv2)\(\d+<([^>]*)>.*\) += (-?\d+)(?: .*)?$`)
 
-// traceReadFile is the file behind the descriptor at the start of any read in strace's account,
-// whole or not.
-var traceReadFile = regexp.MustCompile(`^(?:read|pread64|readv|preadv|preadv2)\(\d+<([^>]*)>`)
+// traceReadStart is the start of a read in strace's account, whole or not, and the file behind its
+// descriptor when the account names one.
+var traceReadStart = regexp.MustCompile(`^(?:read|pread64|readv|preadv|preadv2)\(\d+(?:<([^>]*)>)?`)
 
 // runPattern is the -test.run pattern that matches the row named name and nothing else.
 func runPattern(name string) string {
@@ -41,44 +48,95 @@ func isFolderFile(path string) bool {
 	return base == fileName || base == keyFileName
 }
 
+// grouped is a count in digits with a comma between each group of three, as the rows' names
+// write sizes.
+func grouped(count int64) string {
+	digits := strconv.FormatInt(count, 10)
+	for place := len(digits) - 3; place > 0; place -= 3 {
+		digits = digits[:place] + "," + digits[place:]
+	}
+	return digits
+}
+
+// boundRow is a row's name: its case and refusal, then the line's bound on what is read.
+func boundRow(name string, most int64) string {
+	return name + ", no more than " + grouped(most) + " bytes of it read"
+}
+
+// openAsChild, in a row's child, opens the folder the parent made and fails the row unless Open
+// refused it with want; it reports whether this run is a child, so the row ends there.
+func openAsChild(t *testing.T, want error) bool {
+	t.Helper()
+	folder, child := childFolder()
+	if !child {
+		return false
+	}
+	if folder == "" {
+		t.Fatalf("the child was given no bootstrap folder after %s", readBoundChild)
+	}
+	contents, err := open(t, folder)
+	expectError(t, contents, err, want)
+	return true
+}
+
 func TestLinuxReadBound(t *testing.T) {
 	t.Parallel()
-	for _, line := range readBoundLines() {
-		t.Run(line.line, func(t *testing.T) {
+	t.Run("If the bootstrap file is longer than FileMostBytes, then Open shall return ErrFileTooLarge, having read at most FileMostBytes and one byte more of it.", func(t *testing.T) {
+		t.Parallel()
+		t.Run(boundRow("65,537 bytes: ErrFileTooLarge", fileMostBytes+1), func(t *testing.T) {
 			t.Parallel()
-			for _, row := range line.rows {
-				t.Run(row.name+", no more than "+row.bound+" of it read", func(t *testing.T) {
-					t.Parallel()
-					if folder, child := childFolder(); child {
-						if folder == "" {
-							t.Fatalf("the child was given no bootstrap folder after %s", readBoundChild)
-						}
-						contents, err := open(t, folder)
-						expectError(t, contents, err, row.want)
-						return
-					}
-					made := row.make(t)
-					reads := readsOf(t, made.folder)
-					// Open reads the bootstrap file before it opens the key file, so a key file row
-					// that finds no read of the bootstrap file in the account has an account whose
-					// paths are not the folder's, and its bound would pass on nothing counted.
-					if row.file == keyFileName && reads[fileName] == 0 {
-						t.Fatalf("strace's account shows no read of %s in the row's folder, which Open reads before the key file: a fault in the test", fileName)
-					}
-					if reads[row.file] > int64(row.most) {
-						t.Fatalf("Open read %d bytes of %s, more than %d", reads[row.file], row.file, row.most)
-					}
-				})
+			if openAsChild(t, bootstrap.ErrFileTooLarge) {
+				return
 			}
+			made := makeFolderWith(t, plaintextOf(t, fileMostBytes+1-sealedOverhead), "")
+			expectSize(t, made, fileMostBytes+1)
+			expectReadAtMost(t, made, fileName, fileMostBytes+1)
 		})
+		t.Run(boundRow("1 MiB: ErrFileTooLarge", fileMostBytes+1), func(t *testing.T) {
+			t.Parallel()
+			if openAsChild(t, bootstrap.ErrFileTooLarge) {
+				return
+			}
+			made := makeFolder(t)
+			made.writeFile(t, append(made.sealed, make([]byte, 1<<20-len(made.sealed))...))
+			expectReadAtMost(t, made, fileName, fileMostBytes+1)
+		})
+	})
+	t.Run("If the key file is longer than KeyFileMostBytes, is not in the form the package comment gives, or holds a key of 32 zero bytes, then Open shall return ErrKeyFileForm, having read at most KeyFileMostBytes and one byte more of it.", func(t *testing.T) {
+		t.Parallel()
+		t.Run(boundRow("a 1 MiB key file beside a good bootstrap file: ErrKeyFileForm", keyFileMostBytes+1), func(t *testing.T) {
+			t.Parallel()
+			if openAsChild(t, bootstrap.ErrKeyFileForm) {
+				return
+			}
+			made := makeFolder(t)
+			made.writeKey(t, strings.TrimRight(made.keyText, "\r\n")+strings.Repeat("\n", 1<<20))
+			expectReadAtMost(t, made, keyFileName, keyFileMostBytes+1)
+		})
+	})
+}
+
+// expectReadAtMost runs the calling row again in a child under strace, which opens the folder and
+// checks what Open returned, and fails the row when the child read more than most bytes of the
+// folder's file named name.
+func expectReadAtMost(t *testing.T, made *layout, name string, most int64) {
+	t.Helper()
+	reads := readsOf(t, made.folder)
+	// Open reads the bootstrap file before it opens the key file, so a key file row that finds
+	// no read of the bootstrap file in the account has an account whose paths are not the
+	// folder's, and its bound would pass on nothing counted.
+	if name == keyFileName && reads[fileName] == 0 {
+		t.Fatalf("strace's account shows no read of %s in the row's folder, which Open reads before the key file: a fault in the test", fileName)
+	}
+	if reads[name] > most {
+		t.Fatalf("Open read %d bytes of %s, more than %d", reads[name], name, most)
 	}
 }
 
 // readsOf runs the calling row again in a child under strace, which opens folder, and returns the
 // bytes read from each file in folder, by its name. The child must pass the row: it checks what
 // Open returned. Each thread's reads go to a file of their own, so no read is split across lines
-// by another thread's. The count is each file's own: the process's whole count also holds what
-// the Go runtime reads for itself, on another thread, at moments its scheduler picks.
+// by another thread's.
 func readsOf(t *testing.T, folder string) map[string]int64 {
 	t.Helper()
 	if _, err := exec.LookPath("strace"); err != nil {
@@ -129,12 +187,14 @@ func readsOf(t *testing.T, folder string) map[string]int64 {
 		for line := range strings.SplitSeq(string(text), "\n") {
 			found := traceRead.FindStringSubmatch(line)
 			if found == nil {
-				// A read the account does not show whole, one a signal broke off or left
-				// unfinished, is the row's business only when it is of a folder's file: the
-				// runtime's own threads end reads so at moments their scheduler picks. A resumed
-				// read names no file; its unfinished start, in the same thread's account, did.
-				if start := traceReadFile.FindStringSubmatch(line); start != nil && isFolderFile(start[1]) {
-					t.Fatalf("strace's account shows a read of a bootstrap folder's file it does not show whole: %q", line)
+				// A read whose descriptor the account does not name cannot be counted by file, and
+				// one it does not show whole cannot be counted at all; either fails the row when
+				// it may be of a folder's file. The runtime's own threads have reads of their
+				// pipes restarted at moments their scheduler picks, and those name what they
+				// read. A resumed read names no file; its start, in the same thread's account,
+				// was judged.
+				if start := traceReadStart.FindStringSubmatch(line); start != nil && (start[1] == "" || isFolderFile(start[1])) {
+					t.Fatalf("strace's account shows a read it cannot count, of a bootstrap folder's file or of a descriptor it does not name: %q", line)
 				}
 				continue
 			}
