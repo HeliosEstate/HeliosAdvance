@@ -56,6 +56,10 @@ jobs:
           SKIP_GO: "1"
           BASE: origin/${{ github.base_ref || 'development' }}
         run: bash check.sh
+      # The lock gates judged over small histories built for the purpose, each the shape of a real
+      # one: a branch, a pull request's merge, a push, a release.
+      - name: check.sh self-test
+        run: bash check.sh --self-test
 
   # The three systems the engine ships on, Linux x86-64, Linux ARM64 (the deployment target) and
   # Windows x86-64, each twice: without the race detector, where time limits are judged, and with
