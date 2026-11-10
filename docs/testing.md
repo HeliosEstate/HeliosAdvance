@@ -131,10 +131,21 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   `os.OpenRoot` cannot get past. Either still shows as there.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
-- A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on
-  Windows) counts the reading of the count too. A row that bounds what the engine reads takes out
-  the bytes the reading before it read, and first proves, with two readings and nothing between,
-  that this is all a reading adds.
+- A bound on what the engine reads is a bound on the bytes read from that one file (the
+  developer, 2026-11-10), never the process's count of bytes read (`rchar` in /proc/self/io on
+  Linux, ReadTransferCount on Windows). That count also holds what the Go runtime reads for
+  itself: 8 bytes of its own wake-up for the network poller, on another thread, at moments its
+  scheduler picks. On Windows it comes only through a raw pointer, which the imports refuse, or
+  by asking another program, which timed out on CI's runner three times.
+- On Linux the row runs its case again in the test binary under `strace -ff -y`, which names the
+  file behind every read and writes each thread's reads to a file of its own, so no read is split
+  by another thread's; the row adds up the reads by file, fails on one the account does not show
+  whole, and checks the child passed the row. strace is on CI's Linux images.
+- On Windows the row holds the file locked from the byte past its limit onward (`LockFileEx`)
+  through a handle of its own while the engine reads it, and first reads that byte through
+  another handle to prove the lock holds. A read that reaches a locked byte is refused even where
+  the file ends before it. The lock tells how far the engine read, not how much: a file read
+  twice within its limit passes it, and only Linux's count catches that.
 
 ## Reading a run
 
@@ -181,7 +192,10 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
   `testrun.Leave` last: everything it makes lands in its own folder, and nothing outlives the run.
   One binary needs none: the Listener's, whose only child, on Linux alone, is the test binary run
   again under a descriptor limit, which makes nothing on disk but, under `-cover`, the coverage
-  counters written where the parent's go, and ends when its input closes.
+  counters written where the parent's go, and ends when its input closes. The bootstrap unit's
+  read-bound rows run a child under strace on Linux, marked by an argument after the test flags;
+  its TestMain skips the run's folder and the oracle's build for it, since the child only opens
+  the folder its parent made, and the child's account goes into the row's own temporary folder.
   A run killed or timed out leaves its folder, servers and programs, and the next run takes them.
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has

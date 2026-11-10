@@ -3,7 +3,9 @@
 
 // The run's start for the bootstrap folder's tests: its own folder, and the bootstrap file oracle
 // built there from oracle/bootstrap-file with Free Pascal and self-tested, once for the run. Every
-// bootstrap file a row opens, good or broken, is the oracle's.
+// bootstrap file a row opens, good or broken, is the oracle's. A read-bound row's child under
+// strace, on Linux, has neither: it only opens the folder its parent made, so it makes nothing on
+// disk and needs no oracle.
 package bootstrap_test
 
 import (
@@ -34,6 +36,9 @@ var (
 )
 
 func TestMain(tests *testing.M) {
+	if _, child := childFolder(); child {
+		os.Exit(tests.Run())
+	}
 	runFolder, swept, err := testrun.Enter()
 	if swept != nil {
 		fmt.Fprintf(os.Stderr, "what dead runs left: %v\n", swept)
