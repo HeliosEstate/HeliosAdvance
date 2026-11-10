@@ -1,17 +1,180 @@
 #!/usr/bin/env bash
 # The only definition of green. Every gate tolerates an empty repository and says so; a gate that
 # cannot run fails and says so.
-# Usage: bash check.sh [--mutation]   env: BASE (default origin/development), RACE, COVER,
-#   SKIP_GO=1 (CI, a change set with no Go in it), TESTSKIP (CI, a -skip pattern for go test),
-#   PKGS (CI, the packages one job tests; default all), GATES=0 (CI, a job whose Go gates another
-#   job of the same run checks), TIMED (CI, a file for the timed rows' place-in-window lines),
-#   MUTATE (CI, with --mutation: whole packages to mutate instead of the lines changed since BASE)
+# Usage: bash check.sh [--mutation | --self-test]
+#   env: BASE (default origin/development), RACE, COVER, SKIP_GO=1 (CI, a change set with no Go
+#   in it), TESTSKIP (CI, a -skip pattern for go test), PKGS (CI, the packages one job tests;
+#   default all), GATES=0 (CI, a job whose Go gates another job of the same run checks), TIMED
+#   (CI, a file for the timed rows' place-in-window lines), MUTATE (CI, with --mutation: whole
+#   packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
+if [ "${1:-}" = --self-test ]; then script=$(realpath -- "$0"); fi
 cd "$(git rev-parse --show-toplevel)"
 BASE="${BASE:-origin/development}"
 MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
+# --self-test: the gates that lock the developer's files and the approved tests (3, 4, 4a and 4b),
+# judged over small histories built in a temporary folder, each the shape a real one takes. This
+# whole script runs over each, as CI's cheap gates run it. A green case is built so that judging
+# from the wrong QA commit, or from the wrong copy of the base, fails it. QA commits are signed
+# with a key made for the run, which the fake base's qa-signers names.
+self_test() {
+  local n=0 failed=0 plain main qa_b qa_c
+  need ssh-keygen "OpenSSH's, which signs the self-test's QA commits"
+  need go "Go, which gate 4b asks for the names of operating systems and processors"
+  # Not local: the trap that removes it runs after this function has returned.
+  t=$(mktemp -d) || fail "could not make the self-test's folder"
+  trap 'cd / && rm -rf "$t"' EXIT
+  # Run from inside a git hook, these would point every git command here at that repository.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  ssh-keygen -q -t ed25519 -N '' -C qa -f "$t/key" || fail "ssh-keygen could not make the self-test's key"
+  plain='func TestX(t *testing.T) { t.Log() }'
+  main='func TestMain(m *testing.M) { m.Run() }'
+  # as who git-arguments: runs git as dev, loop or qa, each a minute after the last, so a history's
+  # order is the order it is built in. Only a QA commit is signed, and only with the run's key.
+  as() {
+    local who=$1 email date; shift
+    n=$((n + 1)); date="$((1700000000 + n * 60)) +0000"
+    case $who in
+      dev) email=dev@example.invalid ;;
+      loop) email='1+loop[bot]@users.noreply.github.com' ;;
+      qa) email=qa@example.invalid ;;
+    esac
+    GIT_AUTHOR_NAME=$who GIT_AUTHOR_EMAIL=$email GIT_AUTHOR_DATE=$date \
+      GIT_COMMITTER_NAME=$who GIT_COMMITTER_EMAIL=$email GIT_COMMITTER_DATE=$date \
+      git -c commit.gpgsign=false -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen \
+        -c user.signingkey="$t/key" "$@" >/dev/null ||
+      fail "self-test: git $* failed"
+  }
+  dev() { as dev commit -q -m "$1"; }
+  qa() { as qa commit -q -S -m "$1" -m "Helios-Role: qa"; }
+  # test_file path [body]: writes a test file, a plain test unless a body is given, and stages it.
+  test_file() {
+    mkdir -p "${1%/*}"
+    printf 'package x\n\nimport "testing"\n\n%s\n' "${2:-$plain}" > "$1"
+    git add -- "$1"
+  }
+  change() { echo "// changed" >> "$1"; git add -- "$1"; }
+  # sync branch...: the fake remote's branches set to the local ones.
+  sync() { local b; for b; do git update-ref "refs/remotes/origin/$b" "refs/heads/$b"; done; }
+  # fresh: a new repository whose development and main both hold one commit: the lists the gates
+  # read, an owned file and two tests.
+  fresh() {
+    cd / && rm -rf "$t/r" && git init -q -b development "$t/r" && cd "$t/r" || fail "self-test: no repository"
+    printf 'owned/*\n' > developer-owned-paths
+    printf 'loop[bot]\n' > loop-identities
+    printf 'qa@example.invalid %s\n' "$(cat "$t/key.pub")" > qa-signers
+    printf 'linters:\n  settings:\n    depguard:\n      rules:\n        main:\n          allow:\n            - %s\n' \
+      github.com/heliosestate/heliosadvance/ > .golangci.yml
+    mkdir owned && echo owned > owned/file
+    git add -A && test_file a/a_test.go && test_file b/b_test.go || fail "self-test: no base"
+    dev base; git branch main; sync development main
+  }
+  # expect case want base event [flag]: runs this script over the repository as CI would, and fails
+  # the self-test unless its last line starts with want and it exits as want says: 0 for green.
+  expect() {
+    local out status=0 got refused=0 to_refuse=0
+    out=$(GITHUB_EVENT_NAME=$4 BASE=$3 SKIP_GO=1 bash "$script" ${5:+"$5"} 2>&1) || status=$?
+    got=$(tail -1 <<< "$out")
+    [ "$status" = 0 ] || refused=1
+    [ "$2" = green ] || to_refuse=1
+    if [[ $got == "$2"* ]] && [ "$refused" = "$to_refuse" ]; then
+      echo "self-test: $1: $got"
+    else
+      echo "self-test: $1: wanted \"$2\", got (exit $status): $got" >&2; failed=1
+    fi
+  }
+
+  fresh; git checkout -q -b f; test_file c/c_test.go; dev c
+  expect "a branch with no QA commit adds a test" green origin/development push
+
+  fresh; change b/b_test.go; qa b; qa_b=$(git rev-parse HEAD); sync development
+  git checkout -q -b f; change a/a_test.go; dev a
+  expect "a branch with no QA commit of its own edits a test the base approved" \
+    "FAIL: test files approved at ${qa_b:0:8}" origin/development push
+
+  fresh; git checkout -q -b f; test_file c/c_test.go; qa c; qa_c=$(git rev-parse HEAD)
+  change c/c_test.go; dev c
+  expect "a branch's own QA commit, then a non-QA edit to the test it approved" \
+    "FAIL: test files approved at ${qa_c:0:8}" origin/development push
+
+  fresh; git checkout -q -b f; change a/a_test.go; dev a; test_file c/c_test.go; qa c
+  expect "a non-QA edit to a test on the base, before the branch's QA commit" \
+    "FAIL: a test file on origin/development was changed or deleted by a non-QA commit" origin/development push
+
+  fresh; git checkout -q -b f; test_file d/d_test.go "$main"; dev d
+  expect "a non-QA test file declares TestMain" "FAIL: a non-QA test file declares TestMain" origin/development push
+  fresh; git checkout -q -b f; test_file d/d_test.go "$main"; qa d
+  expect "a QA commit's test file declares TestMain" green origin/development push
+  fresh; git checkout -q -b f; test_file d/d_test.go "$main"; as dev commit -q -m d -m "Helios-Role: qa"
+  expect "the QA trailer without the QA key's signature" "FAIL: a non-QA test file declares TestMain" origin/development push
+
+  # The branch is anchored on its own QA commit, which changed a/a_test.go, not on the newer one the
+  # base gained; and it is judged against the base as it merged it, before the base changed
+  # b/b_test.go and e/e_test.go again.
+  fresh; change b/b_test.go; qa b; test_file e/e_test.go "$main"; dev "e, squashed"; sync development
+  git checkout -q -b f main; change a/a_test.go; qa a; as loop merge -q --no-ff --no-edit origin/development
+  git checkout -q development; change b/b_test.go; qa b; change e/e_test.go; dev "e, squashed"; sync development
+  git checkout -q f
+  expect "the loop merges the base in, then the base moves on" green origin/development push
+
+  fresh; git checkout -q -b f; change owned/file; as loop commit -q -m owned
+  expect "the loop changes an owned file" \
+    "FAIL: a loop-authored or loop-committed commit touched a developer-owned path" origin/development push
+
+  fresh; git checkout -q -b g; test_file c/c_test.go; qa c
+  git checkout -q -b f development; as loop merge -q --no-ff --no-edit g
+  expect "the loop merges a commit the base does not have" \
+    "FAIL: the loop's merge" origin/development push
+
+  # GitHub's merge of a pull request is authored by whoever opened it, the loop here, and shows the
+  # base's own changes, an owned file's included, beside the branch's.
+  fresh; git checkout -q -b f; test_file c/c_test.go; qa c
+  git checkout -q development; change b/b_test.go; qa b; change owned/file; dev owned; sync development
+  git checkout -q --detach origin/development; as loop merge -q --no-ff --no-edit f
+  expect "a pull request's merge, opened by the loop, the base moved on" green origin/development pull_request
+
+  fresh; git checkout -q -b f; change a/a_test.go; qa a
+  git checkout -q development; as dev merge -q --no-ff --no-edit f; change b/b_test.go; dev "b, squashed"
+  sync development
+  expect "a push to development" green origin/development push
+
+  # A push to main is judged against development, which has moved on since the release.
+  fresh; change b/b_test.go; qa b; change a/a_test.go; dev "a, squashed"; sync development
+  git checkout -q main; as dev merge -q --no-ff --no-edit development; sync main
+  git checkout -q development; change b/b_test.go; qa b; change a/a_test.go; dev "a, squashed"; sync development
+  git checkout -q main
+  expect "a push to main, development ahead of it" green origin/development push
+
+  # A release brings development whole, the loop's catch-up merges with it.
+  fresh; change b/b_test.go; qa b; sync development
+  git checkout -q -b f main; test_file c/c_test.go; qa c; as loop merge -q --no-ff --no-edit origin/development
+  git checkout -q development; as dev merge -q --no-ff --no-edit f; change a/a_test.go; dev "a, squashed"
+  sync development
+  git checkout -q --detach origin/main; as dev merge -q --no-ff --no-edit origin/development
+  expect "a release into main, a loop's catch-up merge on development" green origin/main pull_request
+
+  # Only a head development holds whole is a release. One commit more makes it a change like any
+  # other into main, judged against main, so development's own edit to a test counts again.
+  fresh; change a/a_test.go; dev "a, squashed"; sync development
+  git checkout -q -b h development; test_file c/c_test.go; dev c
+  git checkout -q --detach origin/main; as dev merge -q --no-ff --no-edit h
+  expect "a pull request into main with a commit development lacks" \
+    "FAIL: a test file on origin/main was changed or deleted by a non-QA commit" origin/main pull_request
+
+  fresh; git checkout -q -b f; test_file c/c_test.go; qa c
+  expect "a mutation run" green origin/development push --mutation
+
+  fresh; git checkout -q -b f; test_file c/c_test.go; qa c; qa_c=$(git rev-parse HEAD)
+  rm -f ".git/objects/${qa_c:0:2}/${qa_c:2}"
+  expect "a commit git cannot read" "FAIL: git could not" origin/development push
+
+  [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
+  echo "self-test: green"
+}
+# Called from an if's body, not an && list, so set -e holds inside it.
+if [ "${1:-}" = --self-test ]; then self_test; exit 0; fi
 # pinned name module pin: prints the path of the Go tool name at the version .github/tool-versions
 # pins as pin, built by the Go in use, installed into a folder of its own for that version and that
 # Go when it is missing there. Whatever version is on the path is never run, so every machine runs
@@ -87,17 +250,38 @@ mapfile -t loops < <(list_of loop-identities | sed -e 's/#.*//' -e 's/[[:space:]
 # author and makes the loop the committer.
 is_loop_address() { local id; for id in "${loops[@]}"; do case "$1" in *"+$id@"*|"$id@"*) return 0 ;; esac; done; return 1; }
 is_loop() { is_loop_address "$1" || is_loop_address "${2:-}"; }
+tip=HEAD
 if [ "$MUTATION" = 0 ]; then
   # On a pull request CI checks out GitHub's merge of the branch into the base, which GitHub
   # authors as whoever opened the PR, and which a branch behind the base shows as touching
   # owned paths: judge the branch's own commits, up to its head, the merge's second parent.
-  tip=HEAD
   if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     tip=$(git rev-parse -q --verify 'HEAD^2') || fail "a pull request's checkout is not GitHub's merge"
   fi
+fi
+# A release is a change into main that development already holds whole. Every commit it brings
+# passed gates 3, 4, 4a and 4b on development, judged against development, so a release is judged
+# the same way: only what it adds beyond development counts. Judged against main, which lags,
+# every catch-up merge of the loop's on development merges commits main lacks, and two tests
+# approved side by side on development read as changed since the newer QA commit: a release would
+# fail with nothing wrong. Gates 3 and 4a leave development's commits out (exclude); gates 4 and 4b
+# take their anchor and copies from development (lock_base). Anything else into main, a head
+# holding a commit development lacks, is judged against main.
+exclude=(); lock_base=$BASE
+if [ "$MUTATION" = 0 ] && [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
+  # git answers 1 for "not held whole" and more when it fails, which must not read as an answer.
+  held=0; git merge-base --is-ancestor "$tip" origin/development || held=$?
+  case $held in
+    0) exclude=(--not origin/development); lock_base=origin/development
+      echo "check: a release, which development holds whole: judged as development judged it" >&2 ;;
+    1) echo "check: into main with a commit development lacks: judged against main" >&2 ;;
+    *) fail "git could not tell whether development holds this head whole" ;;
+  esac
+fi
+if [ "$MUTATION" = 0 ]; then
   # git's output is taken whole first, so a git that fails fails the gate instead of reading as
   # no commits (the codebase review, 2026-10-24).
-  touched=$(git log --no-merges --format='%h %ae %ce' "$BASE..$tip" -- "${owned[@]}") ||
+  touched=$(git log --no-merges --format='%h %ae %ce' "$BASE..$tip" "${exclude[@]}" -- "${owned[@]}") ||
     fail "git could not list the branch's commits to owned paths"
   loop=$(while read -r h a c; do [ -n "$h" ] && is_loop "$a" "$c" && echo "$h $a $c"; done <<< "$touched"; true)
   [ -z "$loop" ] || { echo "$loop"; fail "a loop-authored or loop-committed commit touched a developer-owned path"; }
@@ -105,7 +289,7 @@ if [ "$MUTATION" = 0 ]; then
   # loop's merge passes when its second side is already in the base and each owned path is as a
   # clean merge leaves it: the base's copy, or the branch's where the base has not changed it
   # since the two sides parted. Keeping the branch's older copy would undo the base's edit.
-  merges=$(git log --merges --format='%H %ae %ce' "$BASE..$tip") || fail "git could not list the branch's merges"
+  merges=$(git log --merges --format='%H %ae %ce' "$BASE..$tip" "${exclude[@]}") || fail "git could not list the branch's merges"
   while read -r merge email committer; do
     [ -n "$merge" ] || continue
     is_loop "$email" "$committer" || continue
@@ -135,24 +319,61 @@ if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-signers" 2>/dev/null; then g
 elif [ -f qa-signers ]; then cp qa-signers "$signers"; fi
 if [ "$MUTATION" = 0 ] && git cat-file -e "$BASE:qa-grandfathered" 2>/dev/null; then grandfathered=$(git show "$BASE:qa-grandfathered")
 elif [ -f qa-grandfathered ]; then grandfathered=$(cat qa-grandfathered); else grandfathered=; fi
+# A commit git cannot read fails the check, and so does a missing ssh-keygen when a signature must
+# be checked: either, read as "not a QA commit", would move the gates' anchor or drop it without a
+# word. git is told to use ssh-keygen itself, whatever its own settings name. A signature check
+# that runs and fails is still read as "not a QA commit", since git does not tell a bad signature
+# from a check that broke.
 is_qa() {
-  git log -1 --format=%B "$1" | grep -q '^Helios-Role: qa$' || return 1
-  grep -qxF "$(git rev-parse "$1")" <<< "$grandfathered" && return 0
-  [ -s "$signers" ] && git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$signers" verify-commit "$1" >/dev/null 2>&1
+  local body id
+  [ -n "$1" ] || return 1
+  body=$(git log -1 --format=%B "$1") || fail "git could not read commit $1, so it cannot be judged"
+  grep -q '^Helios-Role: qa$' <<< "$body" || return 1
+  id=$(git rev-parse "$1^{commit}") || fail "git could not read commit $1, so it cannot be judged"
+  grep -qxF "$id" <<< "$grandfathered" && return 0
+  [ -s "$signers" ] || return 1
+  need ssh-keygen "OpenSSH's, which git uses to check a QA commit's signature"
+  git -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen -c gpg.ssh.allowedSignersFile="$signers" \
+    verify-commit "$id" >/dev/null 2>&1
 }
 # Paths are read NUL-separated and git quotes nothing, and each goes back to git as :(literal), so
 # a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
 # gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
-qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
+# The anchor is this branch's own newest QA commit, one the base does not hold, when it has one;
+# otherwise the newest in the whole history, as before. Taken from the whole history alone, a QA
+# commit the base gained since, from another issue's tests, came first in a merge with the base,
+# and every test this branch's own QA commits approved read as changed. Where the branch has no
+# QA commit of its own (a push to the base or to main, a branch already merged), nothing changes.
+first_qa() {
+  local log c
+  log=$(git log --format=%H --grep='^Helios-Role: qa$' "$@") ||
+    fail "git could not list the QA commits, so the approved tests cannot be checked"
+  for c in $log; do is_qa "$c" && { echo "$c"; return 0; }; done
+  return 0
+}
+qa=""
+# The base for gates 4 and 4b is lock_base: development for a release into main, as above gate 3.
+onbase=0; git rev-parse -q --verify "$lock_base" >/dev/null 2>&1 && onbase=1
+# merged is the base as this branch last took it in, the merge base of HEAD and the base: gates 4
+# and 4b spare a test held as it was there, so a test the base changed after this branch's last
+# merge from it is not read as this branch's change. Empty when it cannot be found: none is spared.
+merged=""
+if [ "$onbase" = 1 ]; then merged=$(git merge-base HEAD "$lock_base") || merged=""; fi
+[ "$onbase" = 1 ] && qa=$(first_qa "$lock_base..HEAD")
+[ -n "$qa" ] || qa=$(first_qa)
+[ -n "$qa" ] || echo "check: no QA commit in this history, so no test is locked by one yet" >&2
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
-  # commit left it as it found it and HEAD holds it as the base does; gate 4a locks the base's
-  # tests. The base's copy over a test this QA commit changed is still a change to it.
-  git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && forked=$(git merge-base "$qa" "$BASE") || forked=""
+  # commit left it as it found it and HEAD holds it as the base held it when this branch last took
+  # it in (merged, above); gate 4a locks the base's tests. The base's copy over a test this QA
+  # commit changed is still a change to it.
+  forked=""
+  if [ "$onbase" = 1 ]; then forked=$(git merge-base "$qa" "$lock_base") || forked=""; fi
   changed=$(while IFS= read -r -d '' f; do
-      [ -n "$forked" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+      [ -n "$forked" ] && [ -n "$merged" ] && git diff --quiet "$forked" "$qa" -- ":(literal)$f" &&
+        git diff --quiet "$merged" HEAD -- ":(literal)$f" && continue
       echo "$f"
     done < <(git diff -z --no-renames --name-only --diff-filter=MDT "$qa" HEAD -- '*_test.go')
     wait $!) || fail "git could not list the tests changed since the QA commit"
@@ -160,12 +381,10 @@ if [ -n "$qa" ]; then
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
 # file already on the base is locked for every branch: only a QA commit may change or delete it.
-# Into main, the commits already on development passed this gate there; only the rest are judged,
-# so a release is never failed over a QA change that a squash merge brought to development
-# (the codebase review, 2026-10-24).
+# On a release, which development holds whole, its commits passed this gate there and are left
+# out (exclude, above gate 3), so a release is never failed over a QA change that a squash merge
+# brought to development (the codebase review, 2026-10-24).
 if [ "$MUTATION" = 0 ]; then
-  exclude=()
-  [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1 && exclude=(--not origin/development)
   while IFS= read -r -d '' f; do
     commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- ":(literal)$f") || fail "git could not list the commits to $f"
     # A merge whose copy of the file is one of its parents' adds nothing of its own: git lists it
@@ -183,14 +402,14 @@ if [ "$MUTATION" = 0 ]; then
   wait $! || fail "git could not list the tests this branch changed"
 fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
-# base holds it passed this gate on its own branch before it merged; a squash merge drops the
-# trailer that showed it. A name ending in an operating system or a processor, as Go lists them,
-# is a build constraint as much as a //go:build line (developer, 2026-10-27).
-onbase=0; git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && onbase=1
+# base held it when this branch last took it in (merged, above) passed this gate on its own branch
+# before it merged; a squash merge drops the trailer that showed it. A name ending in an operating
+# system or a processor, as Go lists them, is a build constraint as much as a //go:build line
+# (developer, 2026-10-27).
 goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
 goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
-  [ "$onbase" = 1 ] && git diff --quiet "$BASE" HEAD -- ":(literal)$f" && continue
+  [ -n "$merged" ] && git diff --quiet "$merged" HEAD -- ":(literal)$f" && continue
   last=$(git log -1 --format=%H -- ":(literal)$f")
   is_qa "$last" && continue
   bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
@@ -247,13 +466,13 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
-# with everything green (HeliosAdvance #160). Each of the engine's paths in the file is judged,
-# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
-# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
-# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
-# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
-# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
-# developer's, and his review of every change to it is the check for that.
+# with everything green. Each of the engine's paths in the file is judged, written plainly,
+# quoted, in a one-line list or mapping, or on the line after a folded marker, once comments are
+# taken off; a deny entry's own lines are left out, since there $ narrows what is blocked. The
+# dependencies rule's module-wide entry, ending in /, is the one exception, and there is one. This
+# catches what a merge or a slip brings back, not a disguise (a shortened path, a reference to
+# another rule's list, an escape, a # inside quotes): the file is the developer's, and his review
+# of every change to it is the check for that.
 [ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
 paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
   grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
@@ -268,6 +487,47 @@ wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true
 leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/internal/testrun"' . |
   grep -vE '_test\.go$|^\./internal/testrun/' || true)
 [ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
+
+# 4j. A comment says its reason, never an issue's or a pull request's number for a reader to look
+# up (the developer, 2026-10-03: "I do not want IDs in public documents. Comments, etc, should be
+# readable without having to go reference something else."). Reviews kept missing such numbers
+# by eye, as with the width above. A backstop, not the test of the rule, which stays review's: it
+# reads one line at a time, from the comment's marker to the line's end. That is after // in Go
+# files and go.mod files, so a Go block comment goes unread whole; after // in Free Pascal files,
+# or after { or (* up to its close on that line; and from a # that opens the line or follows a
+# space or tab in shell, workflow, Dockerfile and Makefile files. So the lines inside a block
+# comment go unread, and quotes are not parsed: a string after the marker counts as comment, so
+# reword it. A comment fails when it holds a number after a lone hash sign (not in Free Pascal,
+# where a hash sign and a number make a character), after a repository's name, "PR", "pull
+# request" or "issue" (joined, spaced, or with "number" or "no."), or after /issues/ or /pull/ in
+# a link. A lone hash sign before a number fails even as an ordinal: write "first", not the number.
+numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' |
+  xargs -0 -r awk '
+  FNR == 1 { slash = (FILENAME ~ /(\.go|(^|\/)go\.mod)$/); pas = (FILENAME ~ /\.pas$/) }
+  {
+    text = ""
+    if (slash) {
+      if ((at = index($0, "//"))) text = substr($0, at + 2)
+    } else if (pas) {
+      if (match($0, /\/\/|\{|\(\*/)) {
+        opener = substr($0, RSTART, RLENGTH); text = substr($0, RSTART + RLENGTH)
+        closer = (opener == "{") ? "}" : (opener == "(*") ? "*)" : ""
+        if (closer != "" && (at = index(text, closer))) text = substr(text, 1, at - 1)
+      }
+    } else if (match($0, /(^|[ \t])#/)) {
+      text = substr($0, RSTART + RLENGTH - 1)
+    }
+    if (text == "") next
+    text = tolower(text)
+    # A standard named with a hash sign, such as PKCS #1 or PKCS#8, is not a lookup.
+    gsub(/pkcs ?#[0-9]+/, "", text)
+    if ((!pas && text ~ /(^|[^a-z0-9&\/])#[0-9]+([^a-z0-9]|$)/) ||
+        text ~ /(^|[^a-z0-9])(helios(design|advance|loop)|pr|issue|pull)#[0-9]+/ ||
+        text ~ /(^|[^a-z0-9])(prs?|pull[ -]requests?|issues?)[ -](number |no\. ?)?#?[0-9]+([^a-z0-9]|$)/ ||
+        text ~ /\/(issues|pull)\/[0-9]+/)
+      print FILENAME ":" FNR ": " $0
+  }')
+[ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
@@ -329,14 +589,13 @@ if [ -n "$pkgs" ]; then
     fi
   fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
-  # every failure from load on record came with every package at once (HeliosDesign #258).
+  # every failure from load on record came with every package at once.
   if [ -n "${TIMED:-}" ]; then
-    # CI keeps every timed row's place in its window (#258), and every line where a row says it
-    # cannot tell and sets its check aside, since such a pass proves nothing (HeliosDesign #217): a
-    # passing run's logs show only in Go's -json stream, so those lines go to $TIMED, a few KB. The
-    # rows TESTSKIP skips by name are named above. The console gets each package's result, and a
-    # failed package's whole output, so a crash or a hang that Go does not pin on one test still
-    # shows its cause.
+    # CI keeps every timed row's place in its window, and every line where a row says it cannot
+    # tell and sets its check aside, since such a pass proves nothing: a passing run's logs show
+    # only in Go's -json stream, so those lines go to $TIMED, a few KB. The rows TESTSKIP skips by
+    # name are named above. The console gets each package's result, and a failed package's whole
+    # output, so a crash or a hang that Go does not pin on one test still shows its cause.
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
     go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
@@ -352,7 +611,7 @@ if [ -n "$pkgs" ]; then
     go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
   fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
-    # gremlins v0.6.0 misreads coverage on Windows (its issue #222: coverage paths use / and file
+    # gremlins v0.6.0 misreads coverage on Windows (its coverage paths use / and file
     # paths \, so every mutant reads "Not covered"), and a report with nothing covered would read as
     # one. Mutation testing runs on Linux, in CI, until upstream fixes it (the developer, 2026-10-27).
     echo "mutation testing: not run on Windows; read the mutation report in the pull request's CI run"
@@ -369,11 +628,11 @@ if [ -n "$pkgs" ]; then
     # test support, proved by the rows that use it; so is tools/, the gates' own tools.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
-    # unmutated (its issue 301; HeliosDesign #212: 3 of PR 143's 9 points in listener.go). With no
-    # context lines, git writes one hunk per run of edits. Kept until a gremlins release fixes it.
-    # The run on a diff stays at the repository root (.): a package path matches no diff entry (its
-    # 278). MUTATE names whole packages instead (a QA change to existing rows, a milestone), each
-    # mutated in full.
+    # unmutated. With no context lines, git writes one hunk per run of edits. Kept until a
+    # gremlins release fixes it.
+    # The run on a diff stays at the repository root (.): gremlins matches a package path to no
+    # diff entry. MUTATE names whole packages instead (a QA change to existing rows, a
+    # milestone), each mutated in full.
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
     mutants=
     for target in "${targets[@]}"; do

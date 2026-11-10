@@ -126,15 +126,18 @@ func runProgram(t *testing.T, options ...string) *engine {
 	if testrun.Race {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")
 	}
-	stderr, err := command.StderrPipe()
+	stdout, err := command.StdoutPipe()
 	if err != nil {
-		t.Fatalf("the program's standard error: %v", err)
+		t.Fatalf("the program's standard output: %v", err)
 	}
+	program := &engine{command: command, firstLine: make(chan string, 1), exited: make(chan struct{})}
+	// Standard error joins the kept log, as it was the log before: a race report or a panic Go's
+	// runtime writes there still reaches every check that reads the log.
+	command.Stderr = keptLog{program}
 	if err := command.Start(); err != nil {
 		t.Fatalf("starting the program: %v", err)
 	}
-	program := &engine{command: command, firstLine: make(chan string, 1), exited: make(chan struct{})}
-	go program.read(stderr)
+	go program.read(stdout)
 	t.Cleanup(func() {
 		select {
 		case <-program.exited:
@@ -146,8 +149,18 @@ func runProgram(t *testing.T, options ...string) *engine {
 	return program
 }
 
-func (program *engine) read(stderr io.Reader) {
-	reader := bufio.NewReader(stderr)
+// keptLog adds what the program writes to its kept log.
+type keptLog struct{ program *engine }
+
+func (kept keptLog) Write(data []byte) (int, error) {
+	kept.program.mutex.Lock()
+	defer kept.program.mutex.Unlock()
+	kept.program.log = append(kept.program.log, data...)
+	return len(data), nil
+}
+
+func (program *engine) read(stdout io.Reader) {
+	reader := bufio.NewReader(stdout)
 	first := true
 	for {
 		line, err := reader.ReadString('\n')

@@ -129,20 +129,31 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   reads it. A row that needs a file that will not open holds it with no sharing, for reading and
   writing, until it ends; one that needs a folder holds it with no sharing for reading, which
   `os.OpenRoot` cannot get past. Either still shows as there.
+- On CI's Windows runner, icacls given `/inheritance:r` and `/grant:r` in one call kept the
+  inherited entries as the file's own, the runner's account among them. A row that needs an exact
+  access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
-- A process's count of bytes read (`rchar` in /proc/self/io on Linux, ReadTransferCount on
-  Windows) also holds what the Go runtime reads for itself: 8 bytes of its own wake-up for the
-  network poller, on another thread, at moments its scheduler picks, a collection alone among
-  them. A bound on what the engine reads is a bound on the bytes read from each file (the
-  developer, 2026-11-10): the row runs its case again in the test binary under `strace -ff -y`,
-  which names the file behind every read and writes each thread's reads to a file of its own, so
-  no read is split by another thread's; the row adds up the reads by file, fails on one the
-  account does not show whole, and checks the child passed the row.
-- A new row that counts the bytes read is Linux's alone, named `TestLinux…` (the developer,
-  2026-11-06): on Windows the count comes only through a raw pointer, which the imports refuse,
-  or by asking another program, which timed out on CI's runner three times. strace is on CI's
-  Linux images and on the laptop's WSL Linux.
+- A bound on what the engine reads is a bound on the bytes read from that one file (the
+  developer, 2026-11-10), never the process's count of bytes read (`rchar` in /proc/self/io on
+  Linux, ReadTransferCount on Windows). That count also holds what the Go runtime reads for
+  itself: 8 bytes of its own wake-up for the network poller, on another thread, at moments its
+  scheduler picks. On Windows it comes only through a raw pointer, which the imports refuse, or
+  by asking another program, which timed out on CI's runner three times.
+- On Linux the row runs its case again in the test binary under `strace -ff --seccomp-bpf -y`,
+  which names the file behind every read, stops the child only at the reads traced, and writes
+  each thread's reads to a file of its own, so no read is split by another thread's. The row adds
+  up the reads by file and checks the child passed the row. It fails on a read the account does
+  not show whole, or whose descriptor it does not name, when that read may be of the folder's
+  files the row reads; the runtime's own threads have reads of their pipes restarted
+  (`= ? ERESTARTSYS`) at moments their scheduler picks, and those name the pipe. strace is on
+  CI's Linux images.
+- On Windows the rows of a read-bound line prove its refusal alone (the developer, 2026-11-10),
+  so the bound is a `TestLinux…` row's: nothing there tells what the engine read of one file. A
+  byte-range lock from the byte past the limit fails a sound reader that asks for more than it
+  gets back, since a read is refused when the range it asks for reaches the lock, even where the
+  file ends before it. This holds where the engine reads the file with the same code on both
+  systems; a read on Windows alone would be bound by no row.
 
 ## Reading a run
 
@@ -183,6 +194,28 @@ elevated Windows process `TestWindowsElevated…`. Windows CI skips `TestOracle�
 a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSKIP`. Green is
 `bash check.sh`, never `go test` alone.
 
+## Service managers
+
+- Windows' service manager shows a service whose process ended without reporting stopped as
+  ERROR_PROCESS_ABORTED (1067), and `sc.exe start` ends 1053 for one that never connected:
+  neither is the engine's report. A row on reporting stopped with a non-zero code reads the
+  engine's own, ERROR_SERVICE_SPECIFIC_ERROR (1066) with a service-specific code that is not 0.
+- `sc.exe` and `systemctl` announce no change of state, so a row polls them, and a state held for
+  a few microseconds is seen only by chance. On Windows 11 the System log records no entry to the
+  running state (no event 7036). systemd keeps `ActiveEnterTimestampMonotonic` at 0 for a unit it
+  never counted active, which tells a READY=1 sent too early.
+- The journal's time for a line is when journald took it, not when the program wrote it: it
+  cannot order a line against READY=1. On Windows a row reads the service's state and then the
+  log file, in that order: a running state read before the line is in the file is the engine's
+  fault.
+- A row that registers the one service name the page gives, or listens on port 23, runs alone.
+  Its cleanup ends any process left running its own copy of the program, by an image name no
+  other process has, and touches a registered service only when its program is a test's copy.
+- A wait for a unit or a service to change state is bounded by the hang bound, as every wait the
+  line gives no time is: systemd's own 90-second start timeout, four times over in rows that run
+  alone, ran a broken copy's package past its timeout before any row was named. Windows' start is
+  the exception: `sc.exe start` took 21.9 seconds once on CI's runner.
+
 ## A run's own folder
 
 - A test binary that starts servers or programs calls `testrun.Enter` first in its TestMain and
@@ -191,7 +224,10 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
   and makes nothing on disk but, under `-cover`, the coverage counters written where the
   parent's go: the Listener's, run under a descriptor limit and ended when its input closes, and
   the language unit's, run under strace, which writes its account into the row's own temporary
-  folder, and ended by its own test timeout.
+  folder, and ended by its own test timeout. The bootstrap unit's read-bound rows run a child
+  under strace on Linux, marked by an argument after the test flags; its TestMain skips the run's
+  folder and the oracle's build for it, since the child only opens the folder its parent made,
+  and the child's account goes into the row's own temporary folder.
   A run killed or timed out leaves its folder, servers and programs, and the next run takes them.
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has

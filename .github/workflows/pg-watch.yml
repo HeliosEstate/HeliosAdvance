@@ -86,7 +86,7 @@ jobs:
             [ "$major" -ge 16 ] || continue
             if ! grep -qw "$major" <<< "$TESTED"; then
               open "<!-- pg-watch: new major $major -->" "PostgreSQL $major is released and no job tests it" \
-                "PostgreSQL $major is a supported release by the project's list, and no job in check.yml tests it. Decide which system tests it (HeliosDesign #271 planned 19 as a fourth)."
+                "PostgreSQL $major is a supported release by the project's list, and no job in check.yml tests it. Decide which system tests it (the plan is to test 19 on a fourth job)."
             elif [[ "$eol" < "$soon" ]]; then
               open "<!-- pg-watch: end of $major -->" "PostgreSQL $major's last release is on $eol" \
                 "PostgreSQL $major, which check.yml tests, has its last release on $eol by the project's published plan, within 90 days. Decide whether the engine drops it, and what that job tests instead."
