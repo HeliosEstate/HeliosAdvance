@@ -59,20 +59,20 @@ jobs:
 
   # The three systems the engine ships on, Linux x86-64, Linux ARM64 (the deployment target) and
   # Windows x86-64, each twice: without the race detector, where time limits are judged, and with
-  # it, where races are looked for and no time is judged (the CI examination, 2026-10-30). Telnet
-  # over TLS's tests drive its post-quantum key exchanges with openssl s_client, which offers them
-  # from OpenSSL 3.5 on, so every system's image needs 3.5 or later: ubuntu-latest and
+  # it, where races are looked for and no time is judged, since the detector slows every row.
+  # Telnet over TLS's tests drive its post-quantum key exchanges with openssl s_client, which
+  # offers them from OpenSSL 3.5 on, so every system's image needs 3.5 or later: ubuntu-latest and
   # windows-latest carry it today, and Linux ARM64 runs on Ubuntu 26.04 (3.5.5) for it, since
   # Ubuntu 24.04's OpenSSL is 3.0, too old to offer them. Windows' image carries a C compiler,
   # so the race detector runs there with nothing installed. Windows skips
   # the tests named TestOracle… or TestLinux…: its runners cannot run Linux containers, and a
   # Linux-only row is named for it. Database tests run on all three, against a real PostgreSQL the
-  # tests make themselves (database Part 1's page, 2026-10-27).
+  # tests make themselves.
   # The tests are split across jobs by their measured time, each job running its packages one at a
   # time: the Listener's five minutes are real waits on its own limits, the floor no split goes
   # under, so Linux takes two jobs and Windows, slower, three. The Go gates run once per system,
   # before the tests in that system's shortest job without the race detector, never beside a timed
-  # row (the CI examination's probes, 2026-10-30).
+  # row, whose margin their load would eat.
   # Mutation testing is not part of this check: it runs in mutation.yml, where its report is read.
   # A row's except names packages from the module's root, so a package nested deeper under the
   # same name is still tested.
@@ -153,12 +153,12 @@ jobs:
             sudo apt-get update -q && sudo apt-get install -y -q fp-compiler
             fpc -iV
           fi
-      # PostgreSQL, the database tests' oracle (database Part 1). Each test run
-      # makes its own throwaway server in a temporary folder with initdb and pg_ctl, as the
-      # ordinary user, so it can stop and start it and change its sign-in rules; no system
-      # service is started (developer, 2026-10-28). Each system tests one supported major, so
-      # every major the engine supports is tested once (developer, 2026-10-30): 18 on Linux
-      # x86-64, 16 on Linux ARM64, 17 on Windows; 19 joins on its release.
+      # PostgreSQL, the database tests' oracle. Each test run makes its own throwaway server in a
+      # temporary folder with initdb and pg_ctl, as the ordinary user, so it can stop and start it
+      # and change its sign-in rules; no system service is started (developer, 2026-10-28). Each
+      # system tests one supported major, so every major the engine supports is tested once
+      # (developer, 2026-10-30): 18 on Linux x86-64, 16 on Linux ARM64, 17 on Windows; 19 joins on
+      # its release.
       # On Linux each run takes the major's newest update from PostgreSQL's own apt repository,
       # whose packages apt checks against its signing key; a newly installed major makes no
       # cluster or service of its own. On Windows the image's copy is used: GitHub installs it with
@@ -215,7 +215,8 @@ jobs:
           [ -n "$FPCDIR" ] && export PATH="$PATH:$FPCDIR"
           bash check.sh
       # Each timed row's place in its window, kept with the run, so a margin is read from ordinary
-      # runs, never from a probe branch; and each line where a row cannot tell.
+      # runs, never from a probe branch; and each line where a row cannot tell and sets its check
+      # aside, since such a pass proves nothing.
       - uses: actions/upload-artifact@v7
         if: success() || failure()
         with:
@@ -311,9 +312,9 @@ jobs:
     steps:
       # main holds releases, nothing else: a pull request into it comes from this repository's
       # development alone, the branch only reviewed pull requests reach (the developer,
-      # 2026-10-28). check.yml runs on no change of base, so a pull request
-      # pointed at main after its checks is stopped by main-from-development, which main's
-      # ruleset requires, and which also compares the name with its case.
+      # 2026-10-28). check.yml runs on no change of base, so a pull request pointed at main after
+      # its checks is stopped by main-from-development, which main's ruleset requires, and which
+      # also compares the name with its case.
       # The branch name is a stranger's text, so it reaches the shell as data in the environment,
       # never inside the script (the codebase review, 2026-10-24).
       - if: github.base_ref == 'main' && !(github.head_ref == 'development' && github.event.pull_request.head.repo.full_name == github.repository)

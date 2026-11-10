@@ -247,13 +247,13 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 # 4h. An import rule names each of the engine's own packages exactly. The linter reads an allowed
 # entry as a prefix unless it ends in $, so an entry without it lets in every package whose path
 # only begins the same way; a merge that keeps the other side of a conflict would bring one back
-# with everything green. Each of the engine's paths in the file is judged,
-# written plainly, quoted, in a one-line list or mapping, or on the line after a folded marker,
-# once comments are taken off; a deny entry's own lines are left out, since there $ narrows what
-# is blocked. The dependencies rule's module-wide entry, ending in /, is the one exception, and
-# there is one. This catches what a merge or a slip brings back, not a disguise (a shortened
-# path, a reference to another rule's list, an escape, a # inside quotes): the file is the
-# developer's, and his review of every change to it is the check for that.
+# with everything green. Each of the engine's paths in the file is judged, written plainly,
+# quoted, in a one-line list or mapping, or on the line after a folded marker, once comments are
+# taken off; a deny entry's own lines are left out, since there $ narrows what is blocked. The
+# dependencies rule's module-wide entry, ending in /, is the one exception, and there is one. This
+# catches what a merge or a slip brings back, not a disguise (a shortened path, a reference to
+# another rule's list, an escape, a # inside quotes): the file is the developer's, and his review
+# of every change to it is the check for that.
 [ -f .golangci.yml ] || fail "the import rules (.golangci.yml) are missing, so they cannot be checked"
 paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
   grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
@@ -329,8 +329,7 @@ if [ -n "$pkgs" ]; then
     fi
   fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
-  # every failure from load on record came with every package at once (the CI examination,
-  # 2026-10-30).
+  # every failure from load on record came with every package at once.
   if [ -n "${TIMED:-}" ]; then
     # CI keeps every timed row's place in its window, and every line where a row says it cannot
     # tell and sets its check aside, since such a pass proves nothing: a passing run's logs show
@@ -369,8 +368,8 @@ if [ -n "$pkgs" ]; then
     # test support, proved by the rows that use it; so is tools/, the gates' own tools.
     # diff.context=0, for gremlins' git alone: v0.6.0 reads each hunk as one unbroken run of added
     # lines, so where git joins nearby edits into one hunk, every edit after the first gap went
-    # unmutated (once, 3 of a change's 9 points in listener.go). With no context lines, git
-    # writes one hunk per run of edits. Kept until a gremlins release fixes it.
+    # unmutated. With no context lines, git writes one hunk per run of edits. Kept until a
+    # gremlins release fixes it.
     # The run on a diff stays at the repository root (.): gremlins matches a package path to no
     # diff entry. MUTATE names whole packages instead (a QA change to existing rows, a
     # milestone), each mutated in full.
