@@ -135,6 +135,10 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   Windows) counts the reading of the count too. A row that bounds what the engine reads takes out
   the bytes the reading before it read, and first proves, with two readings and nothing between,
   that this is all a reading adds.
+- A new row that counts the bytes read is Linux's alone, named `TestLinux…` (the developer,
+  2026-11-06): on Windows the count comes only through a raw pointer, which the imports refuse,
+  or by asking another program, which timed out on CI's runner three times. WSL's Linux has no
+  /proc/self/io, so a broken copy only such a row catches is run on CI, on a branch of its own.
 
 ## Reading a run
 
