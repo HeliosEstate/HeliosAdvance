@@ -42,8 +42,9 @@ pinned() {
   echo "check: $1 $version, built by $goversion" >&2
   echo "$dir/$1"
 }
-# Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
-# cannot run fails: fetch the base, or name in BASE the commit to judge from.
+# Gates 3, 4a and 4e judge this branch against $BASE, and gate 4 takes its anchor from the commits
+# the base does not hold. Without it they cannot run, and a gate that cannot run fails: fetch the
+# base, or name in BASE the commit to judge from.
 if [ "$MUTATION" = 0 ]; then
   git rev-parse -q --verify "$BASE" >/dev/null 2>&1 || fail "$BASE does not resolve, so the gates that judge this branch against it cannot run: fetch it, or set BASE to the commit to judge from"
 fi
@@ -147,10 +148,15 @@ is_qa() {
 # The anchor is this branch's own newest QA commit, one the base does not hold. Taken from the
 # whole history, a QA commit the base gained since, from another issue's tests, came first in a
 # merge with the base, and every test this branch's QA commits approved read as changed. The
-# base's own tests stay locked by gate 4a. With no base to read, the whole history is searched.
+# base's own tests stay locked by gate 4a, which a mutation run leaves out. With no base to read,
+# or a base at HEAD itself (a mutation run on a push), the whole history is searched, as before.
 range=()
-git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && range=("$BASE..HEAD")
-qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' "${range[@]}" 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
+if git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && [ "$(git rev-parse "$BASE")" != "$(git rev-parse HEAD)" ]; then
+  range=("$BASE..HEAD")
+fi
+qalog=$(git log --format=%H --grep='^Helios-Role: qa$' ${range[@]+"${range[@]}"}) ||
+  fail "git could not list the QA commits, so the approved tests cannot be checked"
+qa=$(for c in $qalog; do is_qa "$c" && { echo "$c"; break; }; done; true)
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
