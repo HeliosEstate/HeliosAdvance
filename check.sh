@@ -42,9 +42,8 @@ pinned() {
   echo "check: $1 $version, built by $goversion" >&2
   echo "$dir/$1"
 }
-# Gates 3, 4a and 4e judge this branch against $BASE, and gate 4 takes its anchor from the commits
-# the base does not hold. Without it they cannot run, and a gate that cannot run fails: fetch the
-# base, or name in BASE the commit to judge from.
+# Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
+# cannot run fails: fetch the base, or name in BASE the commit to judge from.
 if [ "$MUTATION" = 0 ]; then
   git rev-parse -q --verify "$BASE" >/dev/null 2>&1 || fail "$BASE does not resolve, so the gates that judge this branch against it cannot run: fetch it, or set BASE to the commit to judge from"
 fi
@@ -145,18 +144,22 @@ is_qa() {
 # a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
 # gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
-# The anchor is this branch's own newest QA commit, one the base does not hold. Taken from the
-# whole history, a QA commit the base gained since, from another issue's tests, came first in a
-# merge with the base, and every test this branch's QA commits approved read as changed. The
-# base's own tests stay locked by gate 4a, which a mutation run leaves out. With no base to read,
-# or a base at HEAD itself (a mutation run on a push), the whole history is searched, as before.
-range=()
-if git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && [ "$(git rev-parse "$BASE")" != "$(git rev-parse HEAD)" ]; then
-  range=("$BASE..HEAD")
-fi
-qalog=$(git log --format=%H --grep='^Helios-Role: qa$' ${range[@]+"${range[@]}"}) ||
-  fail "git could not list the QA commits, so the approved tests cannot be checked"
-qa=$(for c in $qalog; do is_qa "$c" && { echo "$c"; break; }; done; true)
+# The anchor is this branch's own newest QA commit, one the base does not hold, when it has one;
+# otherwise the newest in the whole history, as before. Taken from the whole history alone, a QA
+# commit the base gained since, from another issue's tests, came first in a merge with the base,
+# and every test this branch's own QA commits approved read as changed. Where the branch has no
+# QA commit of its own (a push to the base or to main, a branch already merged), nothing changes.
+first_qa() {
+  local log c
+  log=$(git log --format=%H --grep='^Helios-Role: qa$' "$@") ||
+    fail "git could not list the QA commits, so the approved tests cannot be checked"
+  for c in $log; do is_qa "$c" && { echo "$c"; return 0; }; done
+  return 0
+}
+qa=""
+git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && qa=$(first_qa "$BASE..HEAD")
+[ -n "$qa" ] || qa=$(first_qa)
+[ -n "$qa" ] || echo "check: no QA commit in this history, so no test is locked by one yet" >&2
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
