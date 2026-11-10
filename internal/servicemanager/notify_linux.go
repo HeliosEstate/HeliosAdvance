@@ -10,7 +10,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
+
+const writeTimeout = time.Second
 
 var notifyOnce sync.Once
 
@@ -37,6 +40,11 @@ func sendReady(socket string) error {
 	connection, err := (&net.Dialer{}).DialContext(context.Background(), "unixgram", socket)
 	if err != nil {
 		return err
+	}
+	// A full receiver queue blocks a datagram write, and the caller is the program's serve loop.
+	err = connection.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if err != nil {
+		return errors.Join(err, connection.Close())
 	}
 	_, err = connection.Write([]byte("READY=1"))
 	return errors.Join(err, connection.Close())

@@ -60,6 +60,8 @@ func (handler *serviceHandler) Execute(_ []string, requests <-chan svc.ChangeReq
 	defer stop()
 
 	current := svc.Status{State: svc.StartPending}
+	stopping := false
+	gone := handler.gone
 	report := func() {
 		select {
 		case changes <- current:
@@ -83,8 +85,20 @@ func (handler *serviceHandler) Execute(_ []string, requests <-chan svc.ChangeReq
 				report()
 			case svc.Stop, svc.Shutdown:
 				stop()
+				stopping = true
+				current = svc.Status{State: svc.StopPending}
+				report()
 			}
+		case <-gone:
+			// The library took a status off the channel and could not send it, so it has left;
+			// nothing else will end the run.
+			gone = nil
+			handler.statusFailed.Store(true)
+			stop()
 		case <-handler.readyAsk:
+			if stopping {
+				continue
+			}
 			current = svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 			report()
 		case <-handler.finished:
