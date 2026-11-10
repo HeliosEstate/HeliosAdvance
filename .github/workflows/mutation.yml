@@ -2,7 +2,7 @@
 # a test of the tests for QA to read (a report, not a gate: the developer, 2026-10-22). It runs
 # where its report is read, outside the required check (the CI recommendation's item 4, approved
 # 2026-10-30):
-# - a loop's build pull request (feature/issue-*), on each push that changes engine code, over
+# - a loop's build pull request (feature/issue-*) that changes engine code, on each push, over
 #   the pull request's changed lines, so the report is there when QA reads the build;
 # - a QA pull request (qa/*) that changes or removes existing tests, over the whole packages whose
 #   tests changed, so a weakened row is seen before it merges;
@@ -42,8 +42,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # What to mutate, or nothing. A push to a build branch that changes only tests or a
-      # contract's declarations starts nothing; nor does a QA change that only adds rows. The
+      # What to mutate, or nothing. A build is judged whole, from where it left development, never
+      # by its last push alone: judged by the push, a push of tests alone, or a merge of development
+      # bringing no engine code, mutated nothing, and a report that failed or was cancelled by that
+      # push was never made again. A build whose changes are only tests or a contract's
+      # declarations starts nothing; nor does a QA change that only adds rows. The
       # engine's code is internal/, but for the test support; cmd/'s tests run the built program,
       # which mutation testing cannot see into. A QA change counts a renamed test, or a changed file
       # its rows read from testdata/, as a changed test. A milestone mutates the whole module, which
@@ -53,7 +56,6 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BEFORE: ${{ github.event.before }}
         run: |
           engine() { grep -E '^internal/' | grep -vE '^internal/testrun(/|$)' || true; }
           if [ "$EVENT" != pull_request ]; then
@@ -65,9 +67,7 @@ jobs:
           echo "base=$base" >> "$GITHUB_OUTPUT"
           case "$HEAD_REF" in
             feature/issue-*)
-              from=$base
-              if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then from=$BEFORE; fi
-              if git diff --name-only "$from" HEAD -- '*.go' ':!*_test.go' ':!*/contract.go' | engine | grep -q .; then
+              if git diff --name-only "$base" HEAD -- '*.go' ':!*_test.go' ':!*/contract.go' | engine | grep -q .; then
                 echo "diff=1" >> "$GITHUB_OUTPUT"
               fi ;;
             qa/*)
