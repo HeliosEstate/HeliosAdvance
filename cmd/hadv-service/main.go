@@ -4,7 +4,7 @@
 // Command hadv-service is the Helios Advance engine as a sysop runs it: it opens the
 // bootstrap folder, takes its server's lease, and only while it holds the lease opens the loopback
 // listening sockets, closing everything when the lease is lost or it is told to stop. It exists so
-// the sysop has one program to start, and one local log, standard error, to read.
+// the sysop has one program to start, and one local log, standard output or a log file, to read.
 package main
 
 import (
@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -23,6 +25,7 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/bootstrap"
 	"github.com/heliosestate/heliosadvance/internal/database"
 	"github.com/heliosestate/heliosadvance/internal/listener"
+	"github.com/heliosestate/heliosadvance/internal/servicemanager"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
 	"github.com/heliosestate/heliosadvance/internal/telnets"
 )
@@ -37,12 +40,46 @@ const (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stderr))
+	os.Exit(start())
 }
 
-// run returns the exit code, so that every deferred call has run before the process ends.
-func run(arguments []string, logOutput io.Writer) int {
-	log := newLocalLog(logOutput)
+// start asks first whether Windows' service manager started the program, since a service that
+// never answers it is reported as one that failed to start. After an unknown answer, a failed
+// connection means no service manager started it, and it runs as an ordinary program.
+func start() int {
+	started, err := servicemanager.StartedByWindowsServiceManager()
+	if started || err != nil {
+		// A failed status update after the run has finished reports the same error as no
+		// connection, and must not run the engine a second time.
+		ran := false
+		code, connectErr := servicemanager.RunWindowsService(
+			func(stopContext context.Context, ready servicemanager.Ready) int {
+				ran = true
+				return run(os.Args[1:], os.Stdout, stopContext, ready, true)
+			})
+		if connectErr == nil || ran {
+			return code
+		}
+		if started {
+			newLocalLog(os.Stdout)("start_failed", connectErr.Error())
+			return exitFailed
+		}
+	}
+	// Registered before anything listens: a stop sent as soon as the started line is read must
+	// not take the default action and kill the process without closing connections.
+	stopContext, release := signal.NotifyContext(context.Background(), stopSignals()...)
+	defer release()
+	return run(os.Args[1:], os.Stdout, stopContext, servicemanager.NotifySystemdReady, false)
+}
+
+// run returns the exit code, so that every deferred call has run before the process ends. The
+// local log starts on console and moves to the log file once that is open. A log file that cannot
+// be closed makes the exit code non-zero: the local log has no line for it, and the log file is
+// where it would be written.
+func run(arguments []string, console io.Writer, stopContext context.Context,
+	ready servicemanager.Ready, underService bool,
+) (code int) {
+	log := newLocalLog(console)
 
 	// Checked before the command line, so that a start as root is refused whatever else is wrong.
 	if runtime.GOOS == "linux" && (os.Getuid() == 0 || os.Geteuid() == 0) {
@@ -53,6 +90,24 @@ func run(arguments []string, logOutput io.Writer) int {
 	options, err := parseCommandLine(arguments)
 	if err != nil {
 		log("start_failed", "malformed command line: "+err.Error())
+		return exitFailed
+	}
+
+	if options.logFilePath != "" {
+		file, err := os.OpenFile(filepath.Clean(options.logFilePath), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			log("start_failed", "the log file cannot be opened for appending: "+err.Error())
+			return exitFailed
+		}
+		// Closed before the service is reported stopped, after which Windows may end the process.
+		defer func() {
+			if file.Close() != nil {
+				code = exitFailed
+			}
+		}()
+		log = newLocalLog(file)
+	} else if underService {
+		log("start_failed", "no log file: a service has no console, and the command line names none, with -log-file")
 		return exitFailed
 	}
 
@@ -96,7 +151,7 @@ func run(arguments []string, logOutput io.Writer) int {
 		}
 	}
 
-	return serve(log, database.NewServerDatabase(connection), options, hostKey, certificate)
+	return serve(stopContext, ready, log, database.NewServerDatabase(connection), options, hostKey, certificate)
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and
@@ -120,7 +175,8 @@ func newLocalLog(output io.Writer) func(key, value string) {
 
 // commandLine is what the sysop asked for: the ports as decimal strings, the bootstrap folder that
 // holds what the database needs, the host key file that turns SSH on, and the certificate and key
-// files that turn Telnet over TLS on.
+// files that turn Telnet over TLS on, and the log file that takes the local log from standard
+// output.
 type commandLine struct {
 	telnetPort      string
 	sshPort         string
@@ -129,6 +185,7 @@ type commandLine struct {
 	certificatePath string
 	keyPath         string
 	bootstrapFolder string
+	logFilePath     string
 }
 
 // portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
@@ -182,6 +239,13 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 			return errors.New("the key file's path is empty")
 		}
 		options.keyPath = value
+		return nil
+	})
+	flags.Func("log-file", "log file, which takes the local log in place of standard output", func(value string) error {
+		if value == "" {
+			return errors.New("the log file's path is empty")
+		}
+		options.logFilePath = value
 		return nil
 	})
 	if err := flags.Parse(arguments); err != nil {

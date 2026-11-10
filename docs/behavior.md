@@ -223,6 +223,43 @@ Synch, for a caller over TLS.
 - The engine shall not store, log or show anything a caller sends inside a subnegotiation.
 - The engine shall write the same to a caller, whatever it sends inside a subnegotiation.
 
+### Part 6: A Windows service and a Linux daemon
+
+The engine runs as a Windows service and as a Linux daemon under systemd, and tells each service
+manager when it is ready. Its local log goes to standard output, or to a log file the sysop names
+on the command line. Every earlier line holds when a service manager runs the engine.
+
+#### Under Windows' service manager
+
+- When Windows' service manager starts it as the service `hadv-service`, the engine shall report
+  running once every listener it was asked for is listening, or once it first writes a `waiting`
+  line, and not before.
+- When the service manager sends stop or shutdown, the engine shall close every open connection
+  at once, report stopped and exit.
+- If the engine writes a `start_failed` line while running as a service, then the engine shall
+  report stopped with a non-zero exit code.
+- If Windows' service manager starts it with no log file on the command line, then the engine
+  shall report stopped with a non-zero exit code, listening nowhere.
+- When Windows' service manager starts it as `NT SERVICE\hadv-service`, the engine shall listen
+  for Telnet callers on port 23.
+
+#### Under systemd
+
+- When systemd starts it and names a socket for readiness (`NOTIFY_SOCKET`), the engine shall
+  send `READY=1` there once every listener it was asked for is listening, or once it first writes
+  a `waiting` line, and not before.
+- When systemd starts it as an ordinary user holding no capability but the right to bind ports
+  below 1024, the engine shall listen for Telnet callers on port 23.
+
+#### The local log
+
+- The engine shall write the local log to standard output or, when the sysop passes a log file on
+  the command line, appended to that file.
+- If opening the log file for appending fails, then the engine shall write one `start_failed`
+  line to standard output saying so, and exit with a non-zero code.
+- When, on Linux, the engine creates the log file, the engine shall create it readable and
+  writable by its own account alone.
+
 ### Part 7: End of file before the shell
 
 An SSH caller that sends end of file before it asks for a shell is still answered when it asks:

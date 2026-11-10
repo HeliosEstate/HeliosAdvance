@@ -61,6 +61,11 @@ linters:
             # document (developer, 2026-10-27). Also the test support's Windows files, which list
             # and end a dead test run's programs, calls the syscall package lacks (2026-10-30).
             - golang.org/x/sys/windows$
+            # The Service Manager unit's Windows service, and only that package of the module: the
+            # Go team's, already in go.sum through the SSH library, watched by govulncheck and
+            # Dependabot; it uses unsafe and system calls inside itself, none in the engine's code
+            # (developer, Part 6's page, 2026-10-25).
+            - golang.org/x/sys/windows/svc$
             # The database unit's connection, sign-in and queries, and only these three packages of
             # the module: the standard library has no PostgreSQL driver, and our own would put
             # PostgreSQL's wire protocol, SCRAM and TLS at a trust boundary. MIT; it refuses every
@@ -99,6 +104,7 @@ linters:
             - "!**/internal/ssh/**"
             - "!**/internal/telnets/**"
             - "!**/internal/listener/**"
+            - "!**/internal/servicemanager/**"
             - "!**/internal/database/**"
             - "!**/internal/language/**"
             - "!**/internal/bootstrap/**"
@@ -161,6 +167,18 @@ linters:
             - github.com/heliosestate/heliosadvance/internal/timeup$
             # Its own path, so its black-box tests in package textio_test can import it.
             - github.com/heliosestate/heliosadvance/internal/textio$
+        # It runs the engine under Windows' service manager through the Go team's svc package, and
+        # sends systemd's ready message with the standard library (docs/architecture.md, Part 6).
+        servicemanager:
+          files: ["**/internal/servicemanager/**"]
+          list-mode: strict
+          allow:
+            - $gostd
+            - golang.org/x/sys/windows/svc$
+            # Its own path, so its black-box tests in package servicemanager_test can import it.
+            - github.com/heliosestate/heliosadvance/internal/servicemanager$
+            # The test support, for its tests alone (check.sh's gate 4i).
+            - github.com/heliosestate/heliosadvance/internal/testrun$
         timeup:
           files: ["**/internal/timeup/**"]
           list-mode: strict
@@ -269,6 +287,9 @@ linters:
             # It parses the connection settings and takes the lease before it listens, and closes
             # the listeners when the lease is lost (database Part 1, bootstrap Part 1).
             - github.com/heliosestate/heliosadvance/internal/database$
+            # It runs under a service manager through the Service Manager (docs/architecture.md,
+            # Part 6).
+            - github.com/heliosestate/heliosadvance/internal/servicemanager$
             # It opens the bootstrap folder the command line names and hands the unsealed
             # connection settings to the database unit (bootstrap Part 1).
             - github.com/heliosestate/heliosadvance/internal/bootstrap$
@@ -353,10 +374,17 @@ linters:
       - path: tools/
         linters: [forbidigo, gosec]
         text: fmt\.Print|os\.Std(out|err)|G204|G703
-      # The program hands its standard error to the slog logger it writes the local log through.
+      # The program hands its standard output to the slog logger it writes the local log through,
+      # unless the command line names a log file (Part 6).
       - path: cmd/hadv-service/main\.go
         linters: [forbidigo]
-        text: os\.Stderr
+        text: os\.Stdout
+      # systemd names its ready socket only in the environment, NOTIFY_SOCKET (sd_notify), read in
+      # the Linux ready message's one file; it is the only variable the engine reads (Part 6's
+      # page, its line on NOTIFY_SOCKET; developer, 2026-10-28).
+      - path: internal/servicemanager/notify_linux\.go
+        linters: [forbidigo]
+        text: os\.LookupEnv
       # A test's child process reports to the test through its standard output; the console
       # rule is for the engine's log.
       - path: _test\.go
