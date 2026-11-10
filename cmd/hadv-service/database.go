@@ -6,13 +6,13 @@ package main
 import (
 	"context"
 	"errors"
-	"os/signal"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/database"
 	"github.com/heliosestate/heliosadvance/internal/listener"
+	"github.com/heliosestate/heliosadvance/internal/servicemanager"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
 	"github.com/heliosestate/heliosadvance/internal/telnets"
 )
@@ -23,14 +23,9 @@ const retryEvery = 10 * time.Second
 
 // serve takes the server's lease, listens while it holds it, and takes it again after a loss,
 // until a stop. It returns the exit code.
-func serve(log func(key, value string), server *database.ServerDatabase,
-	options commandLine, hostKey *ssh.HostKey, certificate *telnets.Certificate,
+func serve(stopContext context.Context, ready servicemanager.Ready, log func(key, value string),
+	server *database.ServerDatabase, options commandLine, hostKey *ssh.HostKey, certificate *telnets.Certificate,
 ) int {
-	// Registered before anything listens: a stop sent as soon as the started line is read must
-	// not take the default action and kill the process without closing connections.
-	stopContext, release := signal.NotifyContext(context.Background(), stopSignals()...)
-	defer release()
-
 	count := listener.NewCount()
 	// waitingFor is the reason the last waiting line gave, so a try that fails for the same reason
 	// writes nothing.
@@ -49,6 +44,7 @@ func serve(log func(key, value string), server *database.ServerDatabase,
 			if reason := err.Error(); reason != waitingFor {
 				log("waiting", reason)
 				waitingFor = reason
+				ready()
 			}
 			select {
 			case <-stopContext.Done():
@@ -66,6 +62,7 @@ func serve(log func(key, value string), server *database.ServerDatabase,
 		}
 		startAll(listeners)
 		log("started", strings.Join(addresses, ","))
+		ready()
 		waitingFor = ""
 
 		select {
