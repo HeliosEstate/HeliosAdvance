@@ -268,9 +268,15 @@ fi
 # take their anchor and copies from development (lock_base). Anything else into main, a head
 # holding a commit development lacks, is judged against main.
 exclude=(); lock_base=$BASE
-if [ "$MUTATION" = 0 ] && [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1 &&
-  git merge-base --is-ancestor "$tip" origin/development; then
-  exclude=(--not origin/development); lock_base=origin/development
+if [ "$MUTATION" = 0 ] && [ "$BASE" = origin/main ] && git rev-parse -q --verify origin/development >/dev/null 2>&1; then
+  # git answers 1 for "not held whole" and more when it fails, which must not read as an answer.
+  held=0; git merge-base --is-ancestor "$tip" origin/development || held=$?
+  case $held in
+    0) exclude=(--not origin/development); lock_base=origin/development
+      echo "check: a release, which development holds whole: judged as development judged it" >&2 ;;
+    1) echo "check: into main with a commit development lacks: judged against main" >&2 ;;
+    *) fail "git could not tell whether development holds this head whole" ;;
+  esac
 fi
 if [ "$MUTATION" = 0 ]; then
   # git's output is taken whole first, so a git that fails fails the gate instead of reading as
@@ -375,9 +381,9 @@ if [ -n "$qa" ]; then
 fi
 # 4a. A squash merge drops the trailer, so the anchor above is absent on the base. A test
 # file already on the base is locked for every branch: only a QA commit may change or delete it.
-# Into main, the commits already on development passed this gate there; only the rest are judged
-# (exclude, at gate 3), so a release is never failed over a QA change that a squash merge brought
-# to development (the codebase review, 2026-10-24).
+# On a release, which development holds whole, its commits passed this gate there and are left
+# out (exclude, above gate 3), so a release is never failed over a QA change that a squash merge
+# brought to development (the codebase review, 2026-10-24).
 if [ "$MUTATION" = 0 ]; then
   while IFS= read -r -d '' f; do
     commits=$(git log --format=%H "$BASE..HEAD" "${exclude[@]}" -- ":(literal)$f") || fail "git could not list the commits to $f"
