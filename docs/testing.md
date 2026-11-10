@@ -129,6 +129,9 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   reads it. A row that needs a file that will not open holds it with no sharing, for reading and
   writing, until it ends; one that needs a folder holds it with no sharing for reading, which
   `os.OpenRoot` cannot get past. Either still shows as there.
+- On CI's Windows runner, icacls given `/inheritance:r` and `/grant:r` in one call kept the
+  inherited entries as the file's own, the runner's account among them. A row that needs an exact
+  access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
 - A bound on what the engine reads is a bound on the bytes read from that one file (the
@@ -190,6 +193,28 @@ test that can run on Linux alone is named `TestLinux…`, one that needs root th
 elevated Windows process `TestWindowsElevated…`. Windows CI skips `TestOracle…` and `TestLinux…`;
 a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSKIP`. Green is
 `bash check.sh`, never `go test` alone.
+
+## Service managers
+
+- Windows' service manager shows a service whose process ended without reporting stopped as
+  ERROR_PROCESS_ABORTED (1067), and `sc.exe start` ends 1053 for one that never connected:
+  neither is the engine's report. A row on reporting stopped with a non-zero code reads the
+  engine's own, ERROR_SERVICE_SPECIFIC_ERROR (1066) with a service-specific code that is not 0.
+- `sc.exe` and `systemctl` announce no change of state, so a row polls them, and a state held for
+  a few microseconds is seen only by chance. On Windows 11 the System log records no entry to the
+  running state (no event 7036). systemd keeps `ActiveEnterTimestampMonotonic` at 0 for a unit it
+  never counted active, which tells a READY=1 sent too early.
+- The journal's time for a line is when journald took it, not when the program wrote it: it
+  cannot order a line against READY=1. On Windows a row reads the service's state and then the
+  log file, in that order: a running state read before the line is in the file is the engine's
+  fault.
+- A row that registers the one service name the page gives, or listens on port 23, runs alone.
+  Its cleanup ends any process left running its own copy of the program, by an image name no
+  other process has, and touches a registered service only when its program is a test's copy.
+- A wait for a unit or a service to change state is bounded by the hang bound, as every wait the
+  line gives no time is: systemd's own 90-second start timeout, four times over in rows that run
+  alone, ran a broken copy's package past its timeout before any row was named. Windows' start is
+  the exception: `sc.exe start` took 21.9 seconds once on CI's runner.
 
 ## A run's own folder
 
