@@ -221,7 +221,8 @@ fi
 # 4b. A test file not from a QA commit may not run before the approved ones. A file held as the
 # base held it when this branch last took it in (merged, above) passed this gate on its own branch
 # before it merged; a squash merge drops the trailer that showed it. A name ending in an operating
-# system or a processor, as Go lists them, is a build constraint as much as a //go:build line (developer, 2026-10-27).
+# system or a processor, as Go lists them, is a build constraint as much as a //go:build line
+# (developer, 2026-10-27).
 goos=$(go tool dist list | cut -d/ -f1 | sort -u | paste -sd'|' -)
 goarch=$(go tool dist list | cut -d/ -f2 | sort -u | paste -sd'|' -)
 while IFS= read -r -d '' f; do
