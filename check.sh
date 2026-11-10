@@ -144,7 +144,13 @@ is_qa() {
 # a name with a space, a quote, a newline or git's pattern syntax is judged like any other, in
 # gates 4, 4a and 4b alike; renames are split into a deletion and an addition (--no-renames), so a renamed
 # or retyped test is a change to the approved one (the codebase review, 2026-10-24).
-qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
+# The anchor is this branch's own newest QA commit, one the base does not hold. Taken from the
+# whole history, a QA commit the base gained since, from another issue's tests, came first in a
+# merge with the base, and every test this branch's QA commits approved read as changed. The
+# base's own tests stay locked by gate 4a. With no base to read, the whole history is searched.
+range=()
+git rev-parse -q --verify "$BASE" >/dev/null 2>&1 && range=("$BASE..HEAD")
+qa=$(for c in $(git log --format=%H --grep='^Helios-Role: qa$' "${range[@]}" 2>/dev/null); do is_qa "$c" && { echo "$c"; break; }; done; true)
 if [ -n "$qa" ]; then
   # The base moves on after a QA commit, and a squash merge drops its own QA commits' trailer, so
   # a test approved on the base since shows here as changed. It came from the base when the QA
