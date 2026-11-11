@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"unicode/utf8"
 
-	"github.com/BurntSushi/toml"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // keySpec pairs a text's key with its placeholders, so that Load, Text and Missing cannot
@@ -247,14 +247,15 @@ func decodeFiles(languages []*language) error {
 		if !utf8.ValidString(each.contents) {
 			err = errors.New("not UTF-8")
 		} else {
-			_, err = toml.Decode(each.contents, &decoded)
+			err = toml.Unmarshal([]byte(each.contents), &decoded)
 		}
 		each.contents = ""
 		if err != nil {
 			why := "not UTF-8 and TOML 1.1"
-			var parseError toml.ParseError
+			var parseError *toml.DecodeError
 			if errors.As(err, &parseError) {
-				why += fmt.Sprintf(", at line %d", parseError.Position.Line)
+				line, _ := parseError.Position()
+				why += fmt.Sprintf(", at line %d", line)
 			}
 			return refusal(each.path, why, nil)
 		}
