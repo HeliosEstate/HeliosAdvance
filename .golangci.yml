@@ -77,10 +77,11 @@ linters:
             - github.com/jackc/pgx/v5/pgproto3$
             # The language unit's reader of TOML 1.1, the language files' format: the standard
             # library has none, and a whole TOML reader of our own is large. MIT, no other modules,
-            # TOML 1.1 since v1.6.0, several maintainers and no security advisory; go-toml/v2, the
-            # alternative, had a high-severity one in July 2026, fixed. Watched by govulncheck,
-            # Dependabot and the licence gate (the developer's "yes", Languages Part 1).
-            - github.com/BurntSushi/toml$
+            # no unsafe in its own code, and a limit on how deep values nest, where the first
+            # choice's time and memory grew with the square of a file's nesting. It had a
+            # high-severity advisory in July 2026, fixed. Watched by govulncheck, Dependabot and the
+            # licence gate (the developer's "Yes", Languages Part 1).
+            - github.com/pelletier/go-toml/v2$
           deny:
             - pkg: math/rand
               desc: use crypto/rand
@@ -304,7 +305,7 @@ linters:
           allow:
             - $gostd
             # The language files' TOML (docs/architecture.md).
-            - github.com/BurntSushi/toml$
+            - github.com/pelletier/go-toml/v2$
             # Its own path, so its black-box tests in package language_test can import it.
             - github.com/heliosestate/heliosadvance/internal/language$
             # The test support, for its tests alone (check.sh's gate 4i).
