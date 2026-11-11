@@ -116,9 +116,9 @@ var (
 	ErrFieldMissing = errors.New("database: the bootstrap file's connection settings are missing a field")
 )
 
-// Why Take failed. ErrUnreachable, ErrNotReady, ErrNoConnectionFree, ErrReadOnly and ErrLeaseHeld
-// fix themselves, so the program waits and takes again; every other one does not, so the program
-// stops. None holds the password or any text the database sent.
+// Why Take failed. ErrUnreachable, ErrNotReady, ErrNoConnectionFree, ErrReadOnly, ErrLeaseHeld and
+// ErrTemporary fix themselves, so the program waits and takes again; every other one does not, so
+// the program stops. None holds the password or any text the database sent.
 var (
 	// ErrUnreachable means the database did not answer within TrySeconds, refused the
 	// connection, or the connection failed after it was made.
@@ -135,6 +135,12 @@ var (
 	ErrRefused = errors.New("database: the database refuses")
 	// ErrLeaseHeld means the server's lease has not ended and its holder is not this run's own.
 	ErrLeaseHeld = errors.New("database: the server's lease is held by another run")
+	// ErrTemporary means the database answered that it cancelled the statement (57014,
+	// query_canceled), that a lock was not available (55P03, lock_not_available), that a clash
+	// with another transaction stopped it (40001, serialization_failure; 40P01,
+	// deadlock_detected), or that its disk or memory ran out (53100, disk_full; 53200,
+	// out_of_memory): each passes without anyone changing a setting.
+	ErrTemporary = errors.New("database: the database refused for a reason that passes on its own")
 	// ErrCertificate means the database's certificate does not chain to the Connection's
 	// certificate authority, does not name its host, or cannot be used for channel binding.
 	ErrCertificate = errors.New("database: the database's certificate fails its check")
@@ -312,6 +318,8 @@ func NewServerDatabase(connection Connection) *ServerDatabase {
 //     ErrNoServerRow.
 //   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
 //     then Take shall return ErrLeaseHeld and change nothing.
+//   - If the database answers with SQLSTATE 57014, 55P03, 40001, 40P01, 53100 or 53200, then
+//     Take shall return ErrTemporary and change nothing.
 //   - If one of the six settings in the server's row is empty, not of its kind, or a port outside
 //     0 to 65535, then Take shall return a *SettingError naming that column, and change nothing.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase
