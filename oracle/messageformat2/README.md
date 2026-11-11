@@ -9,14 +9,18 @@ never reads them.
 ## Where it comes from
 
 The seven JSON files at the top of `test/tests/` in Unicode's `message-format-wg` repository on
-GitHub, at commit `16372a6a02f41728be472a5921ba7c91774edeac`, copied byte for byte: each file's
-git blob id matches that commit's. `LICENSE` is that repository's own license file, copied the
-same way. The `functions/` folder is left out: every one of its cases calls a function, which
-Languages Part 1 counts as missing, and the top-level files already hold such cases.
+GitHub, and that repository's own `LICENSE`. They are Unicode's, not this repository's, so they
+are not committed here (the developer, 2026-11-10: "If it's not our code, I'd prefer it not to be
+in our repo. Instead CI should download it as needed."). `pin` names the commit they come from and
+each file's SHA-256. `bash check.sh`, before it runs the tests, fetches every file missing here
+from that commit, and fails, naming the file and the pin, on any file whose SHA-256 is not the
+pinned one, fetched or already here. The `functions/` folder is left out: every one of its cases
+calls a function, which Languages Part 1 counts as missing, and the top-level files already hold
+such cases.
 
 The test files are under the Unicode License v3 (`SPDX-License-Identifier: Unicode-3.0`), as
 `LICENSE` says of everything in that repository but the standard's own text; the developer
-admitted that license on 2026-09-25. Its notice travels with the files in `LICENSE`.
+admitted that license on 2026-09-25. Its notice comes with the files, in the fetched `LICENSE`.
 
 ## What Languages Part 1 takes from it
 
@@ -33,6 +37,8 @@ means:
 
 ## Updating it
 
-A newer commit replaces the files whole, by a pull request the developer reviews, with the commit
-named here. The tests sort every case afresh, so a case added upstream lands under the line its
-shape breaks.
+A newer commit replaces the pin whole, by a pull request the developer reviews: the new commit on
+its `commit` line, and each file's SHA-256 at that commit, from `sha256sum` over the files as
+`https://raw.githubusercontent.com/unicode-org/message-format-wg/<commit>/<path>` serves them.
+Remove the fetched files here, and `bash check.sh` fetches the new ones. The tests sort every case
+afresh, so a case added upstream lands under the line its shape breaks.
