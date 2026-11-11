@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/telnet"
 )
@@ -16,6 +17,7 @@ const defaultPort = "23"
 var telnetTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}
 
 func newTelnetListener(ctx context.Context, port string, count *listener.ConnectionCount,
+	texts *language.Texts,
 ) (*listener.Listener, []string, error) {
-	return newKindListener(ctx, telnetTargets, port, telnet.Accept, count)
+	return newKindListener(ctx, telnetTargets, port, telnet.Accept, count, texts)
 }

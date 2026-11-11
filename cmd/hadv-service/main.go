@@ -24,6 +24,7 @@ import (
 
 	"github.com/heliosestate/heliosadvance/internal/bootstrap"
 	"github.com/heliosestate/heliosadvance/internal/database"
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/servicemanager"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
@@ -151,7 +152,39 @@ func run(arguments []string, console io.Writer, stopContext context.Context,
 		}
 	}
 
-	return serve(stopContext, ready, log, database.NewServerDatabase(connection), options, hostKey, certificate)
+	texts, err := loadTexts(options.language, log)
+	if err != nil {
+		return exitFailed
+	}
+
+	return serve(stopContext, ready, log, database.NewServerDatabase(connection), options, hostKey, certificate,
+		texts)
+}
+
+// loadTexts reads the lang folder beside the executable, as the system names the executable and
+// with no further resolving of links, before anything listens, and writes one text_missing line for
+// each text the board's language lacks. The language package's errors name the file and why and
+// hold nothing of it, so they are safe to log.
+func loadTexts(code string, log func(key, value string)) (*language.Texts, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		log("start_failed", "the lang folder beside the executable cannot be found: "+err.Error())
+		return nil, err
+	}
+	folder := filepath.Join(filepath.Dir(executable), language.Folder)
+	texts, err := language.Load(folder, code)
+	if errors.Is(err, language.ErrNotInstalled) {
+		log("start_failed", fmt.Sprintf("-lang %q names no language the lang folder %s holds", code, folder))
+		return nil, err
+	}
+	if err != nil {
+		log("start_failed", err.Error())
+		return nil, err
+	}
+	for _, key := range texts.Missing() {
+		log("text_missing", code+" has no "+key+" that can be shown, so it is taken from further along the chain")
+	}
+	return texts, nil
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and
@@ -186,6 +219,7 @@ type commandLine struct {
 	keyPath         string
 	bootstrapFolder string
 	logFilePath     string
+	language        string
 }
 
 // portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
@@ -203,7 +237,8 @@ func portFlag(port *string) func(string) error {
 
 // parseCommandLine takes the last of an option given twice.
 func parseCommandLine(arguments []string) (commandLine, error) {
-	options := commandLine{telnetPort: defaultPort, sshPort: defaultSSHPort, tlsPort: defaultTLSPort}
+	options := commandLine{telnetPort: defaultPort, sshPort: defaultSSHPort, tlsPort: defaultTLSPort,
+		language: language.Fallback}
 	sshPortGiven, tlsPortGiven := false, false
 	flags := flag.NewFlagSet("hadv-service", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -246,6 +281,11 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 			return errors.New("the log file's path is empty")
 		}
 		options.logFilePath = value
+		return nil
+	})
+	// An empty code is not refused here: it must reach Load and be refused as naming no language.
+	flags.Func("lang", "language code of the board's texts", func(value string) error {
+		options.language = value
 		return nil
 	})
 	if err := flags.Parse(arguments); err != nil {
@@ -327,7 +367,7 @@ type target struct{ network, address string }
 // closing the sockets only when New refuses: once it has them they are the Listener's. The
 // Listener wants a nil KindConnection on an error, never one holding a nil connection.
 func newKindListener[K listener.KindConnection](ctx context.Context, targets []target, port string,
-	accept func(context.Context, *net.TCPConn) (K, error), count *listener.ConnectionCount,
+	accept func(context.Context, *net.TCPConn) (K, error), count *listener.ConnectionCount, texts *language.Texts,
 ) (*listener.Listener, []string, error) {
 	sockets, addresses, err := listen(ctx, targets, port)
 	if err != nil {
@@ -340,9 +380,7 @@ func newKindListener[K listener.KindConnection](ctx context.Context, targets []t
 		}
 		return kindConnection, nil
 	}
-	// Until Languages Part 1's build, the program loads no language, so every Listener gets nil
-	// Texts, New refuses them as not built yet, and the program stops at start, naming that.
-	kindListener, err := listener.New(sockets, open, count, nil)
+	kindListener, err := listener.New(sockets, open, count, texts)
 	if err != nil {
 		return nil, nil, errors.Join(err, closeAll(sockets))
 	}
