@@ -56,12 +56,12 @@
 // sealed key is used before the tag verifies. The sealed key, under key holder 2 or 3, is used
 // before: its name is checked against its form before the key store is asked for it, and is
 // never a path; its wrapped bytes go only to the key store's own RSA-OAEP decryption, whose result
-// is bounded and checked. The key file is untrusted until its form is checked. Both files come from the bootstrap folder, which only
-// hadv-setup and administrators should write; the key file's owner and permissions are checked
-// because a key file someone else can write or replace could point the engine at a database of
-// their choosing, and the key store's key is checked because anyone with access to it can unwrap
-// the bootstrap file's key. No caller's byte reaches this package. Fuzz targets: the header reader
-// and the key file's reader.
+// is bounded and checked. The key file is untrusted until its form is checked. Both files come
+// from the bootstrap folder, which only hadv-setup and administrators should write; the key
+// file's owner and permissions are checked because a key file someone else can write or replace
+// could point the engine at a database of their choosing, and the key store's key is checked
+// because anyone with access to it can unwrap the bootstrap file's key. No caller's byte reaches
+// this package. Fuzz targets: the header reader and the key file's reader.
 //
 // The package builds for Linux and Windows only, the two systems whose key file checks it holds,
 // so the engine is never built where it would start with the key file unchecked.
@@ -179,12 +179,12 @@ var (
 	// unwrap with it for any reason but a result longer than the buffer. Windows' answer is wrapped
 	// beneath it.
 	ErrKeyStore = errors.New("bootstrap: the key store key cannot be used")
-	// ErrKeyStorePermissions means Open is unable to confirm who has access to the key store key: its
-	// owner or access list could not be read, or its access list holds an entry of a kind Open
+	// ErrKeyStorePermissions means Open is unable to confirm who has access to the key store key:
+	// its owner or access list could not be read, or its access list holds an entry of a kind Open
 	// does not judge.
 	ErrKeyStorePermissions = errors.New("bootstrap: who has access to the key store key cannot be confirmed")
-	// ErrKeyStoreReachable means someone but the engine's own account, SYSTEM or Administrators owns
-	// the key store key or has access to it, or it has no access list.
+	// ErrKeyStoreReachable means someone but the engine's own account, SYSTEM or Administrators
+	// owns the key store key or has access to it, or it has no access list.
 	ErrKeyStoreReachable = errors.New("bootstrap: someone but the engine's account, SYSTEM or Administrators can use the key store key")
 	// ErrUnwrap means the unwrap under the key store key gave other than KeyBytes bytes, a result
 	// longer than the buffer included, or KeyBytes zero bytes.
@@ -269,8 +269,9 @@ var (
 //   - When it returns, Open shall have closed the bootstrap folder and the files it opened, and
 //     freed every key store handle it opened.
 //   - Open shall wipe each buffer it allocates for the key, the key file's text, the unwrapped key
-//     and the bootstrap file's bytes before it returns, keeping only the JSON it returns; the copies
-//     Go's AES and GCM keep inside the cipher, and the key store's own, are out of its reach. [read]
+//     and the bootstrap file's bytes before it returns, keeping only the JSON it returns; the
+//     copies Go's AES and GCM keep inside the cipher, and the key store's own, are out of its
+//     reach. [read]
 func Open(folder string) ([]byte, error) {
 	return open(folder)
 }
