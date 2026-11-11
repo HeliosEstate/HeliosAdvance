@@ -209,10 +209,13 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
   log file, in that order: a running state read before the line is in the file is the engine's
   fault.
 - The Go team's `svc.Run`, under `RunWindowsService`, writes variables the whole process shares
-  before it tries to connect: the engine calls it once per process. Rows that call it in one test
-  process stay parallel but take turns, behind one lock held for the whole call. Side by side, the
-  race detector reports their writes, but only when the calls happen to overlap, so a green race
-  run does not show the rows are safe; reading the code does.
+  before it tries to connect, and Windows answers a second call in the same process "already
+  running", not "cannot connect". The engine calls it once per process, as the contract asks of
+  its callers; nothing in the engine enforces that. So a test process calls it once, through a
+  `sync.OnceValues` at package level, and every row that needs the result reads that one result:
+  one declared inside a test would call again on each `-count` round. Two calls side by side are
+  a data race the race detector reports only when they happen to overlap, so a green race run
+  does not show the rows are safe; reading the code does.
 - A row that registers the one service name the page gives, or listens on port 23, runs alone.
   Its cleanup ends any process left running its own copy of the program, by an image name no
   other process has, and touches a registered service only when its program is a test's copy.
