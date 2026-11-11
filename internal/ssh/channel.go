@@ -93,10 +93,16 @@ func (state *channelState) writeLoop() {
 	}
 }
 
-// drainExtended reads and discards the caller's stderr-coded data through a fixed buffer: the
-// library keeps that code against the window, and discards every other code itself.
+// discardBufferSize is larger than ReadBufferSize because the library sends a window adjustment
+// after nearly every read of extended data once a backlog stands, so a larger buffer sends far
+// fewer of them.
+const discardBufferSize = 32 * 1024
+
+// drainExtended reads and discards the caller's stderr-coded data through a buffer of its own,
+// kept for discarding alone: the library keeps that code against the window, and discards every
+// other code itself.
 func (state *channelState) drainExtended() {
-	var discard [ReadBufferSize]byte
+	var discard [discardBufferSize]byte
 	for {
 		if _, err := state.library.Stderr().Read(discard[:]); err != nil {
 			return
