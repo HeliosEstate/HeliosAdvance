@@ -222,9 +222,29 @@ begin
     Result := (Result shl 8) or Data[Offset + Index];
 end;
 
-{ The whole file's size, then its header against format version 1 for the key file. Every
-  refusal here comes before the key file is read. }
-procedure CheckHeader(const Whole: TBytes);
+{ The sealed-key length format version 1 gives a key holder, or -1 for a holder it does not
+  have. }
+function SealedLengthOf(KeyHolder: Byte): Integer;
+begin
+  case KeyHolder of
+    KeyHolderKeyFile, KeyHolderSystemdCredential, KeyHolderSwarmSecret:
+      Result := 0;
+    KeyHolderTpm, KeyHolderSoftwareKeyStore:
+      Result := WindowsSealedKeyLength;
+  else
+    Result := -1;
+  end;
+end;
+
+{ The whole file's size, then its header against format version 1: a key holder it has, the
+  sealed-key length that holder gives, and room for that sealed key, the nonce and the tag.
+  Every refusal here comes before the key is read. The oracle reads every holder the format
+  has; which of them a system takes is the engine's to judge, and what the sealed key holds
+  is the key store's. Gives the sealed key's length. }
+function CheckHeader(const Whole: TBytes): Integer;
+var
+  KeyHolder: Byte;
+  SealedLength: Integer;
 begin
   if Length(Whole) > WholeFileLimit then
     raise ERefusal.CreateRefusal(ExitTooLarge,
@@ -238,30 +258,46 @@ begin
     raise ERefusal.CreateRefusal(ExitHeader, Format(
       'the format version is %d; this oracle reads version 1',
       [ReadNumber(Whole, MagicLength, 2)]));
-  if Whole[MagicLength + 2] <> KeyHolderKeyFile then
+  KeyHolder := Whole[MagicLength + 2];
+  Result := SealedLengthOf(KeyHolder);
+  if Result < 0 then
     raise ERefusal.CreateRefusal(ExitHeader, Format(
-      'the key holder is %d; this oracle reads 1, the key file', [Whole[MagicLength + 2]]));
-  if ReadNumber(Whole, MagicLength + 3, 2) <> 0 then
+      'the key holder is %d; format version 1 has holders 1 to 5', [KeyHolder]));
+  SealedLength := Integer(ReadNumber(Whole, MagicLength + 3, 2));
+  if SealedLength <> Result then
     raise ERefusal.CreateRefusal(ExitHeader, Format(
-      'the sealed key is %d bytes; the key file has none', [ReadNumber(Whole, MagicLength + 3, 2)]));
+      'the sealed key is %d bytes; key holder %d has %d', [SealedLength, KeyHolder, Result]));
+  if Length(Whole) < HeaderStartLength + Result + NonceLength + TagLength then
+    raise ERefusal.CreateRefusal(ExitHeader, Format(
+      'the file is %d bytes, shorter than its header, nonce and tag', [Length(Whole)]));
+end;
+
+{ A file CheckHeader has passed, unsealed under Key: every byte before the sealed plaintext,
+  the sealed key among them, is the additional data. }
+function UnsealWhole(const Key: TAesKey; const Whole: TBytes; SealedLength: Integer): TBytes;
+var
+  Nonce: TNonce;
+  NonceStart: Integer;
+begin
+  NonceStart := HeaderStartLength + SealedLength;
+  Move(Whole[NonceStart], Nonce, NonceLength);
+  if not Open(Key, Nonce, Copy(Whole, 0, NonceStart + NonceLength),
+    Copy(Whole, NonceStart + NonceLength, MaxInt), Result) then
+    raise ERefusal.CreateRefusal(ExitUnseal, 'the GCM tag does not verify');
 end;
 
 procedure RunRead(const KeyPath, FilePath: string);
 var
   Key: TAesKey;
-  Whole, Authenticated, Sealed, Plaintext: TBytes;
-  Nonce: TNonce;
+  Whole, Plaintext: TBytes;
+  SealedLength: Integer;
 begin
   { The header's verdict comes before the key file is even read, as the engine's does. }
   Whole := ReadBounded(FilePath, WholeFileLimit);
-  CheckHeader(Whole);
-  Authenticated := Copy(Whole, 0, HeaderStartLength + NonceLength);
-  Move(Whole[HeaderStartLength], Nonce, NonceLength);
-  Sealed := Copy(Whole, HeaderStartLength + NonceLength, MaxInt);
+  SealedLength := CheckHeader(Whole);
   Key := LoadKey(KeyPath);
   try
-    if not Open(Key, Nonce, Authenticated, Sealed, Plaintext) then
-      raise ERefusal.CreateRefusal(ExitUnseal, 'the GCM tag does not verify');
+    Plaintext := UnsealWhole(Key, Whole, SealedLength);
   finally
     FillChar(Key, SizeOf(Key), 0);
   end;
@@ -312,8 +348,148 @@ begin
     Result := Result + LowerCase(IntToHex(Data[Index], 2));
 end;
 
+{ Read's verdict on a file: its exit status, and the plaintext when it is 0. }
+function ReadStatus(const Key: TAesKey; const Whole: TBytes; out Plaintext: TBytes): Integer;
+begin
+  Plaintext := nil;
+  try
+    Plaintext := UnsealWhole(Key, Whole, CheckHeader(Whole));
+    Result := 0;
+  except
+    on Refusal: ERefusal do
+      Result := Refusal.ExitStatus;
+  end;
+end;
+
+{ A good file laid out to the byte as the plan says: the magic, the version, the holder, the
+  sealed key's length and then its bytes, the nonce, and the plaintext sealed under every byte
+  before it. Read alone could agree with write on a wrong layout; this cannot. }
+function LaidOut(const Key: TAesKey; const Plan: TFilePlan; const Plaintext,
+  Whole: TBytes): Boolean;
+var
+  NonceStart: Integer;
+  Expected: TBytes;
+begin
+  NonceStart := HeaderStartLength + Length(Plan.SealedKey);
+  if Length(Whole) <> NonceStart + NonceLength + Length(Plaintext) + TagLength then
+    Exit(False);
+  Expected := Concat(BytesOf('HADVBOOT'), [0, FormatVersion, Plan.KeyHolder,
+    Byte(Length(Plan.SealedKey) shr 8), Byte(Length(Plan.SealedKey) and $FF)],
+    Plan.SealedKey);
+  SetLength(Expected, NonceStart + NonceLength);
+  Move(Plan.Nonce, Expected[NonceStart], NonceLength);
+  Expected := Concat(Expected, Seal(Key, Plan.Nonce, Expected, Plaintext));
+  Result := BytesToHex(Whole) = BytesToHex(Expected);
+end;
+
+{ Each key holder with its own sealed-key length, written and read back; each holder with a
+  length that is not its own, and each other way a header or file is refused. }
+function HeaderFailures(const Key: TAesKey): Integer;
+type
+  THeaderCase = record
+    Name, Edits, Plaintext: string;
+    Expected: Integer;
+  end;
+const
+  Nonce = 'nonce hex:cafebabefacedbaddecaf888' + #10;
+  WindowsKey = 'sealed "hadv-0123456789abcdef0123456789abcdef" random:256' + #10;
+  Json = '{"pass":"x"}';
+  Cases: array[0..30] of THeaderCase = (
+    (Name: 'key holder 1, no sealed key'; Edits: Nonce; Plaintext: Json; Expected: 0),
+    (Name: 'key holder 2, a sealed key of 293 bytes';
+     Edits: 'holder 2' + #10 + WindowsKey + Nonce; Plaintext: Json; Expected: 0),
+    (Name: 'key holder 3, a sealed key of 293 bytes';
+     Edits: 'holder 3' + #10 + WindowsKey + Nonce; Plaintext: Json; Expected: 0),
+    (Name: 'key holder 4, no sealed key';
+     Edits: 'holder 4' + #10 + Nonce; Plaintext: Json; Expected: 0),
+    (Name: 'key holder 5, no sealed key';
+     Edits: 'holder 5' + #10 + Nonce; Plaintext: Json; Expected: 0),
+    (Name: 'key holder 2, a key name in capitals: the oracle judges no name';
+     Edits: 'holder 2' + #10 + 'sealed "HADV-0123456789ABCDEF0123456789ABCDEF" random:256'
+       + #10 + Nonce; Plaintext: Json; Expected: 0),
+    (Name: 'key holder 2, nothing sealed: its header, nonce and tag alone';
+     Edits: 'holder 2' + #10 + WindowsKey + Nonce; Plaintext: ''; Expected: 0),
+    (Name: 'key holder 0'; Edits: 'holder 0'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 6'; Edits: 'holder 6'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 255 with a sealed key of 293 bytes';
+     Edits: 'holder 255' + #10 + 'sealed zeros:293'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 1 with a sealed key of 1 byte';
+     Edits: 'sealed zeros:1'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 1 with a sealed key of 293 bytes';
+     Edits: 'sealed zeros:293'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 2 with no sealed key'; Edits: 'holder 2'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 2 with a sealed key of 292 bytes';
+     Edits: 'holder 2' + #10 + 'sealed zeros:292'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 2 with a sealed key of 294 bytes';
+     Edits: 'holder 2' + #10 + 'sealed zeros:294'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 3 with no sealed key'; Edits: 'holder 3'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 3 with a sealed key of 292 bytes';
+     Edits: 'holder 3' + #10 + 'sealed zeros:292'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 3 with a sealed key of 294 bytes';
+     Edits: 'holder 3' + #10 + 'sealed zeros:294'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 4 with a sealed key of 1 byte';
+     Edits: 'holder 4' + #10 + 'sealed zeros:1'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 4 with a sealed key of 293 bytes';
+     Edits: 'holder 4' + #10 + 'sealed zeros:293'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 5 with a sealed key of 1 byte';
+     Edits: 'holder 5' + #10 + 'sealed zeros:1'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 5 with a sealed key of 293 bytes';
+     Edits: 'holder 5' + #10 + 'sealed zeros:293'; Plaintext: Json; Expected: 3),
+    (Name: 'key holder 2, 293 bytes sealed, a length that says 292';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'sealed-length 292';
+     Plaintext: Json; Expected: 3),
+    (Name: 'key holder 2, 292 bytes sealed, a length that says 293: the nonce read a byte late';
+     Edits: 'holder 2' + #10 + 'sealed zeros:292' + #10 + 'sealed-length 293';
+     Plaintext: Json; Expected: 4),
+    (Name: 'key holder 2, past the key file''s 41 bytes but short of its sealed key';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'truncate 41';
+     Plaintext: Json; Expected: 3),
+    (Name: 'key holder 2, a byte short of its header, nonce and tag';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'truncate 333';
+     Plaintext: ''; Expected: 3),
+    (Name: 'key holder 2, a byte of the sealed key changed';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'flip 113';
+     Plaintext: Json; Expected: 4),
+    (Name: 'key holder 2, its nonce changed';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'flip 306';
+     Plaintext: Json; Expected: 4),
+    (Name: 'key holder 4 turned to 5 after sealing';
+     Edits: 'holder 4' + #10 + 'flip 10'; Plaintext: Json; Expected: 4),
+    (Name: 'key holder 2, larger than 65,536 bytes';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'append zeros:65536';
+     Plaintext: Json; Expected: 2),
+    (Name: 'key holder 1, shorter than its header, nonce and tag';
+     Edits: 'truncate 40'; Plaintext: Json; Expected: 3));
+var
+  HeaderCase: THeaderCase;
+  Plan: TFilePlan;
+  Plaintext, Whole, Opened: TBytes;
+  Status: Integer;
+begin
+  Result := 0;
+  for HeaderCase in Cases do
+  begin
+    Plan := ParseEditList(HeaderCase.Edits);
+    Plaintext := BytesOf(HeaderCase.Plaintext);
+    Whole := SealPlan(Key, Plan, Plaintext);
+    Status := ReadStatus(Key, Whole, Opened);
+    if Status <> HeaderCase.Expected then
+    begin
+      WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': status ', Status, ', not ',
+        HeaderCase.Expected);
+      Inc(Result);
+    end
+    else if (Status = 0) and ((BytesToHex(Opened) <> BytesToHex(Plaintext))
+      or not LaidOut(Key, Plan, Plaintext, Whole)) then
+    begin
+      WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': not laid out or read back');
+      Inc(Result);
+    end;
+  end;
+end;
+
 { FIPS-197 appendix C.3, and the AES-256 cases 13 to 16 of McGrew and Viega's GCM
-  specification, the vectors NIST's validation suite grew from. }
+  specification, the vectors NIST's validation suite grew from; then the header's cases. }
 procedure RunSelftest;
 type
   TGcmCase = record
@@ -389,6 +565,7 @@ begin
       Inc(Failures);
     end;
   end;
+  Inc(Failures, HeaderFailures(Key));
   if Failures > 0 then
     raise ERefusal.CreateRefusal(ExitUsage, Format('selftest: %d failures', [Failures]));
   WriteLn('selftest: ok');

@@ -1,9 +1,10 @@
 { SPDX-FileCopyrightText: 2026 Pascal Fairchild
   SPDX-License-Identifier: AGPL-3.0-only }
 
-{ The edits list: what write reads to break a file on purpose. The grammar is in README.md.
-  Write never judges a list: a wrong magic, a key holder no engine reads or a length that lies
-  are exactly the files the engine's tests need. }
+{ The edits list: what write reads to make any file but the key file's good one, another key
+  holder's or one broken on purpose. The grammar is in README.md.
+  Write never judges a list: a wrong magic, a key holder no engine reads, a length that lies or
+  a sealed key of any bytes at all are exactly the files the engine's tests need. }
 unit EditList;
 
 {$mode objfpc}{$H+}{$R+}{$Q+}
@@ -19,8 +20,17 @@ const
     sealed key follows it, then the nonce. }
   HeaderStartLength = MagicLength + 2 + 1 + 2;
   FormatVersion = 1;
-  { The key file, the only key holder format version 1 has so far. }
+  { The key holders format version 1 has: the key file; Windows' TPM key store and its
+    software key store, each with a sealed key; a systemd credential and a Swarm secret,
+    which hold the key themselves, so their files carry no sealed key, as the key file's. }
   KeyHolderKeyFile = 1;
+  KeyHolderTpm = 2;
+  KeyHolderSoftwareKeyStore = 3;
+  KeyHolderSystemdCredential = 4;
+  KeyHolderSwarmSecret = 5;
+  { A Windows key store's sealed key: the Windows key's 37-byte name, then the bootstrap
+    file's key wrapped by that 2048-bit RSA key, 256 bytes. }
+  WindowsSealedKeyLength = 37 + 256;
   { A token that makes bytes (zeros:, random:) stops here: a typo of a few digits should
     fail, not fill the disk. Four times the format's whole-file limit is room enough for
     every oversized case. }
