@@ -103,4 +103,9 @@ jobs:
         run: |
           export PATH="$PGDIR:$PATH"
           if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
+          ( while :; do
+              echo "MON $(date -u +%T) $(free -m | awk 'NR==2 {print "mem_used=" $3 " mem_avail=" $7}') $(free -m | awk 'NR==3 {print "swap_used=" $3}') $(df -m / | awk 'NR==2 {print "root_avail=" $4}') $(df -m /tmp | awk 'NR==2 {print "tmp_avail=" $4}') procs=$(ps -e --no-headers | wc -l)"
+              ps -eo rss,etimes,args --sort=-rss --no-headers | head -4 | cut -c1-170 | sed 's/^/MON    /'
+              sleep 15
+            done ) &
           bash check.sh --mutation
