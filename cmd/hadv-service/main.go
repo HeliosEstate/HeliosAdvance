@@ -154,6 +154,7 @@ func run(arguments []string, console io.Writer, stopContext context.Context,
 
 	texts, err := loadTexts(options.language, log)
 	if err != nil {
+		log("start_failed", err.Error())
 		return exitFailed
 	}
 
@@ -163,22 +164,20 @@ func run(arguments []string, console io.Writer, stopContext context.Context,
 
 // loadTexts reads the lang folder beside the executable, as the system names the executable and
 // with no further resolving of links, before anything listens, and writes one text_missing line for
-// each text the board's language lacks. The language package's errors name the file and why and
-// hold nothing of it, so they are safe to log.
+// each text the board's language lacks. A failure is returned for the caller to log, never logged
+// here: the language package's errors name the file and why and hold nothing of it, so they are
+// safe to log.
 func loadTexts(code string, log func(key, value string)) (*language.Texts, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		log("start_failed", "the lang folder beside the executable cannot be found: "+err.Error())
-		return nil, err
+		return nil, fmt.Errorf("the lang folder beside the executable cannot be found: %w", err)
 	}
 	folder := filepath.Join(filepath.Dir(executable), language.Folder)
 	texts, err := language.Load(folder, code)
 	if errors.Is(err, language.ErrNotInstalled) {
-		log("start_failed", fmt.Sprintf("-lang %q names no language the lang folder %s holds", code, folder))
-		return nil, err
+		return nil, fmt.Errorf("-lang %q names no language the lang folder %s holds", code, folder)
 	}
 	if err != nil {
-		log("start_failed", err.Error())
 		return nil, err
 	}
 	for _, key := range texts.Missing() {

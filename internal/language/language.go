@@ -287,6 +287,9 @@ func checkParents(languages []*language, byCode map[string]*language, fallback *
 		if each == fallback {
 			continue
 		}
+		if _, isString := each.parent.(string); each.parent != nil && !isString {
+			return refusal(each.path, "its parent is not a string", nil)
+		}
 		if each.parent != nil && each.parentOf == nil {
 			return refusal(each.path, "its parent names no language", nil)
 		}
