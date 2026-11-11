@@ -120,7 +120,7 @@ func loadFrom(root *os.Root, folder, code string) (*Texts, error) {
 	if err := checkParents(languages, byCode, fallback); err != nil {
 		return nil, err
 	}
-	return findTexts(board, fallback)
+	return findTexts(board, fallback, len(languages))
 }
 
 // find lists the languages from the listing alone, never from an open that succeeds, since
@@ -309,10 +309,16 @@ func checkParents(languages []*language, byCode map[string]*language, fallback *
 
 // findTexts takes each key from the first language of the board's chain that holds it as a text
 // that counts, the chain being the board's language, its parents and then fallback, whose own
-// parent is never followed. A key not taken from the board's language is missing.
-func findTexts(board, fallback *language) (*Texts, error) {
+// parent is never followed. The walk takes at most most steps, the number of languages, so a loop
+// that the parent check let through ends the walk instead of growing the chain without end. A key
+// not taken from the board's language is missing.
+func findTexts(board, fallback *language, most int) (*Texts, error) {
 	chain := []*language{board}
-	for last := board; last != fallback && last.parentOf != nil; {
+	last := board
+	for range most {
+		if last == fallback || last.parentOf == nil {
+			break
+		}
 		last = last.parentOf
 		chain = append(chain, last)
 	}
