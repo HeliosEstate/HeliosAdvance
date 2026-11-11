@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"unicode/utf8"
 
-	"github.com/BurntSushi/toml"
+	"github.com/pelletier/go-toml/v2"
 )
 
 // keySpec pairs a text's key with its placeholders, so that Load, Text and Missing cannot
@@ -247,14 +247,15 @@ func decodeFiles(languages []*language) error {
 		if !utf8.ValidString(each.contents) {
 			err = errors.New("not UTF-8")
 		} else {
-			_, err = toml.Decode(each.contents, &decoded)
+			err = toml.Unmarshal([]byte(each.contents), &decoded)
 		}
 		each.contents = ""
 		if err != nil {
 			why := "not UTF-8 and TOML 1.1"
-			var parseError toml.ParseError
-			if errors.As(err, &parseError) {
-				why += fmt.Sprintf(", at line %d", parseError.Position.Line)
+			var decodeError *toml.DecodeError
+			if errors.As(err, &decodeError) {
+				line, _ := decodeError.Position()
+				why += fmt.Sprintf(", at line %d", line)
 			}
 			return refusal(each.path, why, nil)
 		}
@@ -266,15 +267,16 @@ func decodeFiles(languages []*language) error {
 	}
 	for _, each := range languages {
 		name, isString := each.name.(string)
-		if !isString || name == "" || slices.ContainsFunc([]rune(name), isControlOrBidi) {
+		if !isString || name == "" || strings.ContainsFunc(name, isControlOrBidi) {
 			return refusal(each.path, "its name is not a string of characters", nil)
 		}
 	}
 	return nil
 }
 
-// checkParents resolves every parent first, so the walks below meet only resolved ones. A walk is
-// at most as many steps as there are languages.
+// checkParents resolves every parent first, so a walk meets only resolved ones, then judges each
+// language by folder name against the whole parent check and returns the first that fails. A walk
+// is at most as many steps as there are languages.
 func checkParents(languages []*language, byCode map[string]*language, fallback *language) error {
 	for _, each := range languages {
 		if parent, isString := each.parent.(string); isString {
@@ -287,11 +289,6 @@ func checkParents(languages []*language, byCode map[string]*language, fallback *
 		}
 		if each.parent != nil && each.parentOf == nil {
 			return refusal(each.path, "its parent names no language", nil)
-		}
-	}
-	for _, each := range languages {
-		if each == fallback {
-			continue
 		}
 		next := each.parentOf
 		for range languages {
