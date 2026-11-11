@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,11 +44,15 @@ var openErrors = []error{
 	bootstrap.ErrFolderMissing, bootstrap.ErrFolderUnreadable, bootstrap.ErrFileMissing,
 	bootstrap.ErrFileUnreadable, bootstrap.ErrFileTooLarge, bootstrap.ErrHeader,
 	bootstrap.ErrKeyFileMissing, bootstrap.ErrKeyFileUnreadable, bootstrap.ErrKeyFilePermissions,
-	bootstrap.ErrKeyFileReachable, bootstrap.ErrKeyFileForm, bootstrap.ErrUnseal,
+	bootstrap.ErrKeyFileReachable, bootstrap.ErrKeyFileForm, bootstrap.ErrKeyStore,
+	bootstrap.ErrKeyStorePermissions, bootstrap.ErrKeyStoreReachable, bootstrap.ErrUnwrap,
+	bootstrap.ErrUnseal,
 }
 
 // layout is one bootstrap folder a row made: the folder, its two files' paths, the key and its
-// key file's text, and the plaintext the bootstrap file seals.
+// key file's text, and the plaintext the bootstrap file seals. Under key holder 2 or 3 it also
+// holds the key store key's name and the wrapped bytes the sealed key carries, and what the key
+// store unwraps from them when that is not the key, each a secret no error may hold.
 type layout struct {
 	folder    string
 	file      string
@@ -56,6 +61,23 @@ type layout struct {
 	keyText   string
 	plaintext []byte
 	sealed    []byte
+	keyName   string
+	wrapped   []byte
+	unwrapped []byte
+	// turn, when set, is held while Open runs: the TPM serves one command at a time, so a row's
+	// Open would otherwise wait on every other row's, and on the oracle's keys, which take seconds
+	// each; taken in turn, the hang bound measures this Open alone.
+	turn *sync.Mutex
+}
+
+// open calls Open on the folder, in its turn when it has one.
+func (made *layout) open(t *testing.T) ([]byte, error) {
+	t.Helper()
+	if made.turn != nil {
+		made.turn.Lock()
+		defer made.turn.Unlock()
+	}
+	return open(t, made.folder)
 }
 
 // newKey makes a random key, never 32 zero bytes, and its key file's text with one line feed,
@@ -217,7 +239,7 @@ func open(t *testing.T, folder string) ([]byte, error) {
 // bootstrap file's contents.
 func (made *layout) expectRefused(t *testing.T, want error) {
 	t.Helper()
-	contents, err := open(t, made.folder)
+	contents, err := made.open(t)
 	expectError(t, contents, err, want)
 	made.expectNothingSecret(t, err)
 }
@@ -240,9 +262,11 @@ func expectError(t *testing.T, contents []byte, err, want error) {
 }
 
 // expectNothingSecret fails the row when the error's text holds the key in any of its forms, the
-// key file's text, the canary in the plaintext, or the bootstrap file's bytes after its magic.
-// The refusal's own fixed words are set aside first: they carry nothing of the files, and a
-// fuzzed file's few bytes after its magic can be found in them by chance, such as "e".
+// key file's text, the canary in the plaintext, or the bootstrap file's bytes after its magic;
+// under key holder 2 or 3 also the key store key's name or its 32 hex digits, the wrapped bytes
+// raw or in hex, and what the key store unwrapped in its forms. The refusal's own fixed words are
+// set aside first: they carry nothing of the files, and a fuzzed file's few bytes after its magic
+// can be found in them by chance, such as "e".
 func (made *layout) expectNothingSecret(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -262,6 +286,28 @@ func (made *layout) expectNothingSecret(t *testing.T, err error) {
 	}
 	if len(made.sealed) > 8 {
 		secrets["the bootstrap file's bytes after its magic"] = string(made.sealed[8:])
+	}
+	if made.keyName != "" {
+		secrets["the key store key's name"] = made.keyName
+		secrets["the key store key's hex digits"] = made.keyName[min(len("hadv-"), len(made.keyName)):]
+	}
+	if len(made.wrapped) > 0 {
+		secrets["the wrapped bytes"] = string(made.wrapped)
+		secrets["the wrapped bytes in hex"] = hex.EncodeToString(made.wrapped)
+	}
+	if len(made.unwrapped) > 0 {
+		secrets["what the key store unwrapped"] = string(made.unwrapped)
+		secrets["what the key store unwrapped, in hex"] = hex.EncodeToString(made.unwrapped)
+		secrets["what the key store unwrapped, in base64"] = base64.StdEncoding.EncodeToString(made.unwrapped)
+		// A part of it as well: its first 32 bytes, which an engine that took a longer result
+		// would hold as the key, and its first and last 16.
+		for name, part := range map[string][]byte{"its first 32 bytes": made.unwrapped[:min(32, len(made.unwrapped))],
+			"its first 16 bytes": made.unwrapped[:min(16, len(made.unwrapped))],
+			"its last 16 bytes":  made.unwrapped[max(0, len(made.unwrapped)-16):]} {
+			secrets["what the key store unwrapped, "+name] = string(part)
+			secrets["what the key store unwrapped, "+name+", in hex"] = hex.EncodeToString(part)
+		}
+		secrets["what the key store unwrapped, its first 30 bytes in base64"] = base64.StdEncoding.EncodeToString(made.unwrapped[:min(30, len(made.unwrapped))])
 	}
 	for name, secret := range secrets {
 		if secret != "" && strings.Contains(text, secret) {
@@ -375,7 +421,7 @@ func closingFolders() map[string]func(t *testing.T) *layout {
 // plaintext the oracle sealed.
 func (made *layout) expectOpened(t *testing.T) {
 	t.Helper()
-	contents, err := open(t, made.folder)
+	contents, err := made.open(t)
 	if err != nil {
 		t.Fatalf("Open refused a good folder: %v", err)
 	}

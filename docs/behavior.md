@@ -359,8 +359,8 @@ Part 1 changes two of hadv-service Part 1's lines, on starting and on the local 
   and exit with a non-zero code.
 - The engine shall take where it connects, its login and its password from the bootstrap file
   alone.
-- The engine shall not write the bootstrap file's password, or the key in the key file, to the
-  local log.
+- The engine shall not write the bootstrap file's password, or its key from the key file or a
+  Windows key store, to the local log.
 
 #### Signing in
 
@@ -408,7 +408,8 @@ Part 1 changes two of hadv-service Part 1's lines, on starting and on the local 
 ## bootstrap
 
 The bootstrap folder: the encrypted bootstrap file that tells the engine where its database is and
-how to sign in, and the key file holding the key it is sealed under.
+how to sign in, and what holds the key it is sealed under: the key file or, on Windows, a key
+store.
 
 ### Part 1: The bootstrap file and its key file
 
@@ -419,30 +420,64 @@ settings come from.
 
 #### The bootstrap folder
 
-- If the bootstrap folder is missing or unreadable, or the bootstrap file or the key file in it
-  is missing, unreadable or a link leading out of the bootstrap folder, then the engine shall
-  write one `start_failed` line saying which, and exit with a non-zero code.
+- If the bootstrap folder is missing or unreadable, the bootstrap file in it is missing,
+  unreadable or a link leading out of the bootstrap folder, or, when the bootstrap file's key
+  holder is the key file, the key file is, then the engine shall write one `start_failed` line
+  saying which, and exit with a non-zero code.
 - If the bootstrap file is over 64 KiB, then the engine shall write one `start_failed` line
   saying so, and exit with a non-zero code.
 
 #### The key file's checks
 
-- If, on Linux, the key file's mode gives its group or others any access, then the engine shall
-  write one `start_failed` line saying so, and exit with a non-zero code.
-- If, on Windows, the key file's owner, or any entry of its access list that allows access, names
-  anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no
-  access list, then the engine shall write one `start_failed` line saying so, and exit with a
-  non-zero code.
-- If the engine is unable to confirm that no account but those above has access to the key
-  file, such as on Windows an access-list entry of a kind it does not judge, then the engine shall
-  write one `start_failed` line saying so, and exit with a non-zero code.
-- If the key file is not in the key file's form, or holds a key of 32 zero bytes, then the engine
-  shall write one `start_failed` line saying so, and exit with a non-zero code.
+- If the bootstrap file's key holder is the key file and, on Linux, the key file's mode gives
+  its group or others any access, then the engine shall write one `start_failed` line saying so,
+  and exit with a non-zero code.
+- If the bootstrap file's key holder is the key file and, on Windows, the key file's owner, or
+  any entry of its access list that allows access, names anyone but SYSTEM, Administrators or the
+  account the engine runs as, or the key file has no access list, then the engine shall write one
+  `start_failed` line saying so, and exit with a non-zero code.
+- If the bootstrap file's key holder is the key file and the engine is unable to confirm that
+  no account but those above has access to the key file, such as on Windows an access-list entry
+  of a kind it does not judge, then the engine shall write one `start_failed` line saying so, and
+  exit with a non-zero code.
+- If the bootstrap file's key holder is the key file and the key file is not in the key file's
+  form, or holds a key of 32 zero bytes, then the engine shall write one `start_failed` line saying
+  so, and exit with a non-zero code.
 
 #### The bootstrap file
 
-- If the bootstrap file's header is not format version 1's for the key file, or the bootstrap
-  file is too short for its header, nonce and tag, then the engine shall write one `start_failed`
-  line saying so, without reading the key file, and exit with a non-zero code.
-- If the bootstrap file does not unseal under the key in the key file, then the engine shall
+- If the bootstrap file's header is not format version 1's for the key file or, on Windows, for
+  the TPM or the software key store, or the bootstrap file is too short for its header, nonce and
+  tag, then the engine shall write one `start_failed` line saying so, without reading the key file
+  or asking a key store, and exit with a non-zero code.
+- If the bootstrap file does not unseal under the key its key holder gives, then the engine shall
   write one `start_failed` line saying so, and exit with a non-zero code.
+
+### Part 2: The Windows key store
+
+On Windows, the bootstrap file's key can be held by a machine key in Microsoft's TPM key store
+(key holder 2) or, on a machine with no TPM, in its software key store (key holder 3); the engine
+unwraps the key under it, after checking who has access to that key. Part 2 changes seven of
+Part 1's lines, above, and one of the database's Part 1, on the local log.
+
+#### The Windows key
+
+- When the bootstrap file's key holder is 2, the engine shall look for the key its sealed key
+  names only among the machine keys of Microsoft's TPM key store, and when it is 3, only among
+  those of Microsoft's software key store.
+- The engine shall take the bootstrap file's key by unwrapping the sealed key's last 256 bytes
+  under that Windows key, by RSA-OAEP with SHA-256.
+- If the Windows key is not there, or the key store refuses to open it or to unwrap with it, then
+  the engine shall write one `start_failed` line naming the key store and its answer, and exit
+  with a non-zero code.
+- If the unwrap gives other than 32 bytes, or 32 zero bytes, then the engine shall write one
+  `start_failed` line saying so, and exit with a non-zero code.
+
+#### Who has access to the Windows key
+
+- If the Windows key's owner, or any entry of its access list that allows access, names anyone
+  but SYSTEM, Administrators or the account the engine runs as, or the key has no access list,
+  then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.
+- If the engine is unable to confirm that no account but those above has access to the Windows
+  key, such as an access-list entry of a kind it does not judge, then the engine shall write one
+  `start_failed` line saying so, and exit with a non-zero code.

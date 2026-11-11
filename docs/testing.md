@@ -231,6 +231,29 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
   removal that fails, are written to standard error and do not fail it, since whether Windows has
   let go of a file yet is its timing.
 
+## Windows' key stores
+
+- A key store key is made, wrapped under and deleted from outside the engine, by Windows
+  PowerShell and .NET's CngKey and RSACng, the script held in a Go string in the test file and run
+  by `-EncodedCommand`, so no file a test needs lies outside the files the QA commit locks. Its
+  answer to an open or an unwrap is the HRESULT .NET carries, handed back as an unsigned number.
+- Making a machine key needs an elevated process, in either store; asking for a key that is not
+  there does not. CI's Windows runners have no TPM: every call into the TPM's store answers that
+  its device is not ready.
+- Both stores keep an access list as it is given at creation, with one exception: the TPM's store
+  drops an entry's inherited mark. A TPM key made with no list gets one naming CREATOR OWNER
+  beside SYSTEM and Administrators; a software key gets SYSTEM and Administrators. A list can be
+  changed after the key is made.
+- Every list a row gives keeps the elevated runner's right to delete the key, but one the TPM's
+  store then refuses the runner, such as SYSTEM alone: that key is deleted through its file, given
+  back to Administrators first. The TPM store's unique name for a key is its file's full path; the
+  software store's is the file's name alone.
+- The TPM serves one command at a time, and making a key there took 0.4 to 24 seconds on the
+  TPM it was measured on. Rows that use the TPM take their turn at it, the oracle's calls and Open's alike, so the
+  hang bound measures one call alone and never a queue.
+- A row that kills its run leaves its keys. Only CI's runners, which are thrown away, and an
+  administrator's elevated run make keys; that run lists both stores afterwards.
+
 ## A database the tests make
 
 - The tests make their own PostgreSQL with its programs, never a service: a template cluster
