@@ -64,6 +64,9 @@ func TestMain(tests *testing.M) {
 		output, buildErr := exec.CommandContext(context.Background(), "go", arguments...).CombinedOutput()
 		if buildErr != nil {
 			buildFailure = fmt.Errorf("%w: %s", buildErr, strings.TrimSpace(string(output)))
+		} else if err := os.CopyFS(filepath.Join(directory, "lang"), os.DirFS(filepath.Join("..", "..", "lang"))); err != nil {
+			// The engine refuses to start without its language files beside it.
+			buildFailure = fmt.Errorf("placing the shipped lang folder beside the program: %w", err)
 		}
 	}
 	code := tests.Run()
@@ -93,8 +96,14 @@ type engine struct {
 // system picks, and waits for its started line.
 func startEngine(t *testing.T) *engine {
 	t.Helper()
+	return startEngineAt(t, programPath)
+}
+
+// startEngineAt is startEngine for the program at path, with the options given after.
+func startEngineAt(t *testing.T, path string, options ...string) *engine {
+	t.Helper()
 	key := makeKey(t, "ed25519", "")
-	program := runProgram(t, "-port", "0", "-ssh-host-key", key, "-ssh-port", "0")
+	program := runProgramAt(t, path, append([]string{"-port", "0", "-ssh-host-key", key, "-ssh-port", "0"}, options...)...)
 	program.key = key
 	line := program.first(t)
 	value, found := strings.CutPrefix(line, "started=")
@@ -115,13 +124,13 @@ func startEngine(t *testing.T) *engine {
 	return program
 }
 
-// runProgram starts the built program with options, killed when the row ends.
-func runProgram(t *testing.T, options ...string) *engine {
+// runProgramAt starts the program at path with options, killed when the row ends.
+func runProgramAt(t *testing.T, path string, options ...string) *engine {
 	t.Helper()
 	if buildFailure != nil {
 		t.Fatalf("the program did not build: %v", buildFailure)
 	}
-	command := exec.CommandContext(t.Context(), programPath, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
+	command := exec.CommandContext(t.Context(), path, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
 	command.WaitDelay = testrun.Patient(testrun.HangBound)
 	if testrun.Race {
 		command.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0")

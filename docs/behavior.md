@@ -15,7 +15,7 @@ The engine's first layer accepts a Telnet caller, answers the caller's option re
 greeting and hangs up. Part 2 replaces how it ends a call, and Part 4 what it sends at accept and
 which options it takes. The database's Part 1 makes it take its server's lease before it listens,
 and adds two lines to the local log. The bootstrap's Part 1 names the bootstrap folder in place of
-the connection file.
+the connection file. The languages' Part 1 adds a third line to the local log.
 
 #### Greeting a caller
 
@@ -70,28 +70,28 @@ What the engine writes after negotiation, and when it gives up on a call, are Pa
   Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one
   `start_failed` line to the local log saying why, and exit with a non-zero code.
 - The engine shall write no line to the local log other than `started`, `start_failed`,
-  `waiting` and `lease_lost`.
+  `waiting`, `lease_lost` and `text_missing`.
 - The engine shall write each line of the local log as one key and its value, `key=value`.
 - The engine shall not write anything a caller sent to the local log.
 
 ### Part 2: What is your name?
 
 After negotiation the engine greets the caller, asks their name, reads it and answers with it,
-then hangs up. The layer that asks and answers is the one SSH shares, from Part 3.
+then hangs up. The layer that asks and answers is the one SSH shares, from Part 3. The greeting,
+the name prompt and the name reply are texts in the board's language, from the languages' Part 1.
 
 #### Asking the name
 
 - When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine
-  sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF,
-  then `What is your name? `.
-- When the caller ends the name with CR or LF, the engine shall write `Hello `, the name and
-  CR LF.
+  sent them, whichever comes first, the engine shall write the greeting and CR LF, then the name
+  prompt.
+- When the caller ends the name with CR or LF, the engine shall write the name reply and CR LF.
 - If the caller sends anything after the name ends, then the engine shall discard it without
   reply.
-- When `Hello <name>` is written to a Telnet caller, the engine shall shut down its sending side
+- When the name reply is written to a Telnet caller, the engine shall shut down its sending side
   of the connection.
-- If the caller has not ended the name 60 seconds after the engine wrote `What is your name? `,
-  then the engine shall close the connection without writing more.
+- If the caller has not ended the name 60 seconds after the engine wrote the name prompt, then
+  the engine shall close the connection without writing more.
 
 #### What a name may hold
 
@@ -125,7 +125,7 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 The engine also takes SSH callers, when the sysop gives it a host key, and serves them the same
 call as Telnet callers: the greeting, the name and the answer. Part 3 narrows the earlier lines
 that only a Telnet caller meets to a Telnet caller. Part 8 changes its line on the host key file's
-mode.
+mode, and the languages' Part 1 its two lines that named the greeting and the answer.
 
 #### Turning SSH on
 
@@ -141,13 +141,13 @@ mode.
 
 #### The same call over SSH
 
-- When an SSH caller has signed in and asked for a shell, the engine shall write
-  `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.
+- When an SSH caller has signed in and asked for a shell, the engine shall write the greeting
+  and CR LF, then the name prompt.
 - While an SSH caller has asked for a terminal, the engine shall echo as it does for a Telnet
   caller that agreed to ECHO.
 - While an SSH caller has not asked for a terminal, the engine shall echo nothing.
-- When `Hello <name>` is written to an SSH caller, the engine shall send exit status 0 and end of
-  file, and close the channel.
+- When the name reply is written to an SSH caller, the engine shall send exit status 0 and end
+  of file, and close the channel.
 - When an SSH caller closes the connection, or 3 seconds after the engine closed the channel,
   whichever comes first, the engine shall close the connection.
 
@@ -279,7 +279,7 @@ The engine also takes Telnet callers over TLS, on a listener of its own, when th
 certificate and its key, and serves them inside the encrypted channel as it serves a Telnet
 caller. Every earlier line that names a Telnet caller stands for a Telnet over TLS caller, inside
 the channel. Part 8 changes one of Part 4's lines, on the Synch, and one of Part 3's, on the host
-key file's mode.
+key file's mode. The languages' Part 1 changes its line on the answer.
 
 #### Turning Telnet over TLS on
 
@@ -322,7 +322,7 @@ key file's mode.
 
 - When a Telnet over TLS caller's handshake completes, the engine shall serve it inside the
   encrypted channel as it serves a Telnet caller it has just accepted.
-- When `Hello <name>` is written to a Telnet over TLS caller, the engine shall send TLS's
+- When the name reply is written to a Telnet over TLS caller, the engine shall send TLS's
   close_notify before it shuts down its sending side of the connection.
 - If a write to a Telnet over TLS caller has failed before its call is closed, then the engine
   shall send that caller no close_notify, and shall still shut down its sending side of the
@@ -446,3 +446,69 @@ settings come from.
   line saying so, without reading the key file, and exit with a non-zero code.
 - If the bootstrap file does not unseal under the key in the key file, then the engine shall
   write one `start_failed` line saying so, and exit with a non-zero code.
+
+## languages
+
+The language files: every text the engine shows a caller, in the board's language.
+
+### Part 1: The language files
+
+Every text the engine shows comes from a language file, `lang/<code>/<code>.toml` beside its
+executable, in the board's language, its parents, then en-us. A text is written in Unicode's
+MessageFormat 2, of which Part 1 reads characters, escapes and variable placeholders. Part 1
+changes one of hadv-service Part 1's lines, four of Part 2's, two of Part 3's and one of Part 8's,
+on the local log and on the texts a caller is shown.
+
+#### The language files
+
+- The engine shall read each language from `lang/<code>/<code>.toml` in the folder holding its
+  executable, `<code>` being the language's tag in lower case, once, when it starts.
+- The engine shall take a language file's `name` as the language's name, and its `parent`, when
+  present, as the code of the language that fills in its missing texts.
+- The engine shall be released with `lang/en-us/en-us.toml` holding every text it shows, in
+  English (United States).
+
+#### A key it does not know
+
+- The engine shall ignore a key in a language file that names no text it shows.
+
+#### The board's language
+
+- When started with `-lang` and a code, the engine shall show its texts in that language, and
+  without it, in en-us.
+- If `-lang` names no language the `lang` folder holds, then the engine shall write one
+  `start_failed` line to the local log saying so, and exit with a non-zero code.
+
+#### Showing a text
+
+- The engine shall take the greeting from the text `session.greeting`, the name prompt from
+  `session.name_prompt` and the name reply from `session.name_reply`, with `{$NAME}` the name.
+- When a text is missing from the board's language, the engine shall take it from each parent in
+  turn, starting with that language's own, and then from en-us.
+- The engine shall send every text to the caller as UTF-8.
+- When a text is first missing from the board's language in a run, the engine shall write one
+  `text_missing` line to the local log naming the board's language and the text.
+
+#### A text that counts as missing
+
+- The engine shall put the caller's name into a text as the characters it holds, never read as a
+  text's syntax.
+- The engine shall treat a text as missing from a language when it is not valid MessageFormat 2,
+  or holds anything but characters, the standard's escapes and variable placeholders, `{$name}`.
+- The engine shall treat a text as missing from a language when it holds a placeholder the engine
+  does not give that text.
+- The engine shall treat a text as missing from a language when it holds a control character,
+  U+0000 to U+001F or U+007F to U+009F, or a bidi control: U+061C, U+200E, U+200F, U+202A to
+  U+202E or U+2066 to U+2069.
+
+#### Refusing to start
+
+- If the engine fails to read the `lang` folder or its en-us file, or en-us lacks a text the
+  engine shows or holds one that counts as missing, then the engine shall write one
+  `start_failed` line naming the file and why, and exit with a non-zero code.
+- If a language file is over 1 MiB, is not UTF-8 and TOML 1.1, or has no `name` of characters
+  with no control character, then the engine shall write one `start_failed` line naming the file
+  and why, and exit with a non-zero code.
+- If a folder in `lang` holding a file of its own name is not a well-formed language tag in lower
+  case, or a `parent` names no language the folder holds or leads back to itself, then the engine
+  shall write one `start_failed` line naming the file and why, and exit with a non-zero code.

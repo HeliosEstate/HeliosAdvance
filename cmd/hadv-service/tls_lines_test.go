@@ -863,7 +863,7 @@ func TestTLSProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("When `Hello <name>` is written to a Telnet over TLS caller, the engine shall send TLS's close_notify before it shuts down its sending side of the connection.", func(t *testing.T) {
+	t.Run("When the name reply is written to a Telnet over TLS caller, the engine shall send TLS's close_notify before it shuts down its sending side of the connection.", func(t *testing.T) {
 		t.Parallel()
 		for _, version := range sClientVersions {
 			t.Run(version+", s_client -msg: Hello, then a close_notify alert, then the end", func(t *testing.T) {

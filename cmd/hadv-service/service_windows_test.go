@@ -74,11 +74,12 @@ type windowsService struct {
 }
 
 // installService installs the built program as the service hadv-service, run as NT
-// SERVICE\hadv-service, the way the page's setup does: the program, its bootstrap folder and its
-// log folder in a folder of the row's own with no space or comma in its path, so the command line
-// is plain; the account given read and run on the program, read on the bootstrap folder, and modify
-// on the log folder; the key file owned by Administrators, its inherited entries removed, and
-// readable by Administrators and the account alone. The row's end stops and removes the service.
+// SERVICE\hadv-service, the way the page's setup does: the program, the shipped lang folder, its
+// bootstrap folder and its log folder in a folder of the row's own with no space or comma in its
+// path, so the command line is plain; the account given read and run on the program, read on the
+// lang and bootstrap folders, and modify on the log folder; the key file owned by
+// Administrators, its inherited entries removed, and readable by Administrators and the account
+// alone. The row's end stops and removes the service.
 func installService(t *testing.T, setup serviceSetup) *windowsService {
 	t.Helper()
 	if buildFailure != nil {
@@ -92,6 +93,10 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 	service := &windowsService{image: "hadv-qa-" + strings.ToLower(rand.Text()[:8]) + ".exe"}
 	program := filepath.Join(folder, service.image)
 	copyFile(t, programPath, program)
+	languages := filepath.Join(folder, langFolder)
+	if err := os.CopyFS(languages, os.DirFS(shippedLang)); err != nil {
+		t.Fatalf("placing the shipped lang folder beside the service's program: %v", err)
+	}
 	bootstrap := filepath.Join(folder, "bootstrap")
 	keyFile := filepath.Join(bootstrap, keyFileName)
 	if !setup.withoutBootstrap {
@@ -122,6 +127,7 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 	t.Cleanup(func() { service.remove(t) })
 	// The account exists only once the service does, so it is granted its rights after.
 	icacls(t, program, "/grant", serviceAccount+":(RX)")
+	icacls(t, languages, "/grant", serviceAccount+":(OI)(CI)(RX)")
 	if !setup.withoutBootstrap {
 		icacls(t, keyFile, "/setowner", "*"+administratorsSID)
 		// Written whole: on CI's runner icacls /inheritance:r with /grant:r kept the inherited

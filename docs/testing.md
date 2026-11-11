@@ -11,6 +11,10 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   outside, such as the byte-level reading of a caller's input.
 - A wrapper around a real connection is used only to make two things meet at a chosen moment,
   such as a context ending as a read fails, which no outside caller can time.
+- A row that needs the built program beside files of its own, such as a `lang` folder, links the
+  program into a folder of its own: a hard link is the program under a second name, and the
+  program finds the folder it was started from, with no copy of its bytes per row. Both are under
+  the run's own folder, on one file system.
 
 ## The oracle
 

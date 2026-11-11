@@ -42,6 +42,12 @@ var (
 	buildFailure error
 )
 
+// langFolder is the folder of language files the engine reads beside its executable, and
+// shippedLang the one the repository ships, from this package's folder.
+const langFolder = "lang"
+
+var shippedLang = filepath.Join("..", "..", langFolder)
+
 // TestMain builds the program the rows run, under the race detector when the tests run under
 // it, and prepares the database every run needs. A build or a database that fails fails every
 // row with its reason, rather than stopping before any runs. First it makes this run's own
@@ -78,6 +84,9 @@ func TestMain(tests *testing.M) {
 		output, buildErr := exec.CommandContext(context.Background(), "go", arguments...).CombinedOutput()
 		if buildErr != nil {
 			buildFailure = fmt.Errorf("%w: %s", buildErr, strings.TrimSpace(string(output)))
+		} else if err := os.CopyFS(filepath.Join(directory, langFolder), os.DirFS(shippedLang)); err != nil {
+			// The engine refuses to start without its language files beside it.
+			buildFailure = fmt.Errorf("placing the shipped lang folder beside the program: %w", err)
 		}
 	}
 	code := tests.Run()
@@ -432,8 +441,11 @@ func (program *run) text() string {
 // startFailedKey is the local log's key for a refusal to start.
 const startFailedKey = "start_failed"
 
+// textMissingKey is the local log's key for a text missing from the board's language.
+const textMissingKey = "text_missing"
+
 // logKeys are the only keys the local log may hold.
-var logKeys = []string{"started", startFailedKey, "waiting", "lease_lost"}
+var logKeys = []string{"started", startFailedKey, "waiting", "lease_lost", textMissingKey}
 
 // waitForLine waits, by the deadline, for the local log's line at index, and returns its key, its
 // value and when it was read. A program that exits first, or a line that does not come, fails

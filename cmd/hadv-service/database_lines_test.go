@@ -730,7 +730,7 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall write no line to the local log other than `started`, `start_failed`, `waiting` and `lease_lost`.", func(t *testing.T) {
+	t.Run("The engine shall write no line to the local log other than `started`, `start_failed`, `waiting`, `lease_lost` and `text_missing`.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a lease held, taken, lost and taken again, then a stop: started, waiting, lease_lost and nothing else", func(t *testing.T) {
 			t.Parallel()

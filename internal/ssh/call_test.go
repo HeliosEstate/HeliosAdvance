@@ -138,7 +138,7 @@ func (client *rawClient) expectOneCloseAfter(from time.Time) {
 func TestCall(t *testing.T) {
 	t.Parallel()
 
-	t.Run("When an SSH caller has signed in and asked for a shell, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.", func(t *testing.T) {
+	t.Run("When an SSH caller has signed in and asked for a shell, the engine shall write the greeting and CR LF, then the name prompt.", func(t *testing.T) {
 		t.Parallel()
 		for _, terminal := range []bool{true, false} {
 			name := "the OpenSSH client with -T"
@@ -231,7 +231,7 @@ func TestCall(t *testing.T) {
 		})
 	})
 
-	t.Run("When `Hello <name>` is written to an SSH caller, the engine shall send exit status 0 and end of file, and close the channel.", func(t *testing.T) {
+	t.Run("When the name reply is written to an SSH caller, the engine shall send exit status 0 and end of file, and close the channel.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("QA's client: Hello bob, then exactly exit-status 0, end of file and the close, once, and nothing more", func(t *testing.T) {
 			t.Parallel()

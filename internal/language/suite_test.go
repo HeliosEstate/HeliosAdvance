@@ -24,6 +24,34 @@ import (
 // suiteFolder is the oracle's folder, from this package's own.
 var suiteFolder = filepath.Join("..", "..", "oracle", "messageformat2")
 
+// pinnedSuiteFiles is the path of every JSON file the oracle's pin names, sorted. The files are
+// Unicode's and not in the repository: check.sh fetches them at the pin, so a missing one fails
+// the row naming it, never a skip.
+func pinnedSuiteFiles(t *testing.T) []string {
+	t.Helper()
+	pin, err := os.ReadFile(filepath.Join(suiteFolder, "pin"))
+	if err != nil {
+		t.Fatalf("the MessageFormat 2 suite's pin cannot be read: %v", err)
+	}
+	var names []string
+	for line := range strings.SplitSeq(strings.ReplaceAll(string(pin), "\r", ""), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || len(fields[0]) != 64 || !strings.HasSuffix(fields[1], ".json") {
+			continue
+		}
+		name := filepath.Join(suiteFolder, filepath.Base(fields[1]))
+		if _, err := os.Stat(name); err != nil {
+			t.Fatalf("the MessageFormat 2 suite's %s is missing (%v): `bash check.sh` fetches it at the pin", filepath.Base(name), err)
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		t.Fatalf("the MessageFormat 2 suite's pin in %s names no JSON file", suiteFolder)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // suiteTest is one case as the suite writes it; a field the case leaves out takes the file's
 // defaultTestProperties.
 type suiteTest struct {
@@ -61,11 +89,7 @@ type suiteCase struct {
 // failure, never a skip.
 func readSuite(t *testing.T) []suiteCase {
 	t.Helper()
-	names, err := filepath.Glob(filepath.Join(suiteFolder, "*.json"))
-	if err != nil || len(names) == 0 {
-		t.Fatalf("the MessageFormat 2 suite is not in %s: %v", suiteFolder, err)
-	}
-	slices.Sort(names)
+	names := pinnedSuiteFiles(t)
 	var cases []suiteCase
 	for _, name := range names {
 		contents, err := os.ReadFile(name)

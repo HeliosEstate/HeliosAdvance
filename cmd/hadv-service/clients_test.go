@@ -323,7 +323,7 @@ func TestPlinkClient(t *testing.T) {
 	plink := clientPath(t, "plink")
 	lines := []string{
 		"When it accepts a Telnet caller, the engine shall send IAC WILL ECHO, IAC WILL SGA, IAC WILL BINARY, IAC DO BINARY, IAC DO TTYPE, IAC DO NAWS, IAC DO NEW-ENVIRON and IAC DO TSPEED, in that order, and no other option request.",
-		"When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.",
+		"When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write the greeting and CR LF, then the name prompt.",
 	}
 	for _, line := range lines {
 		t.Run(line, func(t *testing.T) {
@@ -348,7 +348,7 @@ func TestLinuxTelnetClient(t *testing.T) {
 	telnet := clientPath(t, "telnet")
 	lines := []string{
 		"When it accepts a Telnet caller, the engine shall send IAC WILL ECHO, IAC WILL SGA, IAC WILL BINARY, IAC DO BINARY, IAC DO TTYPE, IAC DO NAWS, IAC DO NEW-ENVIRON and IAC DO TSPEED, in that order, and no other option request.",
-		"When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.",
+		"When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write the greeting and CR LF, then the name prompt.",
 	}
 	for _, line := range lines {
 		t.Run(line, func(t *testing.T) {

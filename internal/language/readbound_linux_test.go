@@ -45,8 +45,9 @@ func childFolder(t *testing.T) (string, bool) {
 // what the read returned, a count of bytes or -1 with an error after it.
 var traceRead = regexp.MustCompile(`^(?:read|pread64|readv|preadv|preadv2)\(\d+<([^>]*)>.*\) += (-?\d+)(?: .*)?$`)
 
-// traceReadStart is the start of any read in strace's account, whole or not.
-var traceReadStart = regexp.MustCompile(`^(?:read|pread64|readv|preadv|preadv2)\(`)
+// traceReadStart is the start of a read in strace's account, whole or not, and the file behind its
+// descriptor when the account names one.
+var traceReadStart = regexp.MustCompile(`^(?:read|pread64|readv|preadv|preadv2)\(\d+(?:<([^>]*)>)?`)
 
 // runPattern is the -test.run pattern that matches the row named name and nothing else.
 func runPattern(name string) string {
@@ -60,7 +61,7 @@ func runPattern(name string) string {
 // readsOf runs the calling row again in a child under strace, which loads folder, and returns the
 // bytes read from each file in folder, by its path inside folder. The child must pass the row: it
 // checks what Load returned. Each thread's reads go to a file of their own, so no read is split
-// across lines by another thread's, and a read the account does not show whole fails the row.
+// across lines by another thread's.
 func readsOf(t *testing.T, folder string) map[string]int64 {
 	t.Helper()
 	if _, err := exec.LookPath("strace"); err != nil {
@@ -75,7 +76,8 @@ func readsOf(t *testing.T, folder string) map[string]int64 {
 		t.Fatalf("resolving the lang folder %s: %v", folder, err)
 	}
 	account := filepath.Join(t.TempDir(), "reads")
-	arguments := []string{"-ff", "-y", "-e", "trace=read,pread64,readv,preadv,preadv2", "-o", account, binary,
+	// --seccomp-bpf stops the child only at the reads traced, not at every system call.
+	arguments := []string{"-ff", "--seccomp-bpf", "-y", "-e", "trace=read,pread64,readv,preadv,preadv2", "-o", account, binary,
 		"-test.run=" + runPattern(t.Name()), "-test.count=1", "-test.v", "-test.timeout=" + testrun.Patient(testrun.HangBound).String()}
 	// Under go test -cover the child writes its counters where this binary's own counters go.
 	if directory := flag.Lookup("test.gocoverdir"); directory != nil && directory.Value.String() != "" {
@@ -107,8 +109,13 @@ func readsOf(t *testing.T, folder string) map[string]int64 {
 		for line := range strings.SplitSeq(string(text), "\n") {
 			found := traceRead.FindStringSubmatch(line)
 			if found == nil {
-				if traceReadStart.MatchString(line) || strings.Contains(line, " resumed>") {
-					t.Fatalf("strace's account shows a read it does not show whole: %q", line)
+				// A read whose descriptor the account does not name cannot be counted by file, and
+				// one it does not show whole cannot be counted at all; either fails the row when it
+				// may be of a language's file. The runtime's own threads have reads of their pipes
+				// restarted at moments their scheduler picks, and those name what they read. A
+				// resumed read names no file; its start, in the same thread's account, was judged.
+				if start := traceReadStart.FindStringSubmatch(line); start != nil && (start[1] == "" || strings.HasSuffix(start[1], ".toml")) {
+					t.Fatalf("strace's account shows a read it cannot count, of a language's file or of a descriptor it does not name: %q", line)
 				}
 				continue
 			}
