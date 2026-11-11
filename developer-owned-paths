@@ -3,7 +3,7 @@
 # named in loop-identities). One pattern a line, a shell glob that is also a git pathspec.
 .github/*
 */contract.go
-internal/database/schema.sql
+internal/database/schema/*
 CLAUDE.md
 check.sh
 .golangci.*

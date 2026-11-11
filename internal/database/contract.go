@@ -11,8 +11,8 @@
 // reading the schema version and the server's row, and in it the server's settings: which of
 // Telnet, SSH and Telnet over TLS it runs, and their ports; and the lease: taking it, renewing it
 // every RenewSeconds while it is held, telling the program once it is lost, and ending it at a
-// stop. The schema and what a server's login may do with it are schema.sql, beside this file, and
-// Schema holds it.
+// stop. The schema and what a server's login may do with it are schema/schema.sql, in the schema
+// folder beside this file, which holds the unit's schema files and nothing else; Schema holds it.
 //
 // It does not own waiting and trying again, the listeners, or the local log: the program decides
 // from each error whether to wait or to stop, opens and closes the listeners, and writes every log
@@ -72,7 +72,7 @@ package database
 
 import (
 	"context"
-	_ "embed" // Schema is schema.sql, embedded.
+	_ "embed" // Schema is schema/schema.sql, embedded.
 	"errors"
 )
 
@@ -99,9 +99,9 @@ const (
 )
 
 // Schema is the board's schema, version SchemaVersionMadeFor, and the rights of a server's login:
-// schema.sql, run once by the owner login.
+// schema/schema.sql, run once by the owner login.
 //
-//go:embed schema.sql
+//go:embed schema/schema.sql
 var Schema string
 
 // Why ParseConnection refused the connection settings. None holds any part of them, so the
