@@ -33,6 +33,19 @@ type leaseState struct {
 	cancel     context.CancelFunc
 	stopped    chan struct{}
 	endOnce    sync.Once
+	// settings is a placeholder until the build reads them with the lease.
+	settings Settings
+}
+
+func settingText(failure *SettingError) string {
+	if failure == nil {
+		return ErrSetting.Error()
+	}
+	return "database: the setting " + failure.Setting + " is outside 0 to 65535"
+}
+
+func (lease *Lease) settings() Settings {
+	return lease.state.settings
 }
 
 func schemaVersionText(failure *SchemaVersionError) string {
