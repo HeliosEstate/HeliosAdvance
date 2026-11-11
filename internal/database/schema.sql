@@ -2,10 +2,12 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 
 -- The board's schema, version 2, and what a server's login may do with it: database Parts 1 and
--- 2's records and grants as the developer approved them. It runs once, under the owner login that only
--- hadv-setup uses, which then owns the schema and every table in it. The role hadv_server must
--- exist first, with no login: each server's own login is a member of it and is granted nothing
--- else. A change here is a new schema version, additive only, by the developer's pull request.
+-- 2's records and grants as the developer approved them. It is the whole schema of its version,
+-- run once on a new database, under the owner login that only hadv-setup uses, which then owns the
+-- schema and every table in it; upgrading a database of an older version is hadv-setup's. The
+-- role hadv_server must exist first, with no login: each server's own login is a member of it and
+-- is granted nothing else. A change here is a new schema version, additive only against the
+-- version before it, by the developer's pull request.
 
 CREATE SCHEMA hadv;
 
@@ -27,17 +29,20 @@ CREATE TABLE hadv.servers (
     lease_holder uuid,
     lease_until timestamptz NOT NULL,
     telnet_on boolean NOT NULL DEFAULT false,
-    telnet_port integer NOT NULL DEFAULT 23 CHECK (telnet_port BETWEEN 0 AND 65535),
+    telnet_port integer NOT NULL DEFAULT 23
+        CONSTRAINT telnet_port_range CHECK (telnet_port BETWEEN 0 AND 65535),
     ssh_on boolean NOT NULL DEFAULT false,
-    ssh_port integer NOT NULL DEFAULT 22 CHECK (ssh_port BETWEEN 0 AND 65535),
+    ssh_port integer NOT NULL DEFAULT 22
+        CONSTRAINT ssh_port_range CHECK (ssh_port BETWEEN 0 AND 65535),
     telnets_on boolean NOT NULL DEFAULT false,
-    telnets_port integer NOT NULL DEFAULT 992 CHECK (telnets_port BETWEEN 0 AND 65535)
+    telnets_port integer NOT NULL DEFAULT 992
+        CONSTRAINT telnets_port_range CHECK (telnets_port BETWEEN 0 AND 65535)
 );
 
--- A server's login reads the two tables, its settings among them, and changes only the lease. It inserts, deletes, creates,
--- alters and drops nothing: PostgreSQL's default right for everyone to make temporary tables and
--- functions in this database is taken away first. The owner login owns this database, so it may
--- take it away.
+-- A server's login reads the two tables, its settings among them, and changes only the lease. It
+-- inserts, deletes, creates, alters and drops nothing: PostgreSQL's default right for everyone to
+-- make temporary tables and functions in this database is taken away first. The owner login owns
+-- this database, so it may take it away.
 DO $$
 BEGIN
     EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());

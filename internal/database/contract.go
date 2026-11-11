@@ -9,10 +9,10 @@
 // PostgreSQL over TLS and signing in by SCRAM-SHA-256 with channel binding, on
 // github.com/jackc/pgx/v5 at v5.11.0 or later; refusing a login that could change the schema;
 // reading the schema version and the server's row, and in it the server's settings: which of
-// Telnet, SSH and Telnet over TLS it runs, and their ports; and the lease: taking it, renewing it every
-// RenewSeconds while it is held, telling the program once it is lost, and ending it at a stop. The
-// schema and what a server's login may do with it are schema.sql, beside this file, and Schema
-// holds it.
+// Telnet, SSH and Telnet over TLS it runs, and their ports; and the lease: taking it, renewing it
+// every RenewSeconds while it is held, telling the program once it is lost, and ending it at a
+// stop. The schema and what a server's login may do with it are schema.sql, beside this file, and
+// Schema holds it.
 //
 // It does not own waiting and trying again, the listeners, or the local log: the program decides
 // from each error whether to wait or to stop, opens and closes the listeners, and writes every log
@@ -31,18 +31,20 @@
 // anyone, and nothing is sent to it but the TLS handshake. After it, the library reads every reply
 // from the database: the sign-in, the rows and the errors, each message at most ReplyMostBytes.
 // This package reads one integer, one row of nine columns and the login's rights from those
-// replies, and keeps none of the database's text in an error. A port setting outside 0 to 65535
-// is refused, though the database's own check refuses one too, since turning it into a port would
-// wrap it silently. The connection settings are
-// hadv-setup's, sealed in the bootstrap file, not a caller's; they reach this package only once
-// the bootstrap unit has unsealed them, which bounds them. No caller's byte reaches this package.
-// There is no fuzz target here: the standard library parses the JSON and the library the wire.
+// replies, and keeps none of the database's text in an error. A setting that is empty, not of its
+// kind, or a port outside 0 to 65535 is refused, though the schema refuses each too, since a
+// value crosses this boundary and turning it into a port would wrap it silently. The connection
+// settings are hadv-setup's, sealed in the bootstrap file, not a caller's; they reach this package
+// only once the bootstrap unit has unsealed them, which bounds them. No caller's byte reaches this
+// package. There is no fuzz target here: the standard library parses the JSON and the library the
+// wire.
 //
 // # Oracles
 //
 // PostgreSQL itself, a real server driven from outside: the tests create the database from Schema
 // as the owner, a server's login as a member of hadv_server, the row and the bootstrap folder, as
-// hadv-setup will; read and write hadv.servers with SQL; stop and start the server; change its
+// hadv-setup will; read and write hadv.servers with SQL, and drop a column's check or its NOT NULL
+// to plant a value the schema refuses; stop and start the server; change its
 // sign-in rules; and make their own certificate authority, signing with ECDSA P-256 and SHA-256.
 // Tests run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user.
 //
@@ -171,14 +173,15 @@ func (failure *SchemaVersionError) Unwrap() error {
 }
 
 // ErrSetting is what a SettingError matches through errors.Is.
-var ErrSetting = errors.New("database: a port setting is outside 0 to 65535")
+var ErrSetting = errors.New("database: a setting is empty, not of its kind, or a port outside 0 to 65535")
 
-// SettingError means a port setting in the server's row is outside 0 to 65535. The database's own
-// check refuses such a value, but it crosses a trust boundary, and turning it into a port would
-// wrap it silently. It matches ErrSetting through errors.Is, and names the column, never the
-// value or text the database sent.
+// SettingError means a setting in the server's row is empty, not of its kind (a boolean for an
+// on-or-off setting, an integer for a port), or a port outside 0 to 65535. The schema refuses each,
+// but the value crosses a trust boundary, and turning it into a port would wrap it silently. It
+// matches ErrSetting through errors.Is, and names the column, never the value or text the
+// database sent.
 type SettingError struct {
-	// Setting is the column: telnet_port, ssh_port or telnets_port.
+	// Setting is the column: telnet_on, telnet_port, ssh_on, ssh_port, telnets_on or telnets_port.
 	Setting string
 }
 
@@ -307,15 +310,15 @@ func NewServerDatabase(connection Connection) *ServerDatabase {
 //     *SchemaVersionError naming the version found, or Missing.
 //   - If hadv.servers holds no row for the Connection's server ID, then Take shall return
 //     ErrNoServerRow.
-//   - If telnet_port, ssh_port or telnets_port in the server's row is outside 0 to 65535, then
-//     Take shall return a *SettingError naming that column, and change nothing.
+//   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
+//     then Take shall return ErrLeaseHeld and change nothing.
+//   - If one of the six settings in the server's row is empty, not of its kind, or a port outside
+//     0 to 65535, then Take shall return a *SettingError naming that column, and change nothing.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase
 //     last sent, Take shall write a new random lease holder and a lease end LeaseSeconds after
 //     the database's current time to that row, and return the Lease.
-//   - Take shall return a Lease whose Settings are the six settings as the server's row held
-//     them when Take wrote the lease.
-//   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
-//     then Take shall return ErrLeaseHeld and change nothing.
+//   - Take shall return a Lease whose Settings are the six settings the server's row holds, read
+//     in the same Take.
 //   - If the database refuses for any reason the lines above do not name, then Take shall return
 //     ErrRefused.
 //   - If the context has ended when Take is called, or ends while it waits, then Take shall
@@ -358,8 +361,8 @@ func (lease *Lease) Lost() <-chan struct{} {
 	return lease.lost()
 }
 
-// Settings returns the server's settings as they stood when this Lease was taken. They hold until
-// the next Take: a setting changed while the Lease is held does not change them.
+// Settings returns the server's settings as they stood when this Lease was taken. They are fixed
+// for this Lease: a setting changed while it is held reaches only the Lease of a later Take.
 func (lease *Lease) Settings() Settings {
 	return lease.settings()
 }
@@ -371,8 +374,9 @@ func (lease *Lease) Settings() Settings {
 //
 //   - EndLease shall set the row's lease end to the database's current time, only while the row's
 //     lease holder is its own, waiting on the database at most EndWaitMilliseconds.
-//   - When the database has ended the Lease's connection, EndLease shall still set the lease end,
-//     over a new connection, within the same EndWaitMilliseconds.
+//   - When the database has ended the Lease's connection, EndLease shall still set the lease end
+//     within the same EndWaitMilliseconds, connecting as Take does: over TLS 1.2 or 1.3, only to a
+//     certificate that passes Take's check, and only by SCRAM-SHA-256 with channel binding.
 //   - EndLease shall stop the renewals and close the Lease's connection before it returns.
 func (lease *Lease) EndLease() {
 	lease.endLease()

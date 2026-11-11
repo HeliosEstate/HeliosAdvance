@@ -41,7 +41,7 @@ func settingText(failure *SettingError) string {
 	if failure == nil {
 		return ErrSetting.Error()
 	}
-	return "database: the setting " + failure.Setting + " is outside 0 to 65535"
+	return "database: the setting " + failure.Setting + " is empty, not of its kind, or a port outside 0 to 65535"
 }
 
 func (lease *Lease) settings() Settings {
