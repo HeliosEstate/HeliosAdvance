@@ -21,8 +21,8 @@ var sshTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}
 func newSSHListener(ctx context.Context, port string, key *ssh.HostKey,
 	count *listener.ConnectionCount, texts *language.Texts,
 ) (*listener.Listener, []string, error) {
-	return newKindListener(ctx, sshTargets, port,
-		func(ctx context.Context, connection *net.TCPConn) (*ssh.Channel, error) {
-			return ssh.Accept(ctx, connection, key)
-		}, count, texts)
+	accept := func(ctx context.Context, connection *net.TCPConn) (*ssh.Channel, error) {
+		return ssh.Accept(ctx, connection, key)
+	}
+	return newKindListener(ctx, sshTargets, port, accept, count, texts)
 }

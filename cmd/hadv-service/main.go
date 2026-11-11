@@ -208,8 +208,8 @@ func newLocalLog(output io.Writer) func(key, value string) {
 
 // commandLine is what the sysop asked for: the ports as decimal strings, the bootstrap folder that
 // holds what the database needs, the host key file that turns SSH on, and the certificate and key
-// files that turn Telnet over TLS on, and the log file that takes the local log from standard
-// output.
+// files that turn Telnet over TLS on, the log file that takes the local log from standard
+// output, and the code of the board's language.
 type commandLine struct {
 	telnetPort      string
 	sshPort         string

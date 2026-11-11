@@ -19,8 +19,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// keySpec is a text the engine shows and the placeholders it is given. Load, Text and Missing all
-// take the keys from this one list, in the contract's order.
+// keySpec pairs a text's key with its placeholders, so that Load, Text and Missing cannot
+// disagree on either.
 type keySpec struct {
 	key   string
 	given []string
@@ -32,14 +32,14 @@ var keySpecs = []keySpec{
 	{KeyNameReply, []string{PlaceholderName}},
 }
 
-// part is a run of characters, or the placeholder of that name.
+// part is kept apart from the others so that a value put in a placeholder's place is never
+// parsed as a text.
 type part struct {
 	text        string
 	placeholder bool
 }
 
-// textsState holds each key's text as parts, so a value put in a placeholder's place is never
-// parsed again.
+// textsState holds each key's text already read, so Text never reads a file's syntax again.
 type textsState struct {
 	parts   map[string][]part
 	missing []string
@@ -54,7 +54,7 @@ var tagPattern = regexp.MustCompile(`^(?:(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4
 	`|i-(?:ami|bnn|default|enochian|hak|klingon|lux|mingo|navajo|pwn|tao|tay|tsu)` +
 	`|sgn-(?:be-fr|be-nl|ch-de))$`)
 
-// language is one folder of the language folder, with what is kept of its file.
+// language keeps of each file only what Load still needs once the bytes are dropped.
 type language struct {
 	code string
 	path string
@@ -149,7 +149,8 @@ func find(root *os.Root, folder string) ([]*language, error) {
 	return languages, nil
 }
 
-// hasOwnFile says whether the entry is a folder holding a file of its own name and .toml.
+// hasOwnFile judges the entry on its opened handle, so a link cannot change what was judged
+// between the check and the use.
 func hasOwnFile(root *os.Root, name string) (bool, string) {
 	opened, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
