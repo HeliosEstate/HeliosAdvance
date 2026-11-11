@@ -95,7 +95,8 @@ func (state *channelState) writeLoop() {
 
 // discardBufferSize is larger than ReadBufferSize because the library sends a window adjustment
 // after nearly every read of extended data once a backlog stands, so a larger buffer sends far
-// fewer of them.
+// fewer of them. It is 32 KiB because that is the library's largest incoming packet: each read
+// can take a whole packet. Do not shrink it, or the adjustments come back.
 const discardBufferSize = 32 * 1024
 
 // drainExtended reads and discards the caller's stderr-coded data through a buffer of its own,
