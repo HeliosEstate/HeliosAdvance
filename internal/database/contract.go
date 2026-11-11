@@ -43,8 +43,8 @@
 //
 // PostgreSQL itself, a real server driven from outside: the tests create the database from Schema
 // as the owner, a server's login as a member of hadv_server, the row and the bootstrap folder, as
-// hadv-setup will; read and write hadv.servers with SQL, and drop a column's check or its NOT NULL
-// to plant a value the schema refuses; stop and start the server; change its
+// hadv-setup will; read and write hadv.servers with SQL, and drop a column's check or its NOT NULL,
+// or change its type, to plant a value the schema refuses; stop and start the server; change its
 // sign-in rules; and make their own certificate authority, signing with ECDSA P-256 and SHA-256.
 // Tests run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user.
 //
