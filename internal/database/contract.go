@@ -135,11 +135,11 @@ var (
 	ErrRefused = errors.New("database: the database refuses")
 	// ErrLeaseHeld means the server's lease has not ended and its holder is not this run's own.
 	ErrLeaseHeld = errors.New("database: the server's lease is held by another run")
-	// ErrTemporary means the database answered that it cancelled the statement (57014,
-	// query_canceled), that a lock was not available (55P03, lock_not_available), that a clash
-	// with another transaction stopped it (40001, serialization_failure; 40P01,
-	// deadlock_detected), or that its disk or memory ran out (53100, disk_full; 53200,
-	// out_of_memory): each passes without anyone changing a setting.
+	// ErrTemporary is what a TemporaryError matches through errors.Is: the database answered that
+	// it cancelled the statement (57014, query_canceled), that a lock was not available (55P03,
+	// lock_not_available), that a clash with another transaction stopped it (40001,
+	// serialization_failure; 40P01, deadlock_detected), or that its disk or memory ran out (53100,
+	// disk_full; 53200, out_of_memory): each passes without anyone changing a setting.
 	ErrTemporary = errors.New("database: the database refused for a reason that passes on its own")
 	// ErrCertificate means the database's certificate does not chain to the Connection's
 	// certificate authority, does not name its host, or cannot be used for channel binding.
@@ -199,6 +199,40 @@ func (failure *SettingError) Error() string {
 // Unwrap returns ErrSetting, so errors.Is matches it.
 func (failure *SettingError) Unwrap() error {
 	return ErrSetting
+}
+
+// TemporaryReason is which of the four refusals that pass on their own the database gave, so the
+// program can say which: a sysop who reads that the disk or memory ran out has something to fix,
+// and one who reads that a lock was not available looks elsewhere.
+type TemporaryReason int
+
+// The four reasons, each with the SQLSTATE codes behind it.
+const (
+	// TemporaryCancelled means the database cancelled the statement (57014).
+	TemporaryCancelled TemporaryReason = iota + 1
+	// TemporaryLockNotAvailable means a lock was not available (55P03).
+	TemporaryLockNotAvailable
+	// TemporaryClash means a clash with another transaction stopped it (40001, 40P01).
+	TemporaryClash
+	// TemporaryRanOut means the database's disk or memory ran out (53100, 53200).
+	TemporaryRanOut
+)
+
+// TemporaryError means the database refused for a reason that passes on its own, and says which.
+// It matches ErrTemporary through errors.Is, and holds the reason, never text the database sent.
+type TemporaryError struct {
+	// Reason is which of the four it was.
+	Reason TemporaryReason
+}
+
+// Error names the reason.
+func (failure *TemporaryError) Error() string {
+	return temporaryText(failure)
+}
+
+// Unwrap returns ErrTemporary, so errors.Is matches it.
+func (failure *TemporaryError) Unwrap() error {
+	return ErrTemporary
 }
 
 // Settings are the server's settings, as its row in hadv.servers held them when the lease was
@@ -319,7 +353,9 @@ func NewServerDatabase(connection Connection) *ServerDatabase {
 //   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
 //     then Take shall return ErrLeaseHeld and change nothing.
 //   - If the database answers with SQLSTATE 57014, 55P03, 40001, 40P01, 53100 or 53200, then
-//     Take shall return ErrTemporary and change nothing.
+//     Take shall return a *TemporaryError naming which: TemporaryCancelled for 57014,
+//     TemporaryLockNotAvailable for 55P03, TemporaryClash for 40001 and 40P01, TemporaryRanOut
+//     for 53100 and 53200; and change nothing.
 //   - If one of the six settings in the server's row is empty, not of its kind, or a port outside
 //     0 to 65535, then Take shall return a *SettingError naming that column, and change nothing.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase
