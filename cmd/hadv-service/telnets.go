@@ -5,11 +5,9 @@ package main
 
 import (
 	"context"
-	"net"
 
 	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
-	"github.com/heliosestate/heliosadvance/internal/telnet"
 	"github.com/heliosestate/heliosadvance/internal/telnets"
 )
 
@@ -23,8 +21,5 @@ var telnetsTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Addr
 func newTelnetsListener(ctx context.Context, port string, certificate *telnets.Certificate,
 	count *listener.ConnectionCount, texts *language.Texts,
 ) (*listener.Listener, []string, error) {
-	accept := func(ctx context.Context, connection *net.TCPConn) (*telnet.Line, error) {
-		return telnets.Accept(ctx, connection, certificate)
-	}
-	return newKindListener(ctx, telnetsTargets, port, accept, count, texts)
+	return newCredentialListener(ctx, telnetsTargets, port, certificate, telnets.Accept, count, texts)
 }

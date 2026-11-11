@@ -386,3 +386,15 @@ func newKindListener[K listener.KindConnection](ctx context.Context, targets []t
 	}
 	return kindListener, addresses, nil
 }
+
+// newCredentialListener is newKindListener for a kind whose Accept needs what was read at start,
+// the SSH host key or the Telnet over TLS certificate, so that each kind states only its Accept.
+func newCredentialListener[C any, K listener.KindConnection](ctx context.Context, targets []target,
+	port string, credential C, accept func(context.Context, *net.TCPConn, C) (K, error),
+	count *listener.ConnectionCount, texts *language.Texts,
+) (*listener.Listener, []string, error) {
+	bound := func(ctx context.Context, connection *net.TCPConn) (K, error) {
+		return accept(ctx, connection, credential)
+	}
+	return newKindListener(ctx, targets, port, bound, count, texts)
+}
