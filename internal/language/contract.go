@@ -50,7 +50,7 @@
 //   - The language package shall write nothing to a file, standard output, standard error or any
 //     log. [read]
 //   - The language package shall import nothing outside the Go standard library and
-//     github.com/BurntSushi/toml. [read]
+//     github.com/pelletier/go-toml/v2. [read]
 package language
 
 import "errors"
