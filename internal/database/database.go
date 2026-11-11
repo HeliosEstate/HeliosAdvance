@@ -44,6 +44,11 @@ func settingText(failure *SettingError) string {
 	return "database: the setting " + failure.Setting + " is empty, not of its kind, or a port outside 0 to 65535"
 }
 
+// temporaryText is a placeholder until the build words each reason.
+func temporaryText(_ *TemporaryError) string {
+	return ErrTemporary.Error()
+}
+
 func (lease *Lease) settings() Settings {
 	return lease.state.settings
 }
