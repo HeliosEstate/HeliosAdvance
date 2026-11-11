@@ -2,7 +2,7 @@
 
 A second reader and writer of the bootstrap file, format version 1, under each of its key
 holders. It was written from the format's description and nothing else, never from the engine's
-code, and changed the same way each time the format grew. The engine's code is written
+code, and changed the same way each time the format changed. The engine's code is written
 separately from the same description. When the two disagree about a file, one of them misread
 the description. Free Pascal, with its own AES-256 and GCM (FIPS-197, SP 800-38D), so the oracle
 and the engine share no code at all.
