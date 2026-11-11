@@ -63,7 +63,7 @@ func goodFolder(t *testing.T) *bootstrapFolder {
 // file broken as the oracle's edits say.
 func brokenFolder(t *testing.T, edits string) *bootstrapFolder {
 	t.Helper()
-	return makeBootstrapFolder(t, []byte(sharedRowSettings(t).text(t)), edits)
+	return makeBootstrapFolder(t, []byte(sharedRowSettings(t, telnetAt(0)).text(t)), edits)
 }
 
 // keyBase is a good key file's 44 characters, without its line ending.
@@ -75,7 +75,7 @@ func (made *bootstrapFolder) keyBase() string {
 // a non-zero exit, and neither a password nor the key in its log, and returns the reason.
 func (made *bootstrapFolder) refused(t *testing.T) string {
 	t.Helper()
-	program := startWithFile(t, made.path, nil, portOption, "0")
+	program := startWithFile(t, made.path, nil)
 	reason := program.expectRefusal(t)
 	expectNoPassword(t, program)
 	made.expectKeyNotIn(t, program.text())
@@ -86,7 +86,7 @@ func (made *bootstrapFolder) refused(t *testing.T) string {
 // password nor the key in its log.
 func (made *bootstrapFolder) starts(t *testing.T) {
 	t.Helper()
-	program := startWithFile(t, made.path, nil, portOption, "0")
+	program := startWithFile(t, made.path, nil)
 	program.listening(t)
 	expectNoPassword(t, program)
 	made.expectKeyNotIn(t, program.text())
@@ -356,16 +356,16 @@ func TestBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for a kind its server's settings turn on, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the old -database and a connection file, beside a good bootstrap folder: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			settings := sharedRowSettings(t)
+			settings := sharedRowSettings(t, telnetAt(0))
 			old := filepath.Join(t.TempDir(), "connection.json")
 			if err := os.WriteFile(old, []byte(settings.text(t)), 0o600); err != nil {
 				t.Fatalf("writing the old connection file: %v", err)
 			}
-			program := startWithFile(t, settings.write(t), nil, portOption, "0", "-database", old)
+			program := startWithFile(t, settings.write(t), nil, "-database", old)
 			reason := program.expectRefusal(t)
 			expectNoPassword(t, program)
 			expectOwnReason(t, reason, keyMissingReason(t), "a missing key file")
@@ -377,7 +377,7 @@ func TestBootstrapProgram(t *testing.T) {
 // settings padded with spaces so the bootstrap file is exactly size bytes.
 func paddedFolder(t *testing.T, size int) *bootstrapFolder {
 	t.Helper()
-	text := sharedRowSettings(t).text(t)
+	text := sharedRowSettings(t, telnetAt(0)).text(t)
 	plain := size - sealedOverhead
 	if len(text) > plain {
 		t.Fatalf("the settings are %d bytes, more than %d: a fault in the test", len(text), plain)

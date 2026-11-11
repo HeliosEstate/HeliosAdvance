@@ -330,7 +330,7 @@ func TestPlinkClient(t *testing.T) {
 			t.Parallel()
 			t.Run("Plink, -telnet -batch, its input a pipe: it negotiates, shows the greeting, the prompt and Hello Bob", func(t *testing.T) {
 				t.Parallel()
-				program := startProgram(t, portOption, "0")
+				program := startProgram(t, telnetAt(0))
 				link := startRelay(t, program.listening(t)[0])
 				_, port, err := net.SplitHostPort(link.address)
 				if err != nil {
@@ -355,7 +355,7 @@ func TestLinuxTelnetClient(t *testing.T) {
 			t.Parallel()
 			t.Run("the stock telnet client, its input a pipe: it negotiates, shows the greeting, the prompt and Hello Bob", func(t *testing.T) {
 				t.Parallel()
-				program := startProgram(t, portOption, "0")
+				program := startProgram(t, telnetAt(0))
 				link := startRelay(t, program.listening(t)[0])
 				host, port, err := net.SplitHostPort(link.address)
 				if err != nil {
@@ -376,7 +376,7 @@ func TestNothingKept(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
 			directory := t.TempDir()
-			command := exec.CommandContext(t.Context(), programPath, databaseOption, sharedRowFile(t), portOption, "0")
+			command := exec.CommandContext(t.Context(), programPath, databaseOption, sharedRowFile(t, telnetAt(0)))
 			command.Dir = directory
 			program := startCommand(t, command)
 			call := dial(t, program.listening(t)[0])

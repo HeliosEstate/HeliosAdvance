@@ -62,14 +62,14 @@ func expectSSHServed(t *testing.T, address string) caller {
 // malformedReason is the reason the program gives for a command line it cannot read.
 func malformedReason(t *testing.T) string {
 	t.Helper()
-	return startProgram(t, portOption, "abc").expectRefusal(t)
+	return startProgram(t, telnetAt(0), portOption, "abc").expectRefusal(t)
 }
 
 // hostKeyReason is the reason the program gives when it refuses the key file at path, which must
 // differ from a malformed command line's: the option was read, and the file refused.
 func hostKeyReason(t *testing.T, path string) string {
 	t.Helper()
-	reason := startProgram(t, portOption, "0", hostKeyOption, path, sshPortOption, "0").expectRefusal(t)
+	reason := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, path).expectRefusal(t)
 	if reason == malformedReason(t) {
 		t.Fatalf("the program refused the key file as a malformed command line: %q", reason)
 	}
@@ -82,7 +82,7 @@ func hostKeyReason(t *testing.T, path string) string {
 // was for what the row changed.
 func expectSSHStarts(t *testing.T) {
 	t.Helper()
-	_, ssh := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0").kinds(t)
+	_, ssh := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", "")).kinds(t)
 	loopbackPorts(t, ssh)
 }
 
@@ -113,15 +113,15 @@ func opensAt(t *testing.T, port string) []string {
 	return free
 }
 
-// defaultSSHPortRow is the row for port 22 by default. The program listens for SSH at every
-// address where 22 opened just before; where it opened at neither, because something else holds
-// it or the system keeps it from an ordinary user, the program refuses to start, while the same
-// command with an SSH port the system picks starts.
+// defaultSSHPortRow is the row for the seeded port, 22, in ssh_port. The program listens for SSH
+// at every address where 22 opened just before; where it opened at neither, because something
+// else holds it or the system keeps it from an ordinary user, the program refuses to start, while
+// the same command with an SSH port the system picks starts.
 func defaultSSHPortRow(t *testing.T) {
 	t.Helper()
 	key := makeKey(t, "ed25519", "")
 	free := opensAt(t, "22")
-	program := startProgram(t, portOption, "0", hostKeyOption, key)
+	program := startProgram(t, telnetAt(0).withSSH(seededSSHPort), hostKeyOption, key)
 	if len(free) > 0 {
 		_, ssh := program.kinds(t)
 		expectAddresses(t, ssh, free...)
@@ -134,21 +134,21 @@ func defaultSSHPortRow(t *testing.T) {
 		return
 	}
 	program.expectRefusal(t)
-	_, ssh := startProgram(t, portOption, "0", hostKeyOption, key, sshPortOption, "0").kinds(t)
+	_, ssh := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, key).kinds(t)
 	loopbackPorts(t, ssh)
 }
 
 func TestSSHProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("When the sysop passes an SSH port on the command line as well, the engine shall listen for SSH callers on that port in place of port 22.", func(t *testing.T) {
+	t.Run("The engine shall listen for SSH callers at 127.0.0.1 and ::1 on its server's `ssh_port`, beside its other listeners.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -ssh-port and a free port, it names and serves that port at both addresses, beside Telnet's", func(t *testing.T) {
+		t.Run("ssh_port a free port, it names and serves that port at both addresses, beside Telnet's", func(t *testing.T) {
 			t.Parallel()
 			key := makeKey(t, "ed25519", "")
-			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
-				return []string{portOption, "0", hostKeyOption, key, sshPortOption, port}
-			})
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port int) services {
+				return telnetAt(0).withSSH(port)
+			}, hostKeyOption, key)
 			telnet, ssh := kindsOf(t, listeners)
 			expectAddresses(t, ssh, net.JoinHostPort(ipv4Loopback, port), net.JoinHostPort(ipv6Loopback, port))
 			loopbackPorts(t, telnet)
@@ -157,15 +157,6 @@ func TestSSHProgram(t *testing.T) {
 			}
 			for _, address := range telnet {
 				expectServed(t, address)
-			}
-		})
-		t.Run("with -ssh-port 0, it names and serves a port the system picked at each address", func(t *testing.T) {
-			t.Parallel()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
-			_, ssh := program.kinds(t)
-			loopbackPorts(t, ssh)
-			for _, address := range ssh {
-				expectSSHServed(t, address)
 			}
 		})
 	})
@@ -224,44 +215,63 @@ func TestSSHProgram(t *testing.T) {
 		}
 		t.Run("the edge: an Ed25519 key with no passphrase, as ssh-keygen makes it, starts", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", ""))
 			_, ssh := program.kinds(t)
 			loopbackPorts(t, ssh)
 		})
+		t.Run("a key file missing with SSH off: still read and refused, one start_failed line, and a non-zero exit", func(t *testing.T) {
+			t.Parallel()
+			startProgram(t, telnetAt(0), hostKeyOption, filepath.Join(t.TempDir(), "absent")).expectRefusal(t)
+			expectSSHStarts(t)
+		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for a kind its server's settings turn on, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		withKey := func(t *testing.T, options ...string) []string {
 			t.Helper()
-			return append([]string{portOption, "0", hostKeyOption, makeKey(t, "ed25519", "")}, options...)
+			return append([]string{hostKeyOption, makeKey(t, "ed25519", "")}, options...)
 		}
 		rows := []struct {
 			name    string
 			options func(t *testing.T) []string
 		}{
-			{"-ssh-port without -ssh-host-key", func(*testing.T) []string { return []string{portOption, "0", sshPortOption, "0"} }},
+			{"-ssh-port without -ssh-host-key", func(*testing.T) []string { return []string{sshPortOption, "0"} }},
 			{"-ssh-port abc with a key", func(t *testing.T) []string { t.Helper(); return withKey(t, sshPortOption, "abc") }},
 			{"-ssh-port 65536 with a key", func(t *testing.T) []string { t.Helper(); return withKey(t, sshPortOption, "65536") }},
 			{"-ssh-port -1 with a key", func(t *testing.T) []string { t.Helper(); return withKey(t, sshPortOption, "-1") }},
 			{"-ssh-port with no value", func(t *testing.T) []string { t.Helper(); return withKey(t, sshPortOption) }},
-			{"-ssh-host-key with no value", func(*testing.T) []string { return []string{portOption, "0", hostKeyOption} }},
+			{"-ssh-host-key with no value", func(*testing.T) []string { return []string{hostKeyOption} }},
 		}
 		for _, row := range rows {
 			t.Run(row.name+": one start_failed line and a non-zero exit, where a good key starts", func(t *testing.T) {
 				t.Parallel()
-				options := row.options(t)
-				startProgram(t, options...).expectRefusal(t)
+				startProgram(t, telnetAt(0).withSSH(0), row.options(t)...).expectRefusal(t)
 				expectSSHStarts(t)
 			})
 		}
-		t.Run("SSH's port taken at both addresses while Telnet's is free: one start_failed line and a non-zero exit, where a free port starts", func(t *testing.T) {
+		t.Run("-ssh-port 0 with a key, the option gone: one start_failed line and a non-zero exit, where the same settings without it, SSH at a port freed for it, are named at that port", func(t *testing.T) {
+			t.Parallel()
+			key := makeKey(t, "ed25519", "")
+			startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, key, sshPortOption, "0").expectRefusal(t)
+			expectServedAtColumn(t, schemeSSH, func(port int) services { return telnetAt(0).withSSH(port) }, hostKeyOption, key)
+		})
+		t.Run("ssh_port taken by the test at both addresses while Telnet's is free: one start_failed line and a non-zero exit, where the same settings at a port freed for it are named at that port", func(t *testing.T) {
 			t.Parallel()
 			sshPort, _, _ := heldPort(t)
+			key := makeKey(t, "ed25519", "")
 			// Telnet's port is one the system picks, so it is free and the refusal is SSH's: a
 			// port freed for the program could be taken by anything in the gap.
-			startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, sshPort).expectRefusal(t)
-			expectSSHStarts(t)
+			startProgram(t, telnetAt(0).withSSH(portNumber(t, sshPort)), hostKeyOption, key).expectRefusal(t)
+			expectServedAtColumn(t, schemeSSH, func(port int) services { return telnetAt(0).withSSH(port) }, hostKeyOption, key)
+		})
+		t.Run("SSH off, ssh_port taken by the test at both addresses, a key given: it starts, Telnet's alone", func(t *testing.T) {
+			t.Parallel()
+			sshPort, _, _ := heldPort(t)
+			settings := telnetAt(0)
+			settings.sshPort = portNumber(t, sshPort)
+			// listeners fails a started line that names SSH, which is off.
+			loopbackPorts(t, startProgram(t, settings, hostKeyOption, makeKey(t, "ed25519", "")).listening(t))
 		})
 	})
 
@@ -269,7 +279,7 @@ func TestSSHProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("fifty Telnet and fifty SSH callers: the next of either kind is closed at once, an SSH one before any version line", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", ""))
 			telnet, ssh := program.kinds(t)
 			for range connectionCap / 2 {
 				expectServed(t, telnet[0])
@@ -290,7 +300,7 @@ func TestSSHProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with SSH on, 127.0.0.2 and this machine's other addresses are refused at the SSH ports too", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", ""))
 			_, ssh := program.kinds(t)
 			ipv4Port, ipv6Port := loopbackPorts(t, ssh)
 			for _, address := range ssh {
@@ -313,9 +323,9 @@ func TestSSHProgram(t *testing.T) {
 		t.Run("SSH's port taken at 127.0.0.1: it names and serves SSH at ::1 alone", func(t *testing.T) {
 			t.Parallel()
 			key := makeKey(t, "ed25519", "")
-			port, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port string) []string {
-				return []string{portOption, "0", hostKeyOption, key, sshPortOption, port}
-			})
+			port, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port int) services {
+				return telnetAt(0).withSSH(port)
+			}, hostKeyOption, key)
 			_, ssh := kindsOf(t, listeners)
 			expectAddresses(t, ssh, net.JoinHostPort(ipv6Loopback, port))
 			expectSSHServed(t, ssh[0])
@@ -328,7 +338,7 @@ func TestSSHProgram(t *testing.T) {
 		t.Run(signal.name+": a silent SSH caller that has read the version line is closed, and the program exits, at once", func(t *testing.T) {
 			t.Parallel()
 			send := signal.prepare(t)
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", ""))
 			_, ssh := program.kinds(t)
 			silent := expectSSHServed(t, ssh[0])
 			from, sentBy := send(t, program)
@@ -354,7 +364,7 @@ func TestSSHProgram(t *testing.T) {
 			t.Run(row.name+": the log holds no 8 characters in a row of the key file", func(t *testing.T) {
 				t.Parallel()
 				key := row.key(t)
-				program := startProgram(t, portOption, "0", hostKeyOption, key, sshPortOption, "0")
+				program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, key)
 				program.expectRefusal(t)
 				expectSSHStarts(t)
 				expectNoKeyInLog(t, program.text(), key)
@@ -371,9 +381,22 @@ func TestLinuxSSHProgram(t *testing.T) {
 		t.Fatalf("these rows need an ordinary user: root reads a file of any mode, and listens at 22")
 	}
 
-	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.", func(t *testing.T) {
+	t.Run("The engine shall listen for SSH callers at 127.0.0.1 and ::1 on its server's `ssh_port`, beside its other listeners.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with a host key and no SSH port, as an ordinary user who may not listen below 1024: refused, where an SSH port the system picks starts", func(t *testing.T) {
+		t.Run("ssh_port 65535, the highest port, it names and serves it", func(t *testing.T) {
+			t.Parallel()
+			highestPort.Lock()
+			defer highestPort.Unlock()
+			program := startProgram(t, telnetAt(0).withSSH(65535), hostKeyOption, makeKey(t, "ed25519", ""))
+			_, ssh := program.kinds(t)
+			expectAddresses(t, ssh, "127.0.0.1:65535", "[::1]:65535")
+			for _, address := range ssh {
+				expectSSHServed(t, address)
+			}
+			_ = program.command.Process.Kill()
+			<-program.exited
+		})
+		t.Run("ssh_port the seeded 22, as an ordinary user who may not listen below 1024: refused, where an SSH port the system picks starts", func(t *testing.T) {
 			t.Parallel()
 			setting, err := os.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start")
 			if err != nil {
@@ -409,7 +432,7 @@ func TestLinuxSSHProgram(t *testing.T) {
 				if err := os.Chmod(path, mode); err != nil {
 					t.Fatal(err)
 				}
-				_, ssh := startProgram(t, portOption, "0", hostKeyOption, path, sshPortOption, "0").kinds(t)
+				_, ssh := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, path).kinds(t)
 				loopbackPorts(t, ssh)
 			})
 		}
@@ -421,27 +444,10 @@ func TestLinuxSSHProgram(t *testing.T) {
 			t.Parallel()
 			path := makeKey(t, "ed25519", "")
 			setMode(t, path, 0o644)
-			program := startProgram(t, portOption, "0", hostKeyOption, path, sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, path)
 			program.expectRefusal(t)
 			expectSSHStarts(t)
 			expectNoKeyInLog(t, program.text(), path)
-		})
-	})
-
-	t.Run("When the sysop passes an SSH port on the command line as well, the engine shall listen for SSH callers on that port in place of port 22.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("with -ssh-port 65535, the highest port, it names and serves it", func(t *testing.T) {
-			t.Parallel()
-			highestPort.Lock()
-			defer highestPort.Unlock()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "65535")
-			_, ssh := program.kinds(t)
-			expectAddresses(t, ssh, "127.0.0.1:65535", "[::1]:65535")
-			for _, address := range ssh {
-				expectSSHServed(t, address)
-			}
-			_ = program.command.Process.Kill()
-			<-program.exited
 		})
 	})
 
@@ -449,7 +455,7 @@ func TestLinuxSSHProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with SSH on, every listening socket the system's table shows for the program is at 127.0.0.1 or ::1, four of them", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", ""))
 			listeners := program.listeners(t)
 			sockets := listeningSockets(t, program.command.Process.Pid)
 			if len(sockets) != 4 {

@@ -6,9 +6,10 @@
 // them. Each server listens at 127.0.0.1 alone, with TLS on and a certificate signed by a
 // certificate authority the test makes, ECDSA P-256 with SHA-256. A board is made on a server as
 // hadv-setup will make one: an owner, its database, schema.sql run as the owner, a server's
-// login that is a member of hadv_server alone, a row per run of the program and its connection
-// file. Every run of the program that is not about the database gets a row of its own on one
-// board the package shares. The tests read and change the server as its superuser through psql.
+// login that is a member of hadv_server alone, a row per run of the program, made with the
+// settings the row names, and its connection file. Every run of the program that is not about the
+// database gets a row of its own on one board the package shares. The tests read and change the
+// server as its superuser through psql.
 package main_test
 
 import (
@@ -90,7 +91,7 @@ func prepareOracle() error {
 	if err != nil {
 		return err
 	}
-	sharedBoard, err = shared.makeBoard()
+	sharedBoard, err = shared.makeBoard(telnetAt(0))
 	return err
 }
 
@@ -352,7 +353,7 @@ func launchPostgres(directory string, options serverOptions) (*postgres, error) 
 func startStandby(t *testing.T) (*board, *postgres) {
 	t.Helper()
 	primary := startPostgres(t, serverOptions{settings: []string{"wal_level = replica", "max_wal_senders = 4"}})
-	created := primary.newBoard(t)
+	created := primary.newBoard(t, telnetAt(0))
 	directory := t.TempDir()
 	standby := &postgres{directory: directory, data: filepath.Join(directory, "data"), password: primary.password,
 		authority: primary.authority, logPath: filepath.Join(directory, "server.log")}
@@ -586,6 +587,8 @@ type board struct {
 	login    string
 	password string
 	serverID int64
+	// settings are the board's own row's, as it was made.
+	settings services
 }
 
 // passwordCanary marks every login's password, so the local log can be searched for it.
@@ -593,14 +596,14 @@ const passwordCanary = "helios-password-canary-4417"
 
 // schemaText is the database unit's schema.sql, read as hadv-setup will read it.
 func schemaText() (string, error) {
-	text, err := os.ReadFile(filepath.Join("..", "..", "internal", "database", "schema.sql"))
+	text, err := os.ReadFile(filepath.Join("..", "..", "internal", "database", "schema", "schema.sql"))
 	return string(text), err
 }
 
-// newBoard makes a board of the row's own on the server.
-func (server *postgres) newBoard(t *testing.T) *board {
+// newBoard makes a board of the row's own on the server, its own row made with the settings.
+func (server *postgres) newBoard(t *testing.T, settings services) *board {
 	t.Helper()
-	created, err := server.makeBoard()
+	created, err := server.makeBoard(settings)
 	if err != nil {
 		t.Fatalf("making a board: %v", err)
 	}
@@ -608,17 +611,18 @@ func (server *postgres) newBoard(t *testing.T) *board {
 }
 
 // makeBoard makes an owner, a database it owns, the schema run as the owner, a login that is a
-// member of hadv_server alone, and a row, its lease ended an hour ago and never held. It adds the
+// member of hadv_server alone, and a row made with the settings, its lease ended an hour ago and
+// never held. It adds the
 // tests' record of every update to hadv.servers: a trigger run with its owner's rights, writing
 // into a schema the login has no right on, so the login holds nothing it would not hold without
 // it but USAGE on the record's row type, which the contract does not count.
-func (server *postgres) makeBoard() (*board, error) {
+func (server *postgres) makeBoard(settings services) (*board, error) {
 	suffix, err := randomText(12)
 	if err != nil {
 		return nil, err
 	}
 	created := &board{server: server, database: uniqueName("board"), owner: uniqueName("owner"),
-		login: uniqueName("server"), password: passwordCanary + "-" + suffix}
+		login: uniqueName("server"), password: passwordCanary + "-" + suffix, settings: settings}
 	schema, err := schemaText()
 	if err != nil {
 		return nil, err
@@ -650,14 +654,16 @@ func (server *postgres) makeBoard() (*board, error) {
 			return nil, fmt.Errorf("%w: %s", err, output)
 		}
 	}
-	created.serverID, err = created.addRow()
+	created.serverID, err = created.addRow(settings)
 	return created, err
 }
 
-// addRow adds a row to the board, its lease ended an hour ago and never held, and returns its ID.
-func (created *board) addRow() (int64, error) {
-	output, err := created.server.trySQL(created.database,
-		"SET ROLE "+created.owner+"; INSERT INTO hadv.servers (lease_until) VALUES (now() - interval '1 hour') RETURNING id")
+// addRow adds a row to the board, its lease ended an hour ago and never held, with the settings,
+// and returns its ID. The settings go in with the row, not by an update after it, so the tests'
+// record of updates holds none of the row's making.
+func (created *board) addRow(settings services) (int64, error) {
+	output, err := created.server.trySQL(created.database, "SET ROLE "+created.owner+"; INSERT INTO hadv.servers (lease_until, "+
+		settingColumns+") VALUES (now() - interval '1 hour', "+settings.values()+") RETURNING id")
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, output)
 	}
@@ -714,21 +720,21 @@ func (contents connectionFile) write(t *testing.T) string {
 	return contents.seal(t).path
 }
 
-// sharedRowFile adds a row to the shared board for one run of the program, and returns the path
-// of a bootstrap folder naming it.
-func sharedRowFile(t *testing.T) string {
+// sharedRowFile adds a row with the settings to the shared board for one run of the program, and
+// returns the path of a bootstrap folder naming it.
+func sharedRowFile(t *testing.T, settings services) string {
 	t.Helper()
-	return sharedRowSettings(t).write(t)
+	return sharedRowSettings(t, settings).write(t)
 }
 
-// sharedRowSettings adds a row to the shared board for one run of the program, and returns the
-// connection settings naming it.
-func sharedRowSettings(t *testing.T) connectionFile {
+// sharedRowSettings adds a row with the settings to the shared board for one run of the program,
+// and returns the connection settings naming it.
+func sharedRowSettings(t *testing.T, settings services) connectionFile {
 	t.Helper()
 	if oracleFailure != nil {
 		t.Fatalf("the oracle could not be prepared: %v", oracleFailure)
 	}
-	identifier, err := sharedBoard.addRow()
+	identifier, err := sharedBoard.addRow(settings)
 	if err != nil {
 		t.Fatalf("adding a row to the shared board: %v", err)
 	}

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The program's lines on every runner: where it listens, the port option, the stop signal and
-// the local log, each driven from outside through the built program.
+// The program's lines on every runner: where it listens, the settings that say on which port,
+// the stop signal and the local log, each driven from outside through the built program.
 package main_test
 
 import (
@@ -57,7 +57,7 @@ func TestProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("it serves 127.0.0.1 and ::1, and 127.0.0.2 and this machine's other addresses are refused at both ports", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			addresses := program.listening(t)
 			ipv4Port, ipv6Port := loopbackPorts(t, addresses)
 			for _, address := range addresses {
@@ -86,9 +86,7 @@ func TestProgram(t *testing.T) {
 				if taken == ipv6Loopback {
 					free = ipv4Loopback
 				}
-				port, listeners := startOnFreedPort(t, []string{free}, func(port string) []string {
-					return []string{portOption, port}
-				})
+				port, listeners := startOnFreedPort(t, []string{free}, telnetAt)
 				addresses := telnetAlone(t, listeners)
 				expectAddresses(t, addresses, net.JoinHostPort(free, port))
 				expectServed(t, net.JoinHostPort(free, port))
@@ -96,13 +94,54 @@ func TestProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("When the sysop passes a Telnet port on the command line, the engine shall listen on that port in place of port 23.", func(t *testing.T) {
+	t.Run("When it takes its server's lease, the engine shall listen for Telnet callers only if its server's `telnet_on` is true, for SSH callers only if its `ssh_on` is true, and for Telnet over TLS callers only if its `telnets_on` is true.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -port and a free port, it names and serves that port at both addresses", func(t *testing.T) {
-			t.Parallel()
-			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
-				return []string{portOption, port}
+		for _, kind := range []struct {
+			scheme   string
+			settings services
+		}{
+			{schemeTelnet, telnetAt(0)},
+			{schemeSSH, allOff().withSSH(0)},
+			{schemeTelnets, allOff().withTelnets(0)},
+		} {
+			t.Run(kind.scheme+" alone on, the key files of all given: the started line names it alone, at both addresses, and the program's sockets are exactly those", func(t *testing.T) {
+				t.Parallel()
+				files := goodTLSFiles(t, tlsP256)
+				program := startProgram(t, kind.settings, files.options(hostKeyOption, makeKey(t, "ed25519", ""))...)
+				// listeners fails a started line that names a kind the settings turn off.
+				listeners := program.listeners(t)
+				for _, listener := range listeners {
+					if !strings.HasPrefix(listener, kind.scheme+"://") {
+						t.Fatalf("the started line names %q, want %s alone", listeners, kind.scheme)
+					}
+				}
+				loopbackPorts(t, socketsOf(listeners))
+				expectSockets(t, program, socketsOf(listeners))
 			})
+		}
+		t.Run("all three on: one started line naming Telnet's, then SSH's, then Telnet over TLS's, at both addresses each, and the program's sockets are exactly those six", func(t *testing.T) {
+			t.Parallel()
+			files := goodTLSFiles(t, tlsP256)
+			program := startProgram(t, telnetsOn().withSSH(0), files.options(hostKeyOption, makeKey(t, "ed25519", ""))...)
+			listeners := program.listeners(t)
+			telnet, ssh, telnets := threeKinds(t, listeners)
+			for _, addresses := range [][]string{telnet, ssh, telnets} {
+				loopbackPorts(t, addresses)
+			}
+			for index, scheme := range []string{schemeTelnet, schemeTelnet, schemeSSH, schemeSSH, schemeTelnets, schemeTelnets} {
+				if !strings.HasPrefix(listeners[index], scheme+"://") {
+					t.Fatalf("the started line names %q, want Telnet's, then SSH's, then Telnet over TLS's", listeners)
+				}
+			}
+			expectSockets(t, program, socketsOf(listeners))
+		})
+	})
+
+	t.Run("The engine shall listen for Telnet callers on its server's `telnet_port`.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("telnet_port a free port, it names and serves that port at both addresses", func(t *testing.T) {
+			t.Parallel()
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, telnetAt)
 			addresses := telnetAlone(t, listeners)
 			expectAddresses(t, addresses, net.JoinHostPort(ipv4Loopback, port), net.JoinHostPort(ipv6Loopback, port))
 			for _, address := range addresses {
@@ -111,23 +150,40 @@ func TestProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("When the sysop passes port 0, the engine shall listen at each address on a free port the operating system picks.", func(t *testing.T) {
+	t.Run("When a port setting is 0, the engine shall listen at each address on a free port the operating system picks.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -port 0, it names and serves a port the system picked at each address", func(t *testing.T) {
+		t.Run("telnet_port 0, it names and serves a port the system picked at each address, not 23", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			addresses := program.listening(t)
-			loopbackPorts(t, addresses)
+			expectPickedPorts(t, addresses, strconv.Itoa(seededTelnetPort))
 			for _, address := range addresses {
 				expectServed(t, address)
 			}
 		})
-		t.Run("two programs with -port 0 at once both start, each on ports of its own", func(t *testing.T) {
+		t.Run("ssh_port 0 and telnets_port 0, Telnet off: each names and serves a port the system picked at each address, not 22 or 992", func(t *testing.T) {
+			t.Parallel()
+			files := goodTLSFiles(t, tlsP256)
+			program := startProgram(t, allOff().withSSH(0).withTelnets(0), files.options(hostKeyOption, makeKey(t, "ed25519", ""))...)
+			telnet, ssh, telnets := threeKinds(t, program.listeners(t))
+			if len(telnet) != 0 {
+				t.Fatalf("the started line names Telnet at %q, with Telnet off", telnet)
+			}
+			expectPickedPorts(t, ssh, strconv.Itoa(seededSSHPort))
+			expectPickedPorts(t, telnets, strconv.Itoa(seededTelnetsPort))
+			for _, address := range ssh {
+				expectSSHServed(t, address)
+			}
+			for _, address := range telnets {
+				expectTLSServed(t, address)
+			}
+		})
+		t.Run("two programs with telnet_port 0 at once both start, each on ports of its own", func(t *testing.T) {
 			t.Parallel()
 			// A port 0 read as some fixed port would put the second program on the first's
 			// ports, where it cannot listen.
-			first := startProgram(t, portOption, "0")
-			second := startProgram(t, portOption, "0")
+			first := startProgram(t, telnetAt(0))
+			second := startProgram(t, telnetAt(0))
 			firstAddresses := first.listening(t)
 			secondAddresses := second.listening(t)
 			firstIPv4, firstIPv6 := loopbackPorts(t, firstAddresses)
@@ -147,7 +203,7 @@ func TestProgram(t *testing.T) {
 			t.Run(signal.name+": a silent caller and one in the closing wait are closed, and the program exits, at once", func(t *testing.T) {
 				t.Parallel()
 				send := signal.prepare(t)
-				program := startProgram(t, portOption, "0")
+				program := startProgram(t, telnetAt(0))
 				addresses := program.listening(t)
 				silent := expectServed(t, addresses[0])
 				closing := expectServed(t, addresses[len(addresses)-1])
@@ -184,7 +240,7 @@ func TestProgram(t *testing.T) {
 			t.Parallel()
 			signal := stopSignals()[0]
 			send := signal.prepare(t)
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			addresses := program.listening(t)
 			for _, address := range addresses {
 				expectServed(t, address)
@@ -200,7 +256,7 @@ func TestProgram(t *testing.T) {
 		})
 		t.Run("with SSH on: one started line naming each listener as a URL, Telnet's then SSH's, each served by its kind", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0", hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")
+			program := startProgram(t, telnetAt(0).withSSH(0), hostKeyOption, makeKey(t, "ed25519", ""))
 			listeners := program.listeners(t)
 			telnet, ssh := kindsOf(t, listeners)
 			telnetIPv4, telnetIPv6 := loopbackPorts(t, telnet)
@@ -221,9 +277,11 @@ func TestProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for a kind its server's settings turn on, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, options := range [][]string{
+			{portOption, "0"},
+			{portOption, "2323"},
 			{portOption},
 			{portOption, "abc"},
 			{portOption, ""},
@@ -235,15 +293,28 @@ func TestProgram(t *testing.T) {
 			{"-verbose"},
 			{"-h"},
 		} {
-			t.Run(fmt.Sprintf("with the options %q: one start_failed line, and a non-zero exit", options), func(t *testing.T) {
+			t.Run(fmt.Sprintf("Telnet on at a port the system picks, with the options %q: one start_failed line, and a non-zero exit", options), func(t *testing.T) {
 				t.Parallel()
-				startProgram(t, options...).expectRefusal(t)
+				startProgram(t, telnetAt(0), options...).expectRefusal(t)
 			})
 		}
-		t.Run("with both addresses taken at the port: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("telnet_port taken by the test at both addresses: one start_failed line, and a non-zero exit, where the same settings at a port the system picks start", func(t *testing.T) {
 			t.Parallel()
 			port, _, _ := heldPort(t)
-			startProgram(t, portOption, port).expectRefusal(t)
+			startProgram(t, telnetAt(portNumber(t, port))).expectRefusal(t)
+			expectPickedPorts(t, startProgram(t, telnetAt(0)).listening(t), strconv.Itoa(seededTelnetPort))
+		})
+		t.Run("Telnet off, telnet_port taken by the test at both addresses, SSH on at a port the system picks: it starts, SSH's alone", func(t *testing.T) {
+			t.Parallel()
+			port, _, _ := heldPort(t)
+			settings := allOff().withSSH(0)
+			settings.telnetPort = portNumber(t, port)
+			// listeners fails a started line that names Telnet, which is off.
+			telnet, ssh := startProgram(t, settings, hostKeyOption, makeKey(t, "ed25519", "")).kinds(t)
+			if len(telnet) != 0 {
+				t.Fatalf("the started line names Telnet at %q, with Telnet off", telnet)
+			}
+			loopbackPorts(t, ssh)
 		})
 	})
 
@@ -252,7 +323,7 @@ func TestProgram(t *testing.T) {
 		t.Run("a whole call, a silent caller and a stop leave the started line alone", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			addresses := program.listening(t)
 			whole := expectServed(t, addresses[0])
 			whole.typeName(t)
@@ -269,7 +340,7 @@ func TestProgram(t *testing.T) {
 		t.Run("the started line is started= and the listeners, ending in LF", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			program.listening(t)
 			_, sentBy := send(t, program)
 			program.exit(t, sentBy.Add(testrun.Patient(margin)))
@@ -277,7 +348,7 @@ func TestProgram(t *testing.T) {
 		})
 		t.Run("the start_failed line is start_failed= and a reason, ending in LF", func(t *testing.T) {
 			t.Parallel()
-			startProgram(t, portOption, "abc").expectRefusal(t)
+			startProgram(t, telnetAt(0), portOption, "abc").expectRefusal(t)
 		})
 	})
 
@@ -286,7 +357,7 @@ func TestProgram(t *testing.T) {
 		t.Run("text shaped like log lines, sent during and after negotiation, is not in the log", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			addresses := program.listening(t)
 			during := expectServed(t, addresses[0])
 			firstConnected := during.connected
@@ -360,13 +431,13 @@ func TestLinuxRoot(t *testing.T) {
 	t.Parallel()
 	t.Run("If the engine is started as root on Linux, then the engine shall write one `start_failed` line to the local log saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		for _, options := range [][]string{nil, {portOption, "0"}} {
-			t.Run(fmt.Sprintf("as root with a bootstrap folder and the options %q: one start_failed line naming root, and a non-zero exit", options), func(t *testing.T) {
+		for _, port := range []int{0, 23} {
+			t.Run(fmt.Sprintf("as root with a bootstrap folder and no other option, Telnet on at port %d: one start_failed line naming root, and a non-zero exit", port), func(t *testing.T) {
 				t.Parallel()
 				if buildFailure != nil {
 					t.Fatalf("the program did not build: %v", buildFailure)
 				}
-				reason := startCommand(t, rootCommand(t, append([]string{databaseOption, sharedRowFile(t)}, options...)...)).expectRefusal(t)
+				reason := startCommand(t, rootCommand(t, databaseOption, sharedRowFile(t, telnetAt(port)))).expectRefusal(t)
 				if !strings.Contains(strings.ToLower(reason), "root") {
 					t.Fatalf("the start_failed reason %q does not say the engine was started as root", reason)
 				}
@@ -380,9 +451,9 @@ func TestLinuxRoot(t *testing.T) {
 // there; Linux's runners hand out 32768 to 60999.
 func TestLinuxHighestPort(t *testing.T) {
 	t.Parallel()
-	t.Run("When the sysop passes a Telnet port on the command line, the engine shall listen on that port in place of port 23.", func(t *testing.T) {
+	t.Run("The engine shall listen for Telnet callers on its server's `telnet_port`.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -port 65535, the highest port, it names and serves it", func(t *testing.T) {
+		t.Run("telnet_port 65535, the highest port, it names and serves it", func(t *testing.T) {
 			t.Parallel()
 			highestPort.Lock()
 			defer highestPort.Unlock()
@@ -393,7 +464,7 @@ func TestLinuxHighestPort(t *testing.T) {
 				}
 				_ = held.Close()
 			}
-			program := startProgram(t, portOption, "65535")
+			program := startProgram(t, telnetAt(65535))
 			addresses := program.listening(t)
 			expectAddresses(t, addresses, "127.0.0.1:65535", "[::1]:65535")
 			for _, address := range addresses {
@@ -407,9 +478,9 @@ func TestLinuxHighestPort(t *testing.T) {
 
 func TestLinuxLowPort(t *testing.T) {
 	t.Parallel()
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for a kind its server's settings turn on, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with a bootstrap folder and no other option, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
+		t.Run("Telnet on at port 23, as an ordinary user who may not listen below port 1024: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			if os.Geteuid() == 0 {
 				t.Fatalf("this row needs an ordinary user, not root")
@@ -422,7 +493,10 @@ func TestLinuxLowPort(t *testing.T) {
 			if err != nil || lowest <= 23 {
 				t.Fatalf("this machine lets an ordinary user listen from port %q, so port 23 cannot fail here", setting)
 			}
-			startProgram(t).expectRefusal(t)
+			startProgram(t, telnetAt(23)).expectRefusal(t)
+			// The control: the same program with telnet_port 0 starts, so the refusal was the
+			// column's port 23.
+			expectPickedPorts(t, startProgram(t, telnetAt(0)).listening(t), strconv.Itoa(seededTelnetPort))
 		})
 	})
 }
@@ -436,7 +510,7 @@ func TestLinuxListeningSockets(t *testing.T) {
 		t.Parallel()
 		t.Run("every listening socket the system's table shows for the program is at 127.0.0.1 or ::1", func(t *testing.T) {
 			t.Parallel()
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			addresses := program.listening(t)
 			sockets := listeningSockets(t, program.command.Process.Pid)
 			if len(sockets) == 0 {

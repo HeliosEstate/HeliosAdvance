@@ -10,6 +10,7 @@ package main_test
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -44,6 +45,13 @@ const leaseMargin = 2 * time.Second
 // foreignHolder is another run's lease holder, which the tests write into a row.
 const foreignHolder = "11111111-2222-4333-8444-555555555555"
 
+// The names, among the reasons a row compares, of three causes of a waiting line.
+const (
+	causeNotAnswering     = "not answering"
+	causeRecovering       = "recovering"
+	causeNoConnectionFree = "no connection free"
+)
+
 // noFileKey names, among the reasons a row compares, the one for no bootstrap folder at all.
 const noFileKey = "no bootstrap folder"
 
@@ -56,10 +64,13 @@ func startWithFile(t *testing.T, path string, extra []string, options ...string)
 	return startCommand(t, command)
 }
 
-// startOnBoard starts the program on the board's own row, at a Telnet port the system picks.
+// startOnBoard starts the program on the board's own row, with the settings the row was made
+// with.
 func startOnBoard(t *testing.T, created *board) *run {
 	t.Helper()
-	return startWithFile(t, created.file().write(t), nil, portOption, "0")
+	program := startWithFile(t, created.file().write(t), nil)
+	program.settings = &created.settings
+	return program
 }
 
 // endLease ends another run's lease on the board's row now, and returns the end the database
@@ -82,11 +93,11 @@ func expectNotListening(t *testing.T, program *run) {
 	}
 }
 
-// noFileReason is the start_failed reason the program gives when it is started with no
-// bootstrap folder, a Telnet port the system picks and nothing else.
+// noFileReason is the start_failed reason the program gives when it is started with no option at
+// all, so with no bootstrap folder.
 func noFileReason(t *testing.T) string {
 	t.Helper()
-	return startBare(t, portOption, "0").expectRefusal(t)
+	return startBare(t).expectRefusal(t)
 }
 
 // expectNamesBootstrap checks a reason for no bootstrap folder says so: it names the bootstrap
@@ -205,7 +216,7 @@ func (program *run) expectRefusedAtSignIn(t *testing.T) string {
 		database := startAcceptor(t)
 		contents := sharedBoard.file()
 		contents.Port = database.port(t)
-		closing := startWithFile(t, contents.write(t), nil, portOption, "0")
+		closing := startWithFile(t, contents.write(t), nil)
 		notAnswering, _ := closing.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 		if values[0] != notAnswering {
 			t.Fatalf("the waiting line before the refusal says %s, want what a database that does not answer gives, %s", values[0], notAnswering)
@@ -219,23 +230,23 @@ func TestDatabaseProgram(t *testing.T) {
 
 	t.Run("If it starts without a bootstrap folder on the command line, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -port 0 and no bootstrap folder: one start_failed line naming the bootstrap folder, and a non-zero exit", func(t *testing.T) {
+		t.Run("with no option at all: one start_failed line naming the bootstrap folder, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			expectNamesBootstrap(t, noFileReason(t))
 		})
-		t.Run("with no option at all: one start_failed line saying the same, and a non-zero exit", func(t *testing.T) {
+		t.Run("with a good host key file and no bootstrap folder: one start_failed line saying the same, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			want := noFileReason(t)
 			expectNamesBootstrap(t, want)
-			if reason := startBare(t).expectRefusal(t); reason != want {
-				t.Fatalf("with no option the reason was %q, want the one for no bootstrap folder, %q", reason, want)
+			if reason := startBare(t, hostKeyOption, makeKey(t, "ed25519", "")).expectRefusal(t); reason != want {
+				t.Fatalf("with a host key file alone the reason was %q, want the one for no bootstrap folder, %q", reason, want)
 			}
 		})
 		t.Run("with -bootstrap given an empty value: one start_failed line saying the same, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			want := noFileReason(t)
 			expectNamesBootstrap(t, want)
-			if reason := startBare(t, databaseOption, "", portOption, "0").expectRefusal(t); reason != want {
+			if reason := startBare(t, databaseOption, "").expectRefusal(t); reason != want {
 				t.Fatalf("with an empty folder named the reason was %q, want the one for no bootstrap folder, %q", reason, want)
 			}
 		})
@@ -269,7 +280,7 @@ func TestDatabaseProgram(t *testing.T) {
 			}
 			reasons := map[string]string{noFileKey: noFileReason(t)}
 			for name, path := range files {
-				program := startWithFile(t, path, nil, portOption, "0")
+				program := startWithFile(t, path, nil)
 				reasons[name] = program.expectRefusal(t)
 				expectNoPassword(t, program)
 			}
@@ -281,9 +292,9 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("PostgreSQL's variables, a password file and a service file naming a decoy board: it starts on the file's board, the decoy left alone", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
-			decoy := sharedServer(t).newBoard(t)
-			program := startWithFile(t, created.file().write(t), decoyEnvironment(t, decoy), portOption, "0")
+			created := sharedServer(t).newBoard(t, telnetAt(0))
+			decoy := sharedServer(t).newBoard(t, telnetAt(0))
+			program := startWithFile(t, created.file().write(t), decoyEnvironment(t, decoy))
 			program.listening(t)
 			expectHolder(t, created.row(t))
 			if changes := decoy.updates(t); len(changes) != 0 {
@@ -300,9 +311,9 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Run("a run that starts, loses its lease to another run, waits and starts again, then stops: neither the password nor the key anywhere in its log", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			folder := created.file().seal(t)
-			program := startWithFile(t, folder.path, nil, portOption, "0")
+			program := startWithFile(t, folder.path, nil)
 			program.listening(t)
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
 			program.expectLine(t, 1, "lease_lost", time.Now().Add(renewEvery+testrun.Patient(leaseMargin)))
@@ -321,7 +332,7 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("started: the server's log shows the file's login signed in by SCRAM-SHA-256 over TLS", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			startOnBoard(t, created).listening(t)
 			log := created.server.serverLog(t)
 			if !strings.Contains(log, `connection authenticated: identity="`+created.login+`" method=scram-sha-256`) ||
@@ -335,16 +346,16 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("another authority, the sign-in rule password, a wrong password: three start_failed lines, three reasons", func(t *testing.T) {
 			t.Parallel()
-			wrongAuthority := sharedServer(t).newBoard(t)
+			wrongAuthority := sharedServer(t).newBoard(t, telnetAt(0))
 			contents := wrongAuthority.file()
 			other, err := makeAuthority()
 			if err != nil {
 				t.Fatalf("making another authority: %v", err)
 			}
 			contents.CACertificate = other.pemText
-			method := sharedServer(t).newBoard(t)
+			method := sharedServer(t).newBoard(t, telnetAt(0))
 			method.server.signInRule(t, method.login, "password")
-			refused := sharedServer(t).newBoard(t)
+			refused := sharedServer(t).newBoard(t, telnetAt(0))
 			wrongPassword := refused.file()
 			wrongPassword.Password = passwordCanary + "-wrong"
 			reasons := map[string]string{noFileKey: noFileReason(t)}
@@ -353,7 +364,7 @@ func TestDatabaseProgram(t *testing.T) {
 				"another way of signing in": method.file().write(t),
 				"sign-in refused":           wrongPassword.write(t),
 			} {
-				program := startWithFile(t, path, nil, portOption, "0")
+				program := startWithFile(t, path, nil)
 				if name == "sign-in refused" {
 					reasons[name] = program.expectRefusedAtSignIn(t)
 				} else {
@@ -370,7 +381,7 @@ func TestDatabaseProgram(t *testing.T) {
 		for _, change := range []string{"ALTER ROLE {login} CREATEDB", "GRANT INSERT ON hadv.servers TO {login}"} {
 			t.Run(change+": one start_failed line, and a non-zero exit", func(t *testing.T) {
 				t.Parallel()
-				created := sharedServer(t).newBoard(t)
+				created := sharedServer(t).newBoard(t, telnetAt(0))
 				created.server.sql(t, created.database, strings.ReplaceAll(change, "{login}", created.login))
 				reasons := map[string]string{noFileKey: noFileReason(t)}
 				reasons["too powerful"] = startOnBoard(t, created).expectRefusal(t)
@@ -383,69 +394,73 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("a database that does not exist: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			contents := sharedServer(t).newBoard(t).file()
+			contents := sharedServer(t).newBoard(t, telnetAt(0)).file()
 			contents.Database = "nowhere_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 			reasons := map[string]string{noFileKey: noFileReason(t)}
-			reasons["refused"] = startWithFile(t, contents.write(t), nil, portOption, "0").expectRefusedAtSignIn(t)
+			reasons["refused"] = startWithFile(t, contents.write(t), nil).expectRefusedAtSignIn(t)
 			expectDifferent(t, reasons)
 		})
 		t.Run("a database with TLS switched off: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			server := startPostgres(t, serverOptions{settings: []string{"ssl = off"}})
-			created := server.newBoard(t)
+			created := server.newBoard(t, telnetAt(0))
 			reasons := map[string]string{noFileKey: noFileReason(t)}
 			reasons["no TLS"] = startOnBoard(t, created).expectRefusal(t)
 			expectDifferent(t, reasons)
 		})
 	})
 
-	t.Run("If `hadv.schema_version` is missing or holds a version other than 1 or 2, then the engine shall write one `start_failed` line naming the version it found, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If `hadv.schema_version` is missing or holds a version other than 2 or 3, then the engine shall write one `start_failed` line naming the version it found, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("version 7: one start_failed line naming 7, and a non-zero exit", func(t *testing.T) {
-			t.Parallel()
-			created := sharedServer(t).newBoard(t)
-			created.sqlAsOwner(t, "UPDATE hadv.schema_version SET version = 7")
-			reason := startOnBoard(t, created).expectRefusal(t)
-			if !regexp.MustCompile(`(^|[^0-9])7([^0-9]|$)`).MatchString(reason) {
-				t.Fatalf("the reason %q does not name the version found, 7", reason)
-			}
-		})
+		for _, version := range []string{"7", "1"} {
+			t.Run("version "+version+": one start_failed line naming "+version+", and a non-zero exit", func(t *testing.T) {
+				t.Parallel()
+				created := sharedServer(t).newBoard(t, telnetAt(0))
+				created.sqlAsOwner(t, "UPDATE hadv.schema_version SET version = "+version)
+				reason := startOnBoard(t, created).expectRefusal(t)
+				if !regexp.MustCompile(`(^|[^0-9])` + version + `([^0-9]|$)`).MatchString(reason) {
+					t.Fatalf("the reason %q does not name the version found, %s", reason, version)
+				}
+			})
+		}
 		t.Run("the table dropped: one start_failed line, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			created.sqlAsOwner(t, "DROP TABLE hadv.schema_version")
 			reasons := map[string]string{noFileKey: noFileReason(t)}
 			reasons["missing"] = startOnBoard(t, created).expectRefusal(t)
 			expectDifferent(t, reasons)
 		})
-		t.Run("version 2, the next: it starts", func(t *testing.T) {
-			t.Parallel()
-			created := sharedServer(t).newBoard(t)
-			created.sqlAsOwner(t, "UPDATE hadv.schema_version SET version = 2")
-			startOnBoard(t, created).listening(t)
-		})
+		for _, version := range []string{"2", "3"} {
+			t.Run("version "+version+": it starts", func(t *testing.T) {
+				t.Parallel()
+				created := sharedServer(t).newBoard(t, telnetAt(0))
+				created.sqlAsOwner(t, "UPDATE hadv.schema_version SET version = "+version)
+				startOnBoard(t, created).listening(t)
+			})
+		}
 	})
 
 	t.Run("If `hadv.servers` holds no row for the bootstrap file's server ID, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a server ID with no row: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			contents := sharedServer(t).newBoard(t).file()
+			contents := sharedServer(t).newBoard(t, telnetAt(0)).file()
 			contents.ServerID += 1000
 			reasons := map[string]string{noFileKey: noFileReason(t), "a missing key file": keyMissingReason(t)}
-			reasons["no row"] = startWithFile(t, contents.write(t), nil, portOption, "0").expectRefusal(t)
+			reasons["no row"] = startWithFile(t, contents.write(t), nil).expectRefusal(t)
 			expectDifferent(t, reasons)
 		})
 	})
 
-	t.Run("If the database does not answer, or answers that it is starting up, shutting down or recovering, that it has no connection free, or that it is read-only, then the engine shall write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.", func(t *testing.T) {
+	t.Run("If the database does not answer, or answers that it is starting up, shutting down or recovering, that it has no connection free, that it is read-only, that it cancelled the statement, that a lock was not available, that a clash with another transaction stopped it, or that its disk or memory ran out, then the engine shall write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a database that closes each connection: one waiting line, nothing listening, tries 10 s apart, still one line after the third", func(t *testing.T) {
 			t.Parallel()
 			database := startAcceptor(t)
 			contents := sharedBoard.file()
 			contents.Port = database.port(t)
-			program := startWithFile(t, contents.write(t), nil, portOption, "0")
+			program := startWithFile(t, contents.write(t), nil)
 			program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 			expectNotListening(t, program)
 			for len(database.triesSoFar()) < 3 {
@@ -477,7 +492,7 @@ func TestDatabaseProgram(t *testing.T) {
 			}},
 			{"no connection free, the login's limit 0, then lifted", func(t *testing.T) (*board, *postgres, func(t *testing.T)) {
 				t.Helper()
-				created := sharedServer(t).newBoard(t)
+				created := sharedServer(t).newBoard(t, telnetAt(0))
 				created.server.sql(t, superuser, "ALTER ROLE "+created.login+" CONNECTION LIMIT 0")
 				return created, created.server, func(t *testing.T) {
 					t.Helper()
@@ -486,7 +501,7 @@ func TestDatabaseProgram(t *testing.T) {
 			}},
 			{"read-only, the database's default, then reset", func(t *testing.T) (*board, *postgres, func(t *testing.T)) {
 				t.Helper()
-				created := sharedServer(t).newBoard(t)
+				created := sharedServer(t).newBoard(t, telnetAt(0))
 				created.server.sql(t, superuser, "ALTER DATABASE "+created.database+" SET default_transaction_read_only = on")
 				return created, created.server, func(t *testing.T) {
 					t.Helper()
@@ -500,7 +515,7 @@ func TestDatabaseProgram(t *testing.T) {
 				created, database, fix := cause.prepare(t)
 				contents := created.file()
 				contents.Port = database.port
-				program := startWithFile(t, contents.write(t), nil, portOption, "0")
+				program := startWithFile(t, contents.write(t), nil)
 				program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 				expectNotListening(t, program)
 				fix(t)
@@ -512,6 +527,49 @@ func TestDatabaseProgram(t *testing.T) {
 				waitForStarted(t, program, 1, tried.Add(tryLimit+testrun.Patient(leaseMargin)))
 			})
 		}
+		for _, cause := range temporaryCauses() {
+			t.Run(cause.name+": one waiting line, nothing listening, no update by the program; once fixed, tried again within 10 s, then started", func(t *testing.T) {
+				t.Parallel()
+				created, meet, fix := cause.stage(t)
+				program := startOnBoard(t, created)
+				meet(t)
+				program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
+				created.server.expectLoginError(t, created.login, cause.logged)
+				expectNotListening(t, program)
+				// The row has never been held, and the test's own updates keep it so: any holder
+				// written is the refused take's.
+				for _, change := range created.updates(t) {
+					if change.newHolder != "" {
+						t.Fatalf("the waiting program's take was written: %+v", change)
+					}
+				}
+				fix(t)
+				fixed := time.Now()
+				tried := created.server.waitForTry(t, created.login, fixed, fixed.Add(retryEvery+testrun.Patient(2*leaseMargin)))
+				expectWithin(t, "the first try after the fix", tried, fixed.Truncate(time.Millisecond), fixed.Add(retryEvery+leaseMargin))
+				waitForStarted(t, program, 1, tried.Add(tryLimit+testrun.Patient(leaseMargin)))
+			})
+		}
+		t.Run("a cancelled statement, fixed, then the lease lost to a lock not available: two waits, each with its own reason", func(t *testing.T) {
+			t.Parallel()
+			causes := temporaryCauses()
+			created, _, fix := causes[0].stage(t)
+			created.server.sql(t, superuser, "ALTER ROLE "+created.login+" SET lock_timeout = '100ms'")
+			program := startOnBoard(t, created)
+			cancelled, _ := program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
+			created.server.expectLoginError(t, created.login, causes[0].logged)
+			fix(t)
+			waitForStarted(t, program, 1, time.Now().Add(retryEvery+tryLimit+testrun.Patient(leaseMargin)))
+			lock := created.lockRow(t)
+			program.expectLine(t, 2, "lease_lost", time.Now().Add(lossAfter+testrun.Patient(2*leaseMargin)))
+			locked, _ := program.expectLine(t, 3, "waiting", time.Now().Add(retryEvery+testrun.Patient(waitLineLimit)))
+			created.server.expectLoginError(t, created.login, causes[1].logged)
+			if locked == cancelled {
+				t.Fatalf("a lock not available gave the reason a cancelled statement gave, %q", locked)
+			}
+			lock.release(t)
+			waitForStarted(t, program, 4, time.Now().Add(retryEvery+tryLimit+testrun.Patient(leaseMargin)))
+		})
 		t.Run("not answering, recovering, no connection free, read-only and a lease held: five waiting lines, five reasons", func(t *testing.T) {
 			t.Parallel()
 			reasons := map[string]string{}
@@ -521,28 +579,76 @@ func TestDatabaseProgram(t *testing.T) {
 			recovering, standby := startStandby(t)
 			standbyFile := recovering.file()
 			standbyFile.Port = standby.port
-			full := sharedServer(t).newBoard(t)
+			full := sharedServer(t).newBoard(t, telnetAt(0))
 			full.server.sql(t, superuser, "ALTER ROLE "+full.login+" CONNECTION LIMIT 0")
-			readOnly := sharedServer(t).newBoard(t)
+			readOnly := sharedServer(t).newBoard(t, telnetAt(0))
 			readOnly.server.sql(t, superuser, "ALTER DATABASE "+readOnly.database+" SET default_transaction_read_only = on")
-			held := sharedServer(t).newBoard(t)
+			held := sharedServer(t).newBoard(t, telnetAt(0))
 			held.setRow(t, foreignHolder, "now() + interval '1 hour'")
 			for name, contents := range map[string]connectionFile{
-				"not answering": unanswered, "recovering": standbyFile, "no connection free": full.file(),
+				causeNotAnswering: unanswered, causeRecovering: standbyFile, causeNoConnectionFree: full.file(),
 				"read-only": readOnly.file(), "lease held": held.file(),
 			} {
-				program := startWithFile(t, contents.write(t), nil, portOption, "0")
+				program := startWithFile(t, contents.write(t), nil)
 				reasons[name], _ = program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 			}
 			// On Windows a refusal at sign-in can be thrown away first, so these two may give the
 			// not-answering reason, which is not pinned (bootstrap Part 1's page); Linux is exact.
-			for _, name := range []string{"recovering", "no connection free"} {
-				if runtime.GOOS == windowsOS && reasons[name] == reasons["not answering"] {
+			for _, name := range []string{causeRecovering, causeNoConnectionFree} {
+				if runtime.GOOS == windowsOS && reasons[name] == reasons[causeNotAnswering] {
 					t.Logf("%s gave the not-answering reason: its refusal was thrown away", name)
 					delete(reasons, name)
 				}
 			}
 			expectDifferent(t, reasons)
+		})
+		t.Run("the six that pass on their own beside the five earlier causes: each a waiting line, the reasons of different kinds pairwise different", func(t *testing.T) {
+			t.Parallel()
+			database := startAcceptor(t)
+			unanswered := sharedBoard.file()
+			unanswered.Port = database.port(t)
+			recovering, standby := startStandby(t)
+			standbyFile := recovering.file()
+			standbyFile.Port = standby.port
+			full := sharedServer(t).newBoard(t, telnetAt(0))
+			full.server.sql(t, superuser, "ALTER ROLE "+full.login+" CONNECTION LIMIT 0")
+			held := sharedServer(t).newBoard(t, telnetAt(0))
+			held.setRow(t, foreignHolder, "now() + interval '1 hour'")
+			readOnly := sharedServer(t).newBoard(t, telnetAt(0))
+			readOnly.server.sql(t, superuser, "ALTER DATABASE "+readOnly.database+" SET default_transaction_read_only = on")
+			earlier := map[string]string{}
+			for name, contents := range map[string]connectionFile{
+				causeNotAnswering: unanswered, causeRecovering: standbyFile, causeNoConnectionFree: full.file(),
+				"lease held": held.file(), "read-only": readOnly.file(),
+			} {
+				program := startWithFile(t, contents.write(t), nil)
+				earlier[name], _ = program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
+			}
+			// On Windows a refusal at sign-in can be thrown away first, so these two may give the
+			// not-answering reason, which is not pinned (bootstrap Part 1's page); Linux is exact.
+			for _, name := range []string{causeRecovering, causeNoConnectionFree} {
+				if runtime.GOOS == windowsOS && earlier[name] == earlier[causeNotAnswering] {
+					t.Logf("%s gave the not-answering reason: its refusal was thrown away", name)
+					delete(earlier, name)
+				}
+			}
+			// Two causes of one kind, a clash or a disk or memory run out, may share a
+			// reason or not: that is not pinned. So each set below holds one cause of each kind,
+			// the first of its kind and then the last.
+			first, last := maps.Clone(earlier), maps.Clone(earlier)
+			for _, cause := range temporaryCauses() {
+				created, meet, _ := cause.stage(t)
+				program := startOnBoard(t, created)
+				meet(t)
+				reason, _ := program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
+				created.server.expectLoginError(t, created.login, cause.logged)
+				if _, found := first[cause.reason]; !found {
+					first[cause.reason] = reason
+				}
+				last[cause.reason] = reason
+			}
+			expectDifferent(t, first)
+			expectDifferent(t, last)
 		})
 	})
 
@@ -550,9 +656,9 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("another run's lease, ended once the program waits: one waiting line, nothing listening, no update; tried again within 10 s of its end, then started", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
-			program := startWithFile(t, created.file().write(t), nil, portOption, "0")
+			program := startWithFile(t, created.file().write(t), nil)
 			program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 			expectNotListening(t, program)
 			if changes := created.updates(t); len(changes) != 1 {
@@ -566,10 +672,10 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 		t.Run("two programs on one row: the second waits while the first holds it", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			path := created.file().write(t)
-			startWithFile(t, path, nil, portOption, "0").listening(t)
-			second := startWithFile(t, path, nil, portOption, "0")
+			startWithFile(t, path, nil).listening(t)
+			second := startWithFile(t, path, nil)
 			second.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 		})
 	})
@@ -578,9 +684,9 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("waiting on a held lease: nothing listens; the lease taken: it listens at the port; the lease lost: nothing listens", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
-			program := startWithFile(t, created.file().write(t), nil, portOption, "0")
+			program := startWithFile(t, created.file().write(t), nil)
 			program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 			expectNotListening(t, program)
 			ends := endLease(t, created)
@@ -598,7 +704,7 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("started: the row has a new holder, its end 30 s after the take's own database time", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			startOnBoard(t, created).listening(t)
 			holder := expectHolder(t, created.row(t))
 			changes := created.updates(t)
@@ -610,14 +716,14 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Run("two programs, one after the other, on one row: two different holders", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			path := created.file().write(t)
-			first := startWithFile(t, path, nil, portOption, "0")
+			first := startWithFile(t, path, nil)
 			first.listening(t)
 			firstHolder := expectHolder(t, created.row(t))
 			_, sentBy := send(t, first)
 			first.exit(t, sentBy.Add(endLeaseWait+testrun.Patient(margin)))
-			startWithFile(t, path, nil, portOption, "0").listening(t)
+			startWithFile(t, path, nil).listening(t)
 			if secondHolder := expectHolder(t, created.row(t)); secondHolder == firstHolder {
 				t.Fatalf("both runs wrote the holder %s", firstHolder)
 			}
@@ -628,7 +734,7 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("two renewals, each 10 s after the one before, each 30 s after the database's time, the holder kept", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			startOnBoard(t, created).listening(t)
 			taken := created.waitForUpdates(t, 1, time.Now().Add(testrun.Patient(leaseMargin)))[0]
 			changes := created.waitForUpdates(t, 3, taken.transactionStart.Add(2*renewEvery+testrun.Patient(2*leaseMargin)))
@@ -643,7 +749,7 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 		t.Run("another run's holder written after the take: the row left as that run wrote it", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			program := startOnBoard(t, created)
 			program.listening(t)
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
@@ -659,7 +765,7 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("the row locked after a renewal: lease_lost 25 s after it, the caller's connection and every listener closed; the row freed: started again", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			program := startOnBoard(t, created)
 			addresses := program.listening(t)
 			renewed := created.waitForUpdates(t, 2, time.Now().Add(renewEvery+testrun.Patient(2*leaseMargin)))[1].transactionStart
@@ -678,7 +784,7 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 		t.Run("another run's holder written: lease_lost by the next renewal, then waiting; that lease ended: started again", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			program := startOnBoard(t, created)
 			program.listening(t)
 			changed := time.Now()
@@ -698,7 +804,7 @@ func TestDatabaseProgram(t *testing.T) {
 			t.Run(signal.name+": the lease's end set to the database's time, before the exit", func(t *testing.T) {
 				t.Parallel()
 				send := signal.prepare(t)
-				created := sharedServer(t).newBoard(t)
+				created := sharedServer(t).newBoard(t, telnetAt(0))
 				program := startOnBoard(t, created)
 				program.listening(t)
 				holder := expectHolder(t, created.row(t))
@@ -715,7 +821,7 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Run("the row locked: the program exits within 1 s, the row left as it was", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			program := startOnBoard(t, created)
 			program.listening(t)
 			before := created.row(t)
@@ -735,7 +841,7 @@ func TestDatabaseProgram(t *testing.T) {
 		t.Run("a lease held, taken, lost and taken again, then a stop: started, waiting, lease_lost and nothing else", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(0))
 			// Each hold lasts until the program has written its waiting line, then the test ends
 			// it: a hold that runs out on a clock can end before a loaded machine's first try.
 			created.setRow(t, foreignHolder, "now() + interval '1 hour'")
@@ -763,7 +869,7 @@ func TestDatabaseProgram(t *testing.T) {
 				database := startAcceptor(t)
 				contents := sharedBoard.file()
 				contents.Port = database.port(t)
-				program := startWithFile(t, contents.write(t), nil, portOption, "0")
+				program := startWithFile(t, contents.write(t), nil)
 				program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 				from, sentBy := send(t, program)
 				_, exitedAt := program.exit(t, sentBy.Add(testrun.Patient(margin)))

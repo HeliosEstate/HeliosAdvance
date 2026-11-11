@@ -99,11 +99,14 @@ type run struct {
 	exited chan struct{}
 	// standardError is what the program wrote to standard error, whole once it has exited.
 	standardError *boundedBuffer
-	mutex         sync.Mutex
-	log           []byte
-	entries       []logEntry
-	exitCode      int
-	exitedAt      time.Time
+	// settings are those the row wrote into the program's server's row, or nil where the row
+	// started the program on a row it did not make.
+	settings *services
+	mutex    sync.Mutex
+	log      []byte
+	entries  []logEntry
+	exitCode int
+	exitedAt time.Time
 }
 
 // logEntry is one line of the local log and when the test read it.
@@ -113,10 +116,12 @@ type logEntry struct {
 }
 
 // startProgram starts the built program with a bootstrap folder for a row of its own on the
-// shared board, then the given options, killed when the test ends.
-func startProgram(t *testing.T, options ...string) *run {
+// shared board, made with the settings, then the given options, killed when the test ends.
+func startProgram(t *testing.T, settings services, options ...string) *run {
 	t.Helper()
-	return startBare(t, append([]string{databaseOption, sharedRowFile(t)}, options...)...)
+	program := startBare(t, append([]string{databaseOption, sharedRowFile(t, settings)}, options...)...)
+	program.settings = &settings
+	return program
 }
 
 // startBare starts the built program with the given options alone, killed when the test ends.
@@ -259,16 +264,17 @@ func telnetAlone(t *testing.T, listeners []string) []string {
 const freedPortTries = 5
 
 // startOnFreedPort holds a port free at both loopback addresses, closes the hosts the row names
-// in freed, and starts the program with options(port). Between that close and the program's own
-// listen, a test running in parallel may bind a freed address, and the program does not reach
-// the row's case: with every freed address taken it fails to start, and with one of two taken it
+// in freed, and starts the program with settings(port) and the options. Between that close and
+// the program's own listen, a test running in parallel may bind a freed address, and the program
+// does not reach the row's case: with every freed address taken it fails to start, and with one of
+// two taken it
 // listens at the other alone. A start_failed line that names a freed address as in use, or a
 // started line that leaves a freed address out, is that race, so the row tries a fresh port. Any
 // other first line is judged as listeners judges it, so a program that refuses over the address
 // the row holds still fails the row. A build that never listens at a freed address leaves it out
 // on every port, so the row fails once the tries run out. It returns the port and the started
 // line's listeners.
-func startOnFreedPort(t *testing.T, freed []string, options func(port string) []string) (string, []string) {
+func startOnFreedPort(t *testing.T, freed []string, settings func(port int) services, options ...string) (string, []string) {
 	t.Helper()
 	var line string
 	for range freedPortTries {
@@ -281,7 +287,7 @@ func startOnFreedPort(t *testing.T, freed []string, options func(port string) []
 				_ = ipv6.Close()
 			}
 		}
-		program := startProgram(t, options(port)...)
+		program := startProgram(t, settings(portNumber(t, port)), options...)
 		line = program.firstLine(t)
 		if takenWhileFreed(line, port, freed) {
 			t.Logf("a freed address was taken before the program listened, %q: trying a fresh port", line)
@@ -292,6 +298,7 @@ func startOnFreedPort(t *testing.T, freed []string, options func(port string) []
 			t.Fatalf("the program's first log line was %q, want a started line", line)
 		}
 		listeners := strings.Split(value, ",")
+		program.settings.expectKindsOn(t, listeners)
 		if address := unnamedFreed(listeners, port, freed); address != "" {
 			t.Logf("the started line %q leaves out the freed address %s, which a test running in parallel may have taken: trying a fresh port", line, address)
 			_ = program.command.Process.Kill()
@@ -362,7 +369,8 @@ func kindsOf(t *testing.T, listeners []string) (telnet, ssh []string) {
 }
 
 // listeners waits for the program's first log line, which must be the started line, and returns
-// what it names, as written.
+// what it names, as written. A started line naming a kind the row's settings turn off fails the
+// row.
 func (program *run) listeners(t *testing.T) []string {
 	t.Helper()
 	line := program.firstLine(t)
@@ -370,7 +378,11 @@ func (program *run) listeners(t *testing.T) []string {
 	if !found {
 		t.Fatalf("the program's first log line was %q, want a started line", line)
 	}
-	return strings.Split(value, ",")
+	listeners := strings.Split(value, ",")
+	if program.settings != nil {
+		program.settings.expectKindsOn(t, listeners)
+	}
+	return listeners
 }
 
 // firstLine waits for the program's first log line. read hands a line on before it marks the
