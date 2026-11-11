@@ -5,7 +5,8 @@
 // is held: the key file; on Windows a machine key in Microsoft's TPM or software key store; on
 // Linux a credential systemd hands the service at start, or a Swarm secret.
 //
-// It owns reading both files through the folder; the bootstrap file's layout, format version 1;
+// It owns reading the bootstrap file and the key file through the folder; the bootstrap file's
+// layout, format version 1;
 // checking the key file's owner and permissions and its form; on Windows, finding the key store's
 // key, checking who has access to it and unwrapping the bootstrap file's key under it; on Linux,
 // reading systemd's credential and checking its form, and reading the Swarm secret and checking
@@ -14,7 +15,7 @@
 // database unit's. It does not own the command line, which names the folder, or the local log,
 // which are the program's; making the folder, its permissions, the key file, the key store's key
 // and its access list, systemd's credential and the service setting that loads it, the Swarm
-// secret and the stack file that grants it, and both files, which are hadv-setup's and the
+// secret and the stack file that grants it, and the bootstrap file, which are hadv-setup's and the
 // installs'; or writing the bootstrap file, which is the vault's.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
@@ -56,15 +57,16 @@
 //
 // Under key holder 4, on Linux, the file CredentialName in the folder systemd names in the
 // environment variable CredentialsVariable when it starts the service: the raw 32-byte key, which
-// systemd unsealed from the credential the service's setting loads. Who may read the folder is
-// systemd's to decide, so Open checks no owner or permissions there. When systemd cannot unseal
-// the credential it does not start the service, and Open is never reached.
+// systemd unsealed from the credential the service's setting loads. The folder and what is in it
+// are systemd's, so Open takes them as given: it checks no owner, permissions or link there. When
+// systemd cannot unseal the credential it does not start the service, and Open is never reached.
 //
 // # The Swarm secret
 //
 // Under key holder 5, on Linux, the file SecretName in SecretFolder, where Swarm puts a service's
 // secrets: in the key file's form, owned by the engine's own account with no access for its group
-// or others, as the key file is on Linux.
+// or others, as the key file is on Linux. SecretFolder is opened by its path as the system
+// resolves it; the rule on links is for the secret inside it.
 //
 // # Untrusted input
 //
@@ -79,8 +81,10 @@
 // does not unseal the bootstrap file, unless it holds the real key. Both files come
 // from the bootstrap folder, which only hadv-setup and administrators should write; the key
 // file's owner and permissions are checked because a key file someone else can write or replace
-// could point the engine at a database of their choosing, and the key store's key is checked
-// because anyone with access to it can unwrap the bootstrap file's key. No caller's byte reaches
+// could point the engine at a database of their choosing, the key store's key is checked
+// because anyone with access to it can unwrap the bootstrap file's key, and the Swarm secret's
+// owner and mode are checked because Swarm's default lets every account in the container read
+// the key. No caller's byte reaches
 // this package. Fuzz targets: the header reader and the key file's reader.
 //
 // The package builds for Linux and Windows only, the two systems whose key file checks it holds,
@@ -109,8 +113,8 @@
 //
 //   - The bootstrap package shall write nothing to the local log, standard output or standard
 //     error. [read]
-//   - No error the bootstrap package returns shall hold, in its text, the key or any part of
-//     either file's contents.
+//   - No error the bootstrap package returns shall hold, in its text, the key or any part of what
+//     it reads: the bootstrap file, the key file, systemd's credential or the Swarm secret.
 //   - The bootstrap package shall import nothing outside the Go standard library and
 //     golang.org/x/sys/windows. [read]
 package bootstrap
@@ -177,8 +181,8 @@ const (
 )
 
 // Why Open refused, one error for each kind of refusal; the order of the checks is Open's. None
-// holds the key or any part of either file's contents, so the program can write it to the local
-// log as it is.
+// holds the key or any part of what Open reads, so the program can write it to the local log as
+// it is.
 var (
 	// ErrFolderMissing means the bootstrap folder is not there.
 	ErrFolderMissing = errors.New("bootstrap: the bootstrap folder does not exist")
@@ -193,9 +197,8 @@ var (
 	ErrFileTooLarge = errors.New("bootstrap: the bootstrap file is too large")
 	// ErrHeader means the bootstrap file's header is not format version 1's for a key holder this
 	// system has (the key file; on Windows also the TPM and the software key store; on Linux also
-	// systemd's credential and the Swarm secret), the file is
-	// too short for its header, sealed key, nonce and tag, or the sealed key's name is not in its
-	// form.
+	// systemd's credential and the Swarm secret), the file is too short for its header, sealed key,
+	// nonce and tag, or the sealed key's name is not in its form.
 	ErrHeader = errors.New("bootstrap: the bootstrap file's header is not one this engine reads")
 	// ErrKeyFileMissing means the bootstrap folder holds no key file.
 	ErrKeyFileMissing = errors.New("bootstrap: the key file does not exist")
@@ -238,11 +241,12 @@ var (
 	// ErrCredentialForm means, under key holder 4, that the credential is not exactly KeyBytes
 	// bytes, or is KeyBytes zero bytes.
 	ErrCredentialForm = errors.New("bootstrap: systemd's credential is not a 32-byte key")
-	// ErrSecretMissing means, under key holder 5, that SecretFolder holds no SecretName.
+	// ErrSecretMissing means, under key holder 5, that SecretFolder, or SecretName in it, does not
+	// exist.
 	ErrSecretMissing = errors.New("bootstrap: the Swarm secret does not exist")
-	// ErrSecretUnreadable means, under key holder 5, that the secret is there but will not open or
-	// read, its owner or mode cannot be read, it is not a regular file, or it is a link leading out
-	// of SecretFolder.
+	// ErrSecretUnreadable means, under key holder 5, that SecretFolder will not open, or the secret
+	// is there but will not open or read, its owner or mode cannot be read, it is not a regular
+	// file, or it is a link leading out of SecretFolder.
 	ErrSecretUnreadable = errors.New("bootstrap: the Swarm secret cannot be read")
 	// ErrSecretReachable means, under key holder 5, that the secret's mode gives its group or
 	// others any access, or its owner is not the engine's account.
@@ -338,12 +342,12 @@ var (
 //     file, then Open shall return ErrCredentialUnreadable.
 //   - If the credential is not exactly KeyBytes bytes, or is KeyBytes zero bytes, then Open shall
 //     return ErrCredentialForm, having read at most KeyBytes and one byte more of it.
-//   - Open shall judge no owner or permissions of the credential or its folder.
+//   - Open shall judge no owner, permissions or link of the credential or its folder.
 //   - Under KeyHolderSwarm, Open shall take the key only from SecretName in SecretFolder.
 //   - If SecretFolder, or SecretName in it, does not exist, then Open shall return
 //     ErrSecretMissing.
-//   - If the secret will not open, is not a regular file, or is a link leading out of
-//     SecretFolder, or reading its owner or mode fails, then Open shall return
+//   - If SecretFolder will not open, or the secret will not open, is not a regular file, or is a
+//     link leading out of SecretFolder, or reading its owner or mode fails, then Open shall return
 //     ErrSecretUnreadable.
 //   - If the secret's mode gives its group or others any access, then Open shall return
 //     ErrSecretReachable.
@@ -357,8 +361,8 @@ var (
 //     and one byte more of it.
 //   - If the bootstrap file's tag does not verify under the key, then Open shall return ErrUnseal
 //     and no bytes.
-//   - When it returns, Open shall have closed the bootstrap folder and the files it opened, and
-//     freed every key store handle it opened.
+//   - When it returns, Open shall have closed every folder and file it opened, and freed every key
+//     store handle it opened.
 //   - Open shall wipe each buffer it allocates for the key, the key file's text, the unwrapped key,
 //     the credential, the secret's text and the bootstrap file's bytes before it returns, keeping
 //     only the JSON it returns; the copies Go's AES and GCM keep inside the cipher, and the key
