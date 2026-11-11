@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,15 +22,26 @@ import (
 // machine still not proof of absence.
 const quietWait = 500 * time.Millisecond
 
+// unstartedCall is the test process's one call to RunWindowsService, made by the first row that
+// asks and read by every row. The engine calls it once per process, as the contract asks of its
+// callers: the library under it writes variables the whole process shares before it tries to
+// connect, and Windows answers a later call in the same process "already running", not "cannot
+// connect". Held at package level, so a later -count round reads it too. The service rows'
+// helper makes its call in a process of its own.
+var unstartedCall = sync.OnceValues(func() (runs int, err error) {
+	// No service manager started the test process, so there is none to connect to.
+	_, err = servicemanager.RunWindowsService(func(context.Context, servicemanager.Ready) int {
+		runs++
+		return 0
+	})
+	return runs, err
+})
+
 func TestRunWindowsServiceUnstarted(t *testing.T) {
 	t.Parallel()
-	// The test process: no service manager started it, so there is none to connect to.
 	run := func(t *testing.T) (runs int) {
 		t.Helper()
-		_, err := servicemanager.RunWindowsService(func(context.Context, servicemanager.Ready) int {
-			runs++
-			return 0
-		})
+		runs, err := unstartedCall()
 		if !errors.Is(err, servicemanager.ErrServiceManagerConnect) {
 			t.Errorf("RunWindowsService returned %v; want ErrServiceManagerConnect", err)
 		}
