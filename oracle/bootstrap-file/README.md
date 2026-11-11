@@ -64,13 +64,19 @@ Exit status, one for each of the engine's refusals of a file:
 The reason is on standard error. Statuses 2 and 3 come before the key file is read, so a file
 with a broken header gets its status even when KEY is missing or malformed.
 
+The statuses judge the file alone, under every holder on every system. The engine also refuses,
+as a header it does not read (`ErrHeader`), holders 2 and 3 on Linux and holders 4 and 5 on
+Windows, which the oracle reads with status 0: there a test expects the engine's refusal, not
+the oracle's status.
+
 ## The edits list
 
 One directive a line; `#` starts a comment where a token would start (at the start of a line or
 after a space), so `"x"#` is refused, not read as a comment; blank lines are ignored. Write
 judges nothing: whatever the list says is what is written, and every byte before the sealed
 plaintext, as written, is the additional data, so a file with a wrong header still carries a tag
-that verifies and reaches the engine's later checks.
+that verifies and reaches the engine's later checks. Its one bound is a sealed key longer than
+its 2-byte length can say, 65,535 bytes, refused as a bad edits list.
 
 | Directive | Effect |
 |---|---|
@@ -122,6 +128,7 @@ holders 2 and 3.
                                                nonce and tag                                3
     holder 2 + sealed random:293 + flip 113    a sealed-key byte changed                    4
     holder 4 + flip 10                         holder 4 changed to 5 after sealing          4
+    holder 2 + sealed random:293 + flip 10     holder 2 changed to 3 after sealing          4
     truncate 41                                a header, nonce and tag with nothing sealed  4
     flip 14                                    a nonce changed                              4
     flip 60                                    a sealed byte changed                        4

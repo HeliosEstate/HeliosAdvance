@@ -373,8 +373,8 @@ begin
   NonceStart := HeaderStartLength + Length(Plan.SealedKey);
   if Length(Whole) <> NonceStart + NonceLength + Length(Plaintext) + TagLength then
     Exit(False);
-  Expected := Concat(BytesOf('HADVBOOT'), [0, FormatVersion, Plan.KeyHolder,
-    Byte(Length(Plan.SealedKey) shr 8), Byte(Length(Plan.SealedKey) and $FF)],
+  Expected := Concat(Plan.Magic, [Byte(Plan.Version shr 8), Byte(Plan.Version and $FF),
+    Plan.KeyHolder, Byte(Length(Plan.SealedKey) shr 8), Byte(Length(Plan.SealedKey) and $FF)],
     Plan.SealedKey);
   SetLength(Expected, NonceStart + NonceLength);
   Move(Plan.Nonce, Expected[NonceStart], NonceLength);
@@ -394,7 +394,7 @@ const
   Nonce = 'nonce hex:cafebabefacedbaddecaf888' + #10;
   WindowsKey = 'sealed "hadv-0123456789abcdef0123456789abcdef" random:256' + #10;
   Json = '{"pass":"x"}';
-  Cases: array[0..30] of THeaderCase = (
+  Cases: array[0..35] of THeaderCase = (
     (Name: 'key holder 1, no sealed key'; Edits: Nonce; Plaintext: Json; Expected: 0),
     (Name: 'key holder 2, a sealed key of 293 bytes';
      Edits: 'holder 2' + #10 + WindowsKey + Nonce; Plaintext: Json; Expected: 0),
@@ -455,11 +455,19 @@ const
      Plaintext: Json; Expected: 4),
     (Name: 'key holder 4 turned to 5 after sealing';
      Edits: 'holder 4' + #10 + 'flip 10'; Plaintext: Json; Expected: 4),
+    (Name: 'key holder 2 turned to 3 after sealing';
+     Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'flip 10';
+     Plaintext: Json; Expected: 4),
     (Name: 'key holder 2, larger than 65,536 bytes';
      Edits: 'holder 2' + #10 + 'sealed zeros:293' + #10 + 'append zeros:65536';
      Plaintext: Json; Expected: 2),
     (Name: 'key holder 1, shorter than its header, nonce and tag';
-     Edits: 'truncate 40'; Plaintext: Json; Expected: 3));
+     Edits: 'truncate 40'; Plaintext: Json; Expected: 3),
+    (Name: 'shorter than the header''s first 13 bytes';
+     Edits: 'truncate 12'; Plaintext: Json; Expected: 3),
+    (Name: 'a wrong magic'; Edits: 'magic "HADVBOOX"'; Plaintext: Json; Expected: 3),
+    (Name: 'format version 0'; Edits: 'version 0'; Plaintext: Json; Expected: 3),
+    (Name: 'format version 2'; Edits: 'version 2'; Plaintext: Json; Expected: 3));
 var
   HeaderCase: THeaderCase;
   Plan: TFilePlan;
@@ -468,24 +476,31 @@ var
 begin
   Result := 0;
   for HeaderCase in Cases do
-  begin
-    Plan := ParseEditList(HeaderCase.Edits);
-    Plaintext := BytesOf(HeaderCase.Plaintext);
-    Whole := SealPlan(Key, Plan, Plaintext);
-    Status := ReadStatus(Key, Whole, Opened);
-    if Status <> HeaderCase.Expected then
-    begin
-      WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': status ', Status, ', not ',
-        HeaderCase.Expected);
-      Inc(Result);
-    end
-    else if (Status = 0) and ((BytesToHex(Opened) <> BytesToHex(Plaintext))
-      or not LaidOut(Key, Plan, Plaintext, Whole)) then
-    begin
-      WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': not laid out or read back');
-      Inc(Result);
+    { Any other failure, a range error among them, is this case's, named, and the rest run. }
+    try
+      Plan := ParseEditList(HeaderCase.Edits);
+      Plaintext := BytesOf(HeaderCase.Plaintext);
+      Whole := SealPlan(Key, Plan, Plaintext);
+      Status := ReadStatus(Key, Whole, Opened);
+      if Status <> HeaderCase.Expected then
+      begin
+        WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': status ', Status, ', not ',
+          HeaderCase.Expected);
+        Inc(Result);
+      end
+      else if (Status = 0) and ((BytesToHex(Opened) <> BytesToHex(Plaintext))
+        or not LaidOut(Key, Plan, Plaintext, Whole)) then
+      begin
+        WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': not laid out or read back');
+        Inc(Result);
+      end;
+    except
+      on Failure: Exception do
+      begin
+        WriteLn(StdErr, 'bootstrap-file: ', HeaderCase.Name, ': ', Failure.Message);
+        Inc(Result);
+      end;
     end;
-  end;
 end;
 
 { FIPS-197 appendix C.3, and the AES-256 cases 13 to 16 of McGrew and Viega's GCM
@@ -565,6 +580,8 @@ begin
       Inc(Failures);
     end;
   end;
+  { The header cases' key, set here, not left over from whichever vector ran last. }
+  Move(HexToBytes(KeyFifteen)[0], Key, KeyLength);
   Inc(Failures, HeaderFailures(Key));
   if Failures > 0 then
     raise ERefusal.CreateRefusal(ExitUsage, Format('selftest: %d failures', [Failures]));

@@ -4,7 +4,8 @@
 { The edits list: what write reads to make any file but the key file's good one, another key
   holder's or one broken on purpose. The grammar is in README.md.
   Write never judges a list: a wrong magic, a key holder no engine reads, a length that lies or
-  a sealed key of any bytes at all are exactly the files the engine's tests need. }
+  a sealed key of any bytes at all are exactly the files the engine's tests need. Its one bound
+  is a sealed key longer than its 2-byte length can say, 65,535 bytes. }
 unit EditList;
 
 {$mode objfpc}{$H+}{$R+}{$Q+}
