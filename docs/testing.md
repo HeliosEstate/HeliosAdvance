@@ -208,6 +208,11 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
   cannot order a line against READY=1. On Windows a row reads the service's state and then the
   log file, in that order: a running state read before the line is in the file is the engine's
   fault.
+- The Go team's `svc.Run`, under `RunWindowsService`, writes variables the whole process shares
+  before it tries to connect: the engine calls it once per process. Rows that call it in one test
+  process stay parallel but take turns, behind one lock held for the whole call. Side by side, the
+  race detector reports their writes, but only when the calls happen to overlap, so a green race
+  run does not show the rows are safe; reading the code does.
 - A row that registers the one service name the page gives, or listens on port 23, runs alone.
   Its cleanup ends any process left running its own copy of the program, by an image name no
   other process has, and touches a registered service only when its program is a test's copy.

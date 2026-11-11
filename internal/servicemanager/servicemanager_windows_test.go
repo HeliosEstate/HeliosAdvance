@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,9 +24,16 @@ const quietWait = 500 * time.Millisecond
 
 func TestRunWindowsServiceUnstarted(t *testing.T) {
 	t.Parallel()
+	// The library under RunWindowsService writes variables the whole process shares before it
+	// tries to connect, which the engine's one call per process allows. These rows make the test
+	// process's only calls, the helper's being in a process of its own, so they take turns: side
+	// by side, the race detector reports their writes and fails every test running beside them.
+	var calling sync.Mutex
 	// The test process: no service manager started it, so there is none to connect to.
 	run := func(t *testing.T) (runs int) {
 		t.Helper()
+		calling.Lock()
+		defer calling.Unlock()
 		_, err := servicemanager.RunWindowsService(func(context.Context, servicemanager.Ready) int {
 			runs++
 			return 0
