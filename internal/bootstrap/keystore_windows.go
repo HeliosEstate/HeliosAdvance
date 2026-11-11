@@ -175,7 +175,7 @@ func wide(text string) *uint16 {
 // call also gives is not the key store's answer, which is the status.
 //
 //go:uintptrescapes
-//nolint:errcheck // LazyProc.Call's third result is the thread's last error, not the key store's answer
+//nolint:errcheck // the third result is the thread's last error, not the key store's answer
 func call(procedure *windows.LazyProc, count int, first, second, third, fourth, fifth, sixth, seventh,
 	eighth uintptr,
 ) uintptr {
