@@ -4,8 +4,8 @@
 # fix for an action is applied quickly (the developer, 2026-11-12). It reads each pin's version
 # from the comment beside its hash, a full x.y.z, so a version is never read as wider than it is.
 # A `uses:` not pinned that way fails the run, since this watch could not check it. A withdrawn
-# advisory is left out. One issue per advisory and version: an issue carrying its marker, open or
-# closed, whatever its labels, is not opened again.
+# advisory is left out. One issue per advisory and version: an issue this workflow opened carrying
+# its marker, open or closed, whatever its labels, is not opened again.
 name: actions-watch
 
 on:
@@ -37,8 +37,10 @@ jobs:
           shopt -s nullglob
           open() { # marker title body
             local issues existing
-            issues=$(gh issue list --state all --limit 1000 --json number,body)
-            existing=$(jq -r --arg m "$1" '[.[] | select(.body | contains($m))][0].number // empty' <<< "$issues")
+            # Only an issue this workflow opened counts, whatever its labels now: anyone may open an
+            # issue whose body holds the marker, and that must not silence a warning.
+            issues=$(gh issue list --state all --limit 1000 --json number,body,author)
+            existing=$(jq -r --arg m "$1" '[.[] | select(.author.login == "app/github-actions" and (.body | contains($m)))][0].number // empty' <<< "$issues")
             if [ -n "$existing" ]; then echo "already raised in #$existing: $2"; return; fi
             printf '%s\n\n%s\n' "$3" "$1" | gh issue create --title "$2" --label needs-developer --body-file - > /dev/null
             echo "opened: $2"
