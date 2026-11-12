@@ -78,7 +78,8 @@ file new work.
 - Every goroutine has an owner and stops when its context ends; shutdown drains, unless the
   behavior lines say a stop closes at once (Part 1 does: the developer, 2026-10-16). An error is
   returned or logged, never both; no panic crosses a package boundary. An interface is declared
-  where it is consumed. Anything read from a network or a file has a size bound.
+  where it is consumed. Anything read from a network, a file or the database has a size bound,
+  and each loop it drives has a bound of its own, written in the loop.
 - A comment says why, never what, never a step or line number, never a bare pointer to a spec.
 - Never read the source code of other BBS software or its companions (transfer programs, door
   kits, terminals); know them by their documentation and observed behavior. The loop's hooks
