@@ -96,7 +96,8 @@ func (server *ServerDatabase) takeOver(ctx context.Context, connection *pgx.Conn
 	return holder, sent, settings, nil
 }
 
-// writeTake writes the new holder and reads the settings back from the row it wrote.
+// writeTake reads the settings from the row the write matched, so a held lease or a missing row
+// returns before any setting is checked.
 func (server *ServerDatabase) writeTake(ctx context.Context, transaction pgx.Tx, holder string, previous *string) (Settings, error) {
 	var texts [settingCount]*string
 	err := transaction.QueryRow(ctx, takeSQL+" RETURNING "+settingsSQL,
