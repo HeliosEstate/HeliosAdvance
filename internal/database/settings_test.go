@@ -450,31 +450,52 @@ func TestSettings(t *testing.T) {
 				t.Fatalf("the server's log since the connection ended shows no SCRAM sign-in over TLS by %s:\n%s", created.login, log)
 			}
 		})
+		// Each of Take's refusals of a connection, made on the server after the take, as Take's own
+		// rows make them. A trusted sign-in is logged by the server before any client can refuse
+		// it, so that row reads only that nothing was written.
 		changes := []struct {
-			name   string
-			change func(t *testing.T, server *postgres, created *board)
+			name    string
+			trusted bool
+			change  func(t *testing.T, server *postgres, created *board)
 		}{
-			{"the certificate reloaded to one from another authority", func(t *testing.T, server *postgres, _ *board) {
+			{"the certificate reloaded to one from another authority", false, func(t *testing.T, server *postgres, _ *board) {
 				t.Helper()
 				server.authority = newAuthority(t)
-				if err := server.writeCertificate(serverCertificate{}); err != nil {
-					t.Fatalf("writing the new certificate: %v", err)
-				}
-				server.sql(t, superuser, "SELECT pg_reload_conf()")
+				server.reloadCertificate(t, serverCertificate{})
 			}},
-			{"the login's sign-in rule made password", func(t *testing.T, server *postgres, created *board) {
+			{"the certificate reloaded to one naming db.invalid alone", false, func(t *testing.T, server *postgres, _ *board) {
+				t.Helper()
+				server.reloadCertificate(t, serverCertificate{names: []string{"db.invalid"}})
+			}},
+			{"the certificate reloaded to one naming 127.0.0.2 alone", false, func(t *testing.T, server *postgres, _ *board) {
+				t.Helper()
+				server.reloadCertificate(t, serverCertificate{addresses: []net.IP{net.ParseIP("127.0.0.2")}})
+			}},
+			{"the certificate reloaded to one that expired an hour ago", false, func(t *testing.T, server *postgres, _ *board) {
+				t.Helper()
+				server.reloadCertificate(t, serverCertificate{notAfter: time.Now().Add(-time.Hour)})
+			}},
+			{"the login's sign-in rule made password", false, func(t *testing.T, server *postgres, created *board) {
 				t.Helper()
 				server.signInRule(t, created.login, "password")
 			}},
-			{"TLS turned off and the login's rule made one without TLS", func(t *testing.T, server *postgres, created *board) {
+			{"the login's password stored as md5 and its sign-in rule made md5", false, func(t *testing.T, server *postgres, created *board) {
 				t.Helper()
-				server.mutex.Lock()
-				server.settings = append(server.settings, "ssl = off")
-				err := server.writeSettings()
-				server.mutex.Unlock()
-				if err != nil {
-					t.Fatalf("writing the settings: %v", err)
-				}
+				server.sql(t, superuser, "SET password_encryption = 'md5'; ALTER ROLE "+created.login+" PASSWORD "+quoteLiteral(created.password))
+				server.signInRule(t, created.login, "md5")
+			}},
+			{"the login's sign-in rule made trust", true, func(t *testing.T, server *postgres, created *board) {
+				t.Helper()
+				server.signInRule(t, created.login, "trust")
+			}},
+			{"TLS turned off and the login's rule made one without TLS", false, func(t *testing.T, server *postgres, created *board) {
+				t.Helper()
+				server.addSettings(t, "ssl = off")
+				server.signInRule(t, created.login, "scram-sha-256-any")
+			}},
+			{"TLS limited to 1.1 and the login's rule made one with or without TLS", false, func(t *testing.T, server *postgres, created *board) {
+				t.Helper()
+				server.addSettings(t, "ssl_min_protocol_version = 'TLSv1'", "ssl_max_protocol_version = 'TLSv1.1'", "ssl_ciphers = 'DEFAULT:@SECLEVEL=0'")
 				server.signInRule(t, created.login, "scram-sha-256-any")
 			}},
 		}
@@ -516,6 +537,41 @@ func TestSettings(t *testing.T) {
 				t.Fatalf("EndLease tried no new connection, so the row cannot tell its bound")
 			}
 		})
+		t.Run("the server stopped once every connection of the login ended, a fake with a certificate from its authority in its place offering SCRAM-SHA-256 without channel binding: EndLease within 1 s tries it and does not answer the offer", func(t *testing.T) {
+			t.Parallel()
+			server := startPostgres(t, serverOptions{})
+			created, lease, taken := takeBoard(t, server)
+			endConnections(t, created)
+			server.control(t, "stop", "-m", "immediate", "-w", "-t", "60")
+			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", net.JoinHostPort(databaseHost, strconv.Itoa(server.port)))
+			if err != nil {
+				t.Fatalf("cannot tell: the stopped server's port could not be taken for the fake: %v", err)
+			}
+			received := make(chan string, 1)
+			startFakeOn(t, listener, server.authority, false, func(t *testing.T, connection *fakeConnection) {
+				t.Helper()
+				connection.send(t, 'R', saslBody("SCRAM-SHA-256"))
+				kind, _, err := connection.readMessage(time.Now().Add(tryLimit))
+				select {
+				case received <- fmt.Sprintf("%q %v", kind, err):
+				default:
+				}
+			})
+			expectBeforeRenewal(t, taken)
+			called := time.Now()
+			lease.EndLease()
+			expectWithin(t, "EndLease's return", time.Now(), called, called.Add(endWait+timingMargin))
+			timer := time.NewTimer(tryLimit + timingMargin)
+			defer timer.Stop()
+			select {
+			case got := <-received:
+				if strings.HasPrefix(got, `'p'`) {
+					t.Fatalf("EndLease answered the offer without channel binding: %s", got)
+				}
+			case <-timer.C:
+				t.Fatalf("EndLease's new connection never reached the fake's offer, so the row cannot tell")
+			}
+		})
 		for _, entry := range changes {
 			t.Run(entry.name+", then every connection of the login ended: EndLease within 1 s tries the server, signs in nowhere, and writes nothing", func(t *testing.T) {
 				t.Parallel()
@@ -533,7 +589,8 @@ func TestSettings(t *testing.T) {
 				if !strings.Contains(log, "connection received:") {
 					t.Fatalf("the server's log since the connection ended shows no connection tried:\n%s", log)
 				}
-				if strings.Contains(log, "connection authenticated: identity=\""+created.login+"\"") || strings.Contains(log, "connection authorized: user="+created.login+" ") {
+				if !entry.trusted && (strings.Contains(log, "connection authenticated: identity=\""+created.login+"\"") ||
+					strings.Contains(log, "connection authorized: user="+created.login+" ")) {
 					t.Fatalf("the server's log since the change shows %s signed in:\n%s", created.login, log)
 				}
 				if count := len(created.updates(t)); count != 1 {
@@ -542,6 +599,27 @@ func TestSettings(t *testing.T) {
 			})
 		}
 	})
+}
+
+// reloadCertificate gives the server a new certificate from its authority and has it read it.
+func (server *postgres) reloadCertificate(t *testing.T, wanted serverCertificate) {
+	t.Helper()
+	if err := server.writeCertificate(wanted); err != nil {
+		t.Fatalf("writing the new certificate: %v", err)
+	}
+	server.sql(t, superuser, "SELECT pg_reload_conf()")
+}
+
+// addSettings adds lines to the server's settings and writes them; the next reload reads them.
+func (server *postgres) addSettings(t *testing.T, lines ...string) {
+	t.Helper()
+	server.mutex.Lock()
+	server.settings = append(server.settings, lines...)
+	err := server.writeSettings()
+	server.mutex.Unlock()
+	if err != nil {
+		t.Fatalf("writing the settings: %v", err)
+	}
 }
 
 // expectBeforeRenewal fails the row as one that cannot tell when its setup ran so long that the

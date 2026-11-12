@@ -488,16 +488,24 @@ func TestSettingsProgram(t *testing.T) {
 
 	t.Run("When it takes its server's lease and its server's settings turn no service on, the engine shall write one `started` line saying it listens nowhere.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("the seeded row, every service off: one started line saying so, nothing listening; a stop: it exits, its log that line alone", func(t *testing.T) {
+		t.Run("the seeded row, every service off: one started line saying so, nothing listening; a stop: it exits, its log that line alone, and the lease it still held ended before the exit", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			program := startProgram(t, allOff())
+			created := sharedServer(t).newBoard(t, allOff())
+			program := startOnBoard(t, created)
 			value, _ := program.expectLine(t, 0, "started", time.Now().Add(startLimit))
 			expectListensNowhere(t, value)
 			expectNotListening(t, program)
 			_, sentBy := send(t, program)
-			program.exit(t, sentBy.Add(endLeaseWait+testrun.Patient(margin)))
+			_, exitedAt := program.exit(t, sentBy.Add(endLeaseWait+testrun.Patient(margin)))
 			program.expectLog(t, "started")
+			// A program that wrote its line and then exited holds nothing at the stop: the end
+			// written at the stop is what shows it ran until then.
+			changes := created.updates(t)
+			if len(changes) == 0 {
+				t.Fatalf("the program started without taking the lease: its log:\n%s", program.text())
+			}
+			expectEndedBy(t, created, changes[0].newHolder, exitedAt)
 		})
 	})
 

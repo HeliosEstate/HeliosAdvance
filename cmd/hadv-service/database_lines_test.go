@@ -533,8 +533,8 @@ func TestDatabaseProgram(t *testing.T) {
 				created, meet, fix := cause.stage(t)
 				program := startOnBoard(t, created)
 				meet(t)
-				program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 				created.server.expectLoginError(t, created.login, cause.logged)
+				program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 				expectNotListening(t, program)
 				// The row has never been held, and the test's own updates keep it so: any holder
 				// written is the refused take's.
@@ -556,8 +556,8 @@ func TestDatabaseProgram(t *testing.T) {
 			created, _, fix := causes[0].stage(t)
 			created.server.sql(t, superuser, "ALTER ROLE "+created.login+" SET lock_timeout = '100ms'")
 			program := startOnBoard(t, created)
-			cancelled, _ := program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 			created.server.expectLoginError(t, created.login, causes[0].logged)
+			cancelled, _ := program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 			fix(t)
 			waitForStarted(t, program, 1, time.Now().Add(retryEvery+tryLimit+testrun.Patient(leaseMargin)))
 			lock := created.lockRow(t)
@@ -640,8 +640,8 @@ func TestDatabaseProgram(t *testing.T) {
 				created, meet, _ := cause.stage(t)
 				program := startOnBoard(t, created)
 				meet(t)
-				reason, _ := program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 				created.server.expectLoginError(t, created.login, cause.logged)
+				reason, _ := program.expectLine(t, 0, "waiting", time.Now().Add(testrun.Patient(waitLineLimit)))
 				if _, found := first[cause.reason]; !found {
 					first[cause.reason] = reason
 				}
