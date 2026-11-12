@@ -63,6 +63,11 @@ const (
 	// MostFileBytes bounds a language file; a larger one is refused, no more than this and one
 	// byte of it read.
 	MostFileBytes = 1 << 20
+	// MostEntries bounds how many entries the language folder, or a folder in it, may hold; one
+	// holding more is refused, no more than this and one of its entries listed. With it, the
+	// language files held at once while Load checks them come to at most this many times
+	// MostFileBytes.
+	MostEntries = 256
 	// KeyGreeting is the greeting, written first; it is given no placeholder.
 	KeyGreeting = "session.greeting"
 	// KeyNamePrompt is the name prompt, written after the greeting; it is given no placeholder.
@@ -103,7 +108,8 @@ type Texts struct {
 // ErrNotInstalled, ErrFileRefused.
 //
 // A language is a folder in folder holding a file named exactly the folder's own name and .toml,
-// as folder lists it; anything else in folder is not a language and is left alone. A code, given
+// as folder lists it; anything else in folder is not a language and is left alone, but for the
+// limit on how many entries a folder in it holds. A code, given
 // as code or as a parent, names the language whose folder's name it matches without regard to case
 // (RFC 5646). The chain for code is code, then its parent, then that language's parent and so on,
 // then Fallback; Fallback's own parent, if it has one, is ignored, so every chain ends there.
@@ -112,6 +118,9 @@ type Texts struct {
 // folders' names, and returns the first that fails.
 //
 //   - If folder cannot be read, then Load shall return ErrFileRefused naming it.
+//   - If folder, or a folder in it, holds more than MostEntries entries, then Load shall return
+//     ErrFileRefused naming that folder, having listed no more than MostEntries and one of its
+//     entries.
 //   - If a language's folder name is not a well-formed language tag in lower case, then Load shall
 //     return ErrFileRefused naming its file.
 //   - If a language's folder or file is a link leading out of folder, or its file cannot be read,
