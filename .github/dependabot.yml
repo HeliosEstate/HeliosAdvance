@@ -8,13 +8,21 @@
 # those. New releases wait out Dependabot's default three-day cooldown before a pull request
 # (developer, 2026-10-14). The bootstrap file oracle's Dockerfile pins its base image by digest
 # and is not watched: no workflow builds that image, so a bump would merge unproven, and a base
-# image built by hand gains little from being newer (the developer, 2026-11-12).
+# image built by hand gains little from being newer (the developer, 2026-11-12). The Actions'
+# version updates come as one weekly pull request, one run and one signoff; a security update,
+# for an action or the Go module, still comes on its own as soon as its advisory lands, to be
+# applied quickly (the developer, 2026-11-12).
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
   - package-ecosystem: gomod
     directory: /
     schedule:
