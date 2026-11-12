@@ -5,9 +5,9 @@ package bootstrap
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
-	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -21,8 +21,10 @@ const (
 	silentFlag = 0x40
 	// oaepPadFlag says the padding information handed to the unwrap is OAEP's.
 	oaepPadFlag = 0x4
-	// bufferTooSmall is the key store's answer to an unwrap longer than the buffer it was given.
-	bufferTooSmall = 0x80090028
+	// bufferTooSmall is the key store's answer to an unwrap longer than the buffer it was given;
+	// tpmBufferTooSmall is the TPM's own code for the same case.
+	bufferTooSmall    = 0x80090028
+	tpmBufferTooSmall = 0x80290406
 	// statusBits is what a status keeps: the calling convention leaves the register's upper half
 	// unspecified.
 	statusBits = 0xffffffff
@@ -63,7 +65,7 @@ func storeHeaderIsOurs(sealed []byte) bool {
 	if sealed[10] != KeyHolderTPM && sealed[10] != KeyHolderSoftwareKeyStore {
 		return false
 	}
-	if int(sealed[11])<<8|int(sealed[12]) != SealedKeyBytes ||
+	if int(binary.BigEndian.Uint16(sealed[11:13])) != SealedKeyBytes ||
 		len(sealed) < HeaderBytes+SealedKeyBytes+NonceBytes+TagBytes {
 		return false
 	}
@@ -101,15 +103,22 @@ func unwrapKey(keyHolder byte, sealedKey, buffer []byte) (key []byte, err error)
 			return nil, refuse(err)
 		}
 	}
+	storeText, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, refuse(err)
+	}
+	keyText, err := windows.UTF16PtrFromString(string(sealedKey[:KeyNameBytes]))
+	if err != nil {
+		return nil, refuse(err)
+	}
 	var store, handle uintptr
-	if status := call(openStore, 3, uintptr(unsafe.Pointer(&store)),
-		uintptr(unsafe.Pointer(wide(name))), 0, 0, 0, 0, 0, 0); status != 0 {
+	if status := call(openStore, uintptr(unsafe.Pointer(&store)),
+		uintptr(unsafe.Pointer(storeText)), 0); status != 0 {
 		return nil, refuse(windows.Errno(status))
 	}
 	defer func() { err = freed(store, err, refuse) }()
-	if status := call(openKey, 5, store, uintptr(unsafe.Pointer(&handle)),
-		uintptr(unsafe.Pointer(wide(string(sealedKey[:KeyNameBytes])))), 0,
-		machineKeyFlag|silentFlag, 0, 0, 0); status != 0 {
+	if status := call(openKey, store, uintptr(unsafe.Pointer(&handle)),
+		uintptr(unsafe.Pointer(keyText)), 0, machineKeyFlag|silentFlag); status != 0 {
 		return nil, refuse(windows.Errno(status))
 	}
 	defer func() { err = freed(handle, err, refuse) }()
@@ -122,7 +131,7 @@ func unwrapKey(keyHolder byte, sealedKey, buffer []byte) (key []byte, err error)
 // freed adds a failed free to what the call already gives only when nothing before it failed, as
 // a failed close of a file is a refusal.
 func freed(handle uintptr, err error, refuse func(error) error) error {
-	if status := call(freeObject, 1, handle, 0, 0, 0, 0, 0, 0, 0); status != 0 && err == nil {
+	if status := call(freeObject, handle); status != 0 && err == nil {
 		return refuse(windows.Errno(status))
 	}
 	return err
@@ -130,28 +139,39 @@ func freed(handle uintptr, err error, refuse func(error) error) error {
 
 // judgeKey reads the owner and access list from the key's own handle, never by its name again.
 func judgeKey(handle uintptr) error {
+	property, err := windows.UTF16PtrFromString("Security Descr")
+	if err != nil {
+		return ErrKeyStorePermissions
+	}
 	buffer := make([]byte, descriptorMostBytes)
 	var length uint32
-	status := call(getProperty, 6, handle, uintptr(unsafe.Pointer(wide("Security Descr"))),
+	status := call(getProperty, handle, uintptr(unsafe.Pointer(property)),
 		uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), uintptr(unsafe.Pointer(&length)),
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|silentFlag, 0, 0)
-	if status != 0 {
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|silentFlag)
+	if status != 0 || int(length) > len(buffer) {
 		return ErrKeyStorePermissions
 	}
 	// The bytes are the key store's own, self-relative, and judged by Windows' own accessors.
 	descriptor := (*windows.SECURITY_DESCRIPTOR)(unsafe.Pointer(&buffer[0]))
+	if !descriptor.IsValid() {
+		return ErrKeyStorePermissions
+	}
 	return judgeAccess(descriptor, ErrKeyStorePermissions, ErrKeyStoreReachable)
 }
 
 // unwrap decrypts into the whole buffer, one byte longer than the key, so the key store itself
 // refuses a longer result.
 func unwrap(handle uintptr, wrapped, buffer []byte, refuse func(error) error) ([]byte, error) {
-	padding := oaepPadding{algorithm: wide("SHA256")}
+	algorithm, err := windows.UTF16PtrFromString("SHA256")
+	if err != nil {
+		return nil, refuse(err)
+	}
+	padding := oaepPadding{algorithm: algorithm}
 	var length uint32
-	status := call(decrypt, 8, handle, uintptr(unsafe.Pointer(&wrapped[0])), uintptr(len(wrapped)),
+	status := call(decrypt, handle, uintptr(unsafe.Pointer(&wrapped[0])), uintptr(len(wrapped)),
 		uintptr(unsafe.Pointer(&padding)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)),
 		uintptr(unsafe.Pointer(&length)), oaepPadFlag|silentFlag)
-	if status == bufferTooSmall {
+	if status == bufferTooSmall || status == tpmBufferTooSmall {
 		return nil, ErrUnwrap
 	}
 	if status != 0 {
@@ -163,23 +183,13 @@ func unwrap(handle uintptr, wrapped, buffer []byte, refuse func(error) error) ([
 	return buffer[:KeyBytes], nil
 }
 
-// wide is a NUL-ended UTF-16 string for the key store. No string given has a NUL in it: the key's
-// name has passed the header's form check and the rest are constants.
-func wide(text string) *uint16 {
-	units := utf16.Encode([]rune(text + "\x00"))
-	return &units[0]
-}
-
-// call runs a key store procedure with its first count arguments and gives its status. The
-// pointers converted in its arguments stay alive and in place until it returns. The last error the
-// call also gives is not the key store's answer, which is the status.
+// call runs a key store procedure with its arguments and gives its status. The pointers converted
+// in its arguments stay alive and in place until it returns. The last error the call also gives is
+// not the key store's answer, which is the status.
 //
 //go:uintptrescapes
 //nolint:errcheck // the third result is the thread's last error, not the key store's answer
-func call(procedure *windows.LazyProc, count int, first, second, third, fourth, fifth, sixth, seventh,
-	eighth uintptr,
-) uintptr {
-	arguments := [8]uintptr{first, second, third, fourth, fifth, sixth, seventh, eighth}
-	status, _, _ := procedure.Call(arguments[:count]...)
+func call(procedure *windows.LazyProc, arguments ...uintptr) uintptr {
+	status, _, _ := procedure.Call(arguments...)
 	return status & statusBits
 }
