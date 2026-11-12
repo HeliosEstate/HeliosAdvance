@@ -6,7 +6,8 @@
 #   windows-latest carrying a new PostgreSQL major (Windows tests the image's own copy).
 # - A PostgreSQL major 16 or later released that no job tests.
 # - A tested major within 90 days of its last release, by the project's published plan.
-# One issue per change: an issue carrying the change's marker, open or closed, is not opened again.
+# One issue per change: an issue carrying the change's marker, open or closed, whatever its
+# labels, is not opened again.
 name: pg-watch
 
 on:
@@ -67,7 +68,7 @@ jobs:
           set -euo pipefail
           open() { # marker title body
             local issues existing
-            issues=$(gh issue list --label needs-developer --state all --limit 1000 --json number,body)
+            issues=$(gh issue list --state all --limit 1000 --json number,body)
             existing=$(jq -r --arg m "$1" '[.[] | select(.body | contains($m))][0].number // empty' <<< "$issues")
             if [ -n "$existing" ]; then echo "already raised in #$existing: $2"; return; fi
             printf '%s\n\n%s\n' "$3" "$1" | gh issue create --title "$2" --label needs-developer --body-file - > /dev/null
