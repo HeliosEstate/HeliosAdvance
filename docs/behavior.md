@@ -512,3 +512,5 @@ on the local log and on the texts a caller is shown.
 - If a folder in `lang` holding a file of its own name is not a well-formed language tag in lower
   case, or a `parent` names no language the folder holds or leads back to itself, then the engine
   shall write one `start_failed` line naming the file and why, and exit with a non-zero code.
+- If the `lang` folder, or a folder in it, holds more than 256 entries, then the engine shall
+  write one `start_failed` line naming the folder and why, and exit with a non-zero code.

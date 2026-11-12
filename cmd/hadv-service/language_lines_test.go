@@ -348,9 +348,18 @@ func expectRefusalNaming(t *testing.T, program *run, named string) {
 	}
 }
 
-// langWord is the lang folder named as a word of its own, by itself or in a path, so that a word
-// such as "language", which a refusal may hold whatever it names, does not count.
-var langWord = regexp.MustCompile(`(^|[^A-Za-z])` + langFolder + `([^A-Za-z]|$)`)
+// folderWord matches the folder called name, named as a word of its own, by itself or at the end of
+// a path: not followed by a path separator, as a path to something inside it is, nor by .toml, as
+// a language's own file is. A word joined to others by an underscore or a hyphen does not count:
+// the row's own temporary folder is named after the row, and holds such words.
+func folderWord(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(name) + `($|[^A-Za-z0-9_./\\-]|\.$|\.[^A-Za-z0-9])`)
+}
+
+// langWord is the lang folder named as a word of its own, so that a word such as "language",
+// which a refusal may hold whatever it names, or a path to the folder the program sits in, does
+// not count.
+var langWord = folderWord(langFolder)
 
 // expectRefusalNamingLang waits for a program that must refuse to start and checks its one
 // start_failed line names the lang folder.

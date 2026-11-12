@@ -152,6 +152,12 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   files the row reads; the runtime's own threads have reads of their pipes restarted
   (`= ? ERESTARTSYS`) at moments their scheduler picks, and those name the pipe. strace is on
   CI's Linux images.
+- A bound on how many entries the engine lists of a folder is judged the same way, under strace
+  with `-v`, which prints every entry each listing call handed back. The system hands entries back
+  in batches the library's buffer sizes (Go's holds 8 KiB), so no row can count exactly the
+  entries the engine took. A sound engine stops calling once it holds what it needs, so every call
+  but its last handed back no more than the bound, whatever its buffer: the row checks the calls
+  but the largest. Long names keep a batch small, so the row tells the bound to within one batch.
 - On Windows the rows of a read-bound line prove its refusal alone (the developer, 2026-11-10),
   so the bound is a `TestLinux…` row's: nothing there tells what the engine read of one file. A
   byte-range lock from the byte past the limit fails a sound reader that asks for more than it
