@@ -18,20 +18,23 @@ permissions:
 jobs:
   scorecard:
     runs-on: ubuntu-latest
+    # A bound on a hang only.
+    timeout-minutes: 30
     permissions:
       contents: read
-      actions: read
       security-events: write
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # The action runs in a container and joins results_file to the workspace, even a full path,
+      # so the file is named relative to the workspace, where upload-sarif reads it too.
       - uses: ossf/scorecard-action@v2.5.0
         with:
-          results_file: ${{ runner.temp }}/scorecard.sarif
+          results_file: scorecard.sarif
           results_format: sarif
           publish_results: false
       - uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: ${{ runner.temp }}/scorecard.sarif
+          sarif_file: scorecard.sarif
           category: scorecard
