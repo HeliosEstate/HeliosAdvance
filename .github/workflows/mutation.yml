@@ -104,7 +104,7 @@ jobs:
           export PATH="$PGDIR:$PATH"
           if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
           sudo env "PATH=$PATH" "HOME=$HOME" "MUTATE=$MUTATE" "BASE=$BASE" "GATES=$GATES" "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" \
-            systemd-run --scope --quiet --collect -p MemoryMax=12G -p MemorySwapMax=0 \
+            systemd-run --scope --quiet --collect -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue \
             --uid="$(id -u)" --gid="$(id -g)" --same-dir -- bash -c '
               bash check.sh --mutation; status=$?
               events=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.events
