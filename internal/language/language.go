@@ -127,10 +127,21 @@ func loadFrom(root *os.Root, folder, code string) (*Texts, error) {
 // Windows' file names ignore case. A regular file is left alone; any other entry is opened inside
 // the root, non-blocking so a named pipe never holds Load, and judged on the opened handle.
 func find(root *os.Root, folder string) ([]*language, error) {
-	entries, err := fs.ReadDir(root.FS(), ".")
+	listed, err := root.Open(".")
 	if err != nil {
 		return nil, refusal(folder, "the language folder cannot be listed", err)
 	}
+	entries, err := listed.ReadDir(MostEntries + 1)
+	if closeErr := listed.Close(); err == nil || errors.Is(err, io.EOF) {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, refusal(folder, "the language folder cannot be listed", err)
+	}
+	if len(entries) > MostEntries {
+		return nil, tooManyEntries(folder)
+	}
+	slices.SortFunc(entries, func(first, second fs.DirEntry) int { return strings.Compare(first.Name(), second.Name()) })
 	var languages []*language
 	for _, entry := range entries {
 		if entry.Type().IsRegular() {
@@ -138,9 +149,12 @@ func find(root *os.Root, folder string) ([]*language, error) {
 		}
 		name := entry.Name()
 		found := &language{code: name, path: filepath.Join(folder, name, name+".toml")}
-		isLanguage, fault := hasOwnFile(root, name)
-		if fault != "" {
-			found.fault = fault
+		isLanguage, err := hasOwnFile(root, name)
+		if errors.Is(err, errTooManyEntries) {
+			return nil, tooManyEntries(filepath.Join(folder, name))
+		}
+		if err != nil {
+			found.fault = "cannot be read: " + err.Error()
 		} else if !isLanguage {
 			continue
 		}
@@ -149,29 +163,46 @@ func find(root *os.Root, folder string) ([]*language, error) {
 	return languages, nil
 }
 
+// tooManyEntries refuses a folder holding more than MostEntries entries. Load lists one more than
+// that and no further, so a folder of any size costs the same.
+func tooManyEntries(folder string) error {
+	return refusal(folder, fmt.Sprintf("it holds more than %d entries", MostEntries), nil)
+}
+
+// errTooManyEntries tells a folder holding too many entries from one that cannot be read, which
+// is the language's own fault, refused in its turn.
+var errTooManyEntries = errors.New("too many entries")
+
 // hasOwnFile judges the entry on its opened handle, so a link cannot change what was judged
 // between the check and the use.
-func hasOwnFile(root *os.Root, name string) (bool, string) {
+func hasOwnFile(root *os.Root, name string) (bool, error) {
 	opened, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return false, "cannot be read: " + err.Error()
+		return false, err
 	}
 	isFolder, names, err := listOpened(opened)
 	if closeErr := opened.Close(); err == nil {
 		err = closeErr
 	}
-	if err != nil {
-		return false, "cannot be read: " + err.Error()
+	if len(names) > MostEntries {
+		return false, errTooManyEntries
 	}
-	return isFolder && slices.Contains(names, name+".toml"), ""
+	if err != nil {
+		return false, err
+	}
+	return isFolder && slices.Contains(names, name+".toml"), nil
 }
 
+// listOpened lists one more than MostEntries names at most, enough to know a folder holds too many.
 func listOpened(opened *os.File) (bool, []string, error) {
 	info, err := opened.Stat()
 	if err != nil || !info.IsDir() {
 		return false, nil, err
 	}
-	names, err := opened.Readdirnames(-1)
+	names, err := opened.Readdirnames(MostEntries + 1)
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
 	return true, names, err
 }
 
