@@ -46,55 +46,77 @@ func takeLease(callerContext context.Context, server *ServerDatabase) (*Lease, e
 		}
 		return nil, classify(callerContext, tryContext, made, err, true)
 	}
-	holder, sent, err := server.takeOver(tryContext, connection)
+	holder, sent, settings, err := server.takeOver(tryContext, connection)
 	if err != nil {
 		closeErr := closeConnection(callerContext, connection)
 		return nil, classify(callerContext, tryContext, made, errors.Join(err, closeErr), false)
 	}
-	return startLease(callerContext, server, connection, holder, sent), nil
+	return startLease(callerContext, server, connection, holder, sent, settings), nil
 }
 
 // takeOver makes the checks on the signed-in connection, in order, then the take. The errors it
-// returns that are the package's own pass through classify unchanged.
-func (server *ServerDatabase) takeOver(ctx context.Context, connection *pgx.Conn) (string, time.Time, error) {
+// returns that are the package's own pass through classify unchanged. The write and the read of
+// the settings are one transaction, so the settings are those the lease was written with and a
+// refused setting rolls the write back.
+func (server *ServerDatabase) takeOver(ctx context.Context, connection *pgx.Conn) (string, time.Time, Settings, error) {
+	var none Settings
 	var tooPowerful bool
 	if err := connection.QueryRow(ctx, tooPowerfulQuery).Scan(&tooPowerful); err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, none, err
 	}
 	if tooPowerful {
-		return "", time.Time{}, ErrTooPowerful
+		return "", time.Time{}, none, ErrTooPowerful
 	}
 	var readOnly string
 	if err := connection.QueryRow(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, none, err
 	}
 	if readOnly != "off" {
-		return "", time.Time{}, ErrReadOnly
+		return "", time.Time{}, none, ErrReadOnly
 	}
 	if err := checkSchemaVersion(ctx, connection); err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, none, err
 	}
 
 	holder := uuid.NewV4().String()
 	previous := server.state.lastHolder
 	server.state.lastHolder = &holder
+	// Before the transaction begins: the database's now() inside it is the transaction's start,
+	// so the loss clock must start no later than that.
 	sent := time.Now()
-	tag, err := connection.Exec(ctx, takeSQL, server.state.file.ServerID, holder, previous)
+	var settings Settings
+	err := pgx.BeginFunc(ctx, connection, func(transaction pgx.Tx) error {
+		var err error
+		settings, err = server.writeTake(ctx, transaction, holder, previous)
+		return err
+	})
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, none, err
 	}
-	if tag.RowsAffected() == 0 {
+	return holder, sent, settings, nil
+}
+
+// writeTake writes the new holder and reads the settings back from the row it wrote.
+func (server *ServerDatabase) writeTake(ctx context.Context, transaction pgx.Tx, holder string, previous *string) (Settings, error) {
+	var texts [settingCount]*string
+	err := transaction.QueryRow(ctx, takeSQL+" RETURNING "+settingsSQL,
+		server.state.file.ServerID, holder, previous).
+		Scan(&texts[0], &texts[1], &texts[2], &texts[3], &texts[4], &texts[5])
+	if errors.Is(err, pgx.ErrNoRows) {
 		var present bool
-		if err := connection.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM hadv.servers WHERE id = $1)",
+		if err := transaction.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM hadv.servers WHERE id = $1)",
 			server.state.file.ServerID).Scan(&present); err != nil {
-			return "", time.Time{}, err
+			return Settings{}, err
 		}
 		if !present {
-			return "", time.Time{}, ErrNoServerRow
+			return Settings{}, ErrNoServerRow
 		}
-		return "", time.Time{}, ErrLeaseHeld
+		return Settings{}, ErrLeaseHeld
 	}
-	return holder, sent, nil
+	if err != nil {
+		return Settings{}, err
+	}
+	return parseSettings(texts)
 }
 
 // checkSchemaVersion reads the version from the one row whose column is a not-null integer; the

@@ -20,10 +20,10 @@ var (
 // startLease hands the taken connection to a goroutine that owns it until the lease is lost or
 // ended. The Lease has a context of its own, keeping the caller's values but not its end: a stop
 // cancels the program's, and the program ends the lease itself.
-func startLease(callerContext context.Context, server *ServerDatabase, connection *pgx.Conn, holder string, sent time.Time) *Lease {
+func startLease(callerContext context.Context, server *ServerDatabase, connection *pgx.Conn, holder string, sent time.Time, settings Settings) *Lease {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(callerContext))
 	lease := &Lease{state: leaseState{server: server, holder: holder, connection: connection,
-		lostSignal: make(chan struct{}), cancel: cancel, stopped: make(chan struct{})}}
+		lostSignal: make(chan struct{}), cancel: cancel, stopped: make(chan struct{}), settings: settings}}
 	go lease.run(ctx, sent)
 	return lease
 }
@@ -137,18 +137,25 @@ func (lease *Lease) end() {
 	}
 	endContext, release := context.WithTimeout(context.Background(), EndWaitMilliseconds*time.Millisecond)
 	defer release()
-	if state.connection != nil && state.connection.IsClosed() {
-		state.connection = nil
-	}
-	if state.connection == nil {
-		connection, _, err := state.server.connect(endContext)
-		if err != nil {
-			return
+	// A connection the database ended fails the first write and is then closed, so a second try
+	// connects anew within the same wait.
+	for range 2 {
+		if state.connection != nil && state.connection.IsClosed() {
+			state.connection = nil
 		}
-		state.connection = connection
+		if state.connection == nil {
+			connection, _, err := state.server.connect(endContext)
+			if err != nil {
+				return
+			}
+			state.connection = connection
+		}
+		// A failed end leaves the lease to run out; EndLease returns nothing to tell.
+		_, err := state.connection.Exec(endContext, endSQL, state.server.state.file.ServerID, state.holder)
+		if err == nil || !state.connection.IsClosed() {
+			break
+		}
 	}
-	//nolint:errcheck // EndLease returns nothing, and an end that fails leaves the lease to run out
-	state.connection.Exec(endContext, endSQL, state.server.state.file.ServerID, state.holder)
 	//nolint:errcheck // the connection is given up whether or not the close succeeds
 	state.connection.Close(endContext)
 	state.connection = nil

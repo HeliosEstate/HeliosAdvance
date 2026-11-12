@@ -33,7 +33,7 @@ type leaseState struct {
 	cancel     context.CancelFunc
 	stopped    chan struct{}
 	endOnce    sync.Once
-	// settings is a placeholder until the build reads them with the lease.
+	// settings are the server's settings as the take's write read them.
 	settings Settings
 }
 
@@ -44,8 +44,20 @@ func settingText(failure *SettingError) string {
 	return "database: the setting " + failure.Setting + " is empty, not of its kind, or a port outside 0 to 65535"
 }
 
-// temporaryText is a placeholder until the build words each reason.
-func temporaryText(_ *TemporaryError) string {
+// temporaryText is the program's `waiting` line, so each reason has words of its own.
+func temporaryText(failure *TemporaryError) string {
+	if failure != nil {
+		switch failure.Reason {
+		case TemporaryCancelled:
+			return "database: the database cancelled the statement"
+		case TemporaryLockNotAvailable:
+			return "database: a lock the statement needed was not available"
+		case TemporaryClash:
+			return "database: a clash with another transaction stopped the statement"
+		case TemporaryRanOut:
+			return "database: the database's disk or memory ran out"
+		}
+	}
 	return ErrTemporary.Error()
 }
 
