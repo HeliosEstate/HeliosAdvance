@@ -1,0 +1,61 @@
+# Opens an issue the day GitHub's advisory database names a version of an action the workflows
+# pin. The actions are pinned by commit hash, and Dependabot raises no alert for an action pinned
+# that way, only for one pinned by version tag; this watch gives back that warning, so a security
+# fix for an action is applied quickly (the developer, 2026-11-12). It reads each pin's version
+# from the comment beside its hash. A `uses:` not pinned that way fails the run, since this watch
+# could not check it. One issue per advisory and version: an issue carrying its marker, open or
+# closed, is not opened again.
+name: actions-watch
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    # A bound on a hang only.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open an issue for each pinned action an advisory names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          open() { # marker title body
+            local issues existing
+            issues=$(gh issue list --label needs-developer --state all --limit 1000 --json number,body)
+            existing=$(jq -r --arg m "$1" '[.[] | select(.body | contains($m))][0].number // empty' <<< "$issues")
+            if [ -n "$existing" ]; then echo "already raised in #$existing: $2"; return; fi
+            printf '%s\n\n%s\n' "$3" "$1" | gh issue create --title "$2" --label needs-developer --body-file - > /dev/null
+            echo "opened: $2"
+          }
+          pin='uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[^@ ]+)?@[0-9a-f]{40} # v[0-9][^ ]*'
+          if unpinned=$(grep -nE '^\s*(- )?uses:' .github/workflows/*.yml | grep -vE "$pin"); then
+            echo "::error::these actions are not pinned by hash with their version beside it, so this watch cannot check them:"
+            echo "$unpinned"
+            exit 1
+          fi
+          pins=$(grep -hoE "$pin" .github/workflows/*.yml | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
+          [ -n "$pins" ] || { echo "::error::no pinned action found, so nothing was checked"; exit 1; }
+          while read -r action version; do
+            found=$(gh api "advisories?ecosystem=actions&affects=$action@$version&per_page=100" \
+              --jq '.[] | [.ghsa_id, .severity, .summary, .html_url] | @tsv')
+            if [ -z "$found" ]; then echo "no advisory: $action $version"; continue; fi
+            while IFS=$'\t' read -r ghsa severity summary url; do
+              open "<!-- actions-watch: $ghsa $action@$version -->" \
+                "Advisory $ghsa ($severity) names $action $version, which the workflows pin" \
+                "GitHub's advisory database names $action $version, pinned in the workflows: $summary ($url). Decide the update: Dependabot's grouped pull request carries it at the week's run, or a pull request can move the pin now."
+            done <<< "$found"
+          done <<< "$pins"

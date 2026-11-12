@@ -9,9 +9,10 @@
 # (developer, 2026-10-14). The bootstrap file oracle's Dockerfile pins its base image by digest
 # and is not watched: no workflow builds that image, so a bump would merge unproven, and a base
 # image built by hand gains little from being newer (the developer, 2026-11-12). The Actions'
-# version updates come as one weekly pull request, one run and one signoff; a security update,
-# for an action or the Go module, still comes on its own as soon as its advisory lands, to be
-# applied quickly (the developer, 2026-11-12).
+# version updates come as one weekly pull request, one run and one signoff. Security fixes are
+# to be applied quickly (the developer, 2026-11-12): the Go module's security update still comes
+# on its own as soon as its advisory lands, but Dependabot raises no alert for an action pinned by
+# hash, so the daily actions-watch workflow opens an issue for an advisory naming a pinned action.
 version: 2
 updates:
   - package-ecosystem: github-actions
