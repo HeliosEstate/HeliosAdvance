@@ -1,0 +1,37 @@
+# OpenSSF Scorecard: an outside check of the repository's supply-chain hygiene (pinned actions,
+# token permissions, branch rules, code review, dependency updates, fuzzing, signed releases), its
+# findings filed in code scanning beside the codebase review's and the fuzzing's (the developer,
+# 2026-11-12). A report, not a gate: a finding the developer accepts is dismissed in code scanning
+# with its reason. Its results are not published to the Scorecard site.
+name: scorecard
+
+on:
+  push:
+    branches: [development]
+  schedule:
+    - cron: "17 7 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@v2.5.0
+        with:
+          results_file: ${{ runner.temp }}/scorecard.sarif
+          results_format: sarif
+          publish_results: false
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ runner.temp }}/scorecard.sarif
+          category: scorecard
