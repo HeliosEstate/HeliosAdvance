@@ -46,12 +46,15 @@ jobs:
           files=(.github/workflows/*.yml .github/workflows/*.yaml)
           [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow file found, so nothing was checked"; exit 1; }
           pin='uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[^@ ]+)?@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+'
-          if unpinned=$(grep -nE '^\s*(-\s+)?\{?\s*uses:' "${files[@]}" | grep -vE "$pin(\s|\}|$)"); then
-            echo "::error::these actions are not pinned by hash with their full version beside it, so this watch cannot check them:"
+          # Any uses key, quoted or not, first on its line or not: one not in the pinned form above
+          # fails the run rather than go unchecked.
+          key="(^|[{,[:space:]])[\"']?uses[\"']?[[:space:]]*:"
+          if unpinned=$(grep -nE "$key" "${files[@]}" | grep -vE "$pin(\s|\}|$)"); then
+            echo "::error::these uses lines are not in the form this watch reads (uses: owner/repo@hash # vX.Y.Z), so it cannot check them:"
             echo "$unpinned"
             exit 1
           fi
-          pins=$(grep -hoE "$pin" "${files[@]}" | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
+          pins=$({ grep -hoE "$pin" "${files[@]}" || true; } | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
           [ -n "$pins" ] || { echo "::error::no pinned action found, so nothing was checked"; exit 1; }
           # Fields joined by the unit separator, which is not whitespace, so an empty one keeps its
           # place; line breaks and backticks in a summary are flattened, since it goes in a code block.
