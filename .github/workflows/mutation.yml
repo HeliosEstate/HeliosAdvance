@@ -99,9 +99,10 @@ jobs:
       # A mutant can make its tests grow memory without bound, and several run at once: unheld,
       # they took the whole runner down, and no report came. When the group is full, the kernel
       # stops one process in it, by its own score, which favors the one using the most memory.
-      # Which process it stops is the kernel's choice and is not pinned here. In a trial run it was
-      # the runaway test, which then failed, so its mutant counted as caught. If it stops gremlins
-      # or check.sh, the run goes red with no report; if it stops a server another test uses, that
+      # Which process it stops is the kernel's choice and is not pinned here. In a trial run the
+      # limit stopped one process and the run finished; the log does not say which. If it stops
+      # the runaway test, that test fails and its mutant counts as caught. If it stops gremlins or
+      # check.sh, the run goes red with no report; if it stops a server another test uses, that
       # test fails and its mutant counts as caught when it may not be. OOMPolicy=continue keeps
       # systemd from stopping the rest of the run at the first stop. The limit is on real memory,
       # not reserved address space, which a test binary holds far more of than it uses. The report
