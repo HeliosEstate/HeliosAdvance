@@ -583,14 +583,20 @@ func TestLanguageLines(t *testing.T) {
 				expectRefusalNaming(t, startPlaced(t, programFile, langOption, each.code), each.code)
 			})
 		}
-		t.Run("the empty code: one start_failed line naming lang, not one refusing the option itself, and a non-zero exit", func(t *testing.T) {
+		t.Run("the empty code: one start_failed line saying so as for de-de, which lang does not hold, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			program := startPlaced(t, boardWith(t, map[string]string{fallbackCode: enUSFile()}), langOption, "")
-			reason := unquoted(program.expectRefusal(t))
-			// A program that takes no -lang refuses the option as not defined, which says
-			// nothing of the language.
-			if !langWord.MatchString(reason) || strings.Contains(reason, "not defined") {
-				t.Fatalf("the start_failed line %q does not say -lang names no language", reason)
+			// Load counts the empty code as one that names no language, as it does de-de, and
+			// the rows above prove the program's line for such a code says so by naming it. No
+			// check of the words alone tells that from another refusal naming lang or the option,
+			// so the empty code's line must be de-de's from the same folder, de-de taken out.
+			programFile := boardWith(t, map[string]string{fallbackCode: enUSFile()})
+			unknown := unquoted(startPlaced(t, programFile, langOption, deDE).expectRefusal(t))
+			if !strings.Contains(unknown, deDE) {
+				t.Fatalf("the start_failed line for -lang %s, %q, does not name it", deDE, unknown)
+			}
+			empty := unquoted(startPlaced(t, programFile, langOption, "").expectRefusal(t))
+			if want := strings.ReplaceAll(unknown, deDE, ""); empty != want {
+				t.Fatalf("the start_failed line for the empty code is %q, not de-de's with de-de taken out, %q", empty, want)
 			}
 		})
 	})
