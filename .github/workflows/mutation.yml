@@ -97,12 +97,17 @@ jobs:
       # The gates are the required check's, so they are skipped here.
       # The run is held in one control group of at most 12 GiB of memory, out of the runner's 16.
       # A mutant can make its tests grow memory without bound, and several run at once: unheld,
-      # they took the whole runner down, and no report came. Inside the group the kernel stops the
-      # largest process when the group is full, which is the runaway test; the test fails, the
-      # mutant counts as caught, and OOMPolicy=continue keeps systemd from stopping the rest of
-      # the run with it. The limit is on real memory, not reserved address space, which a test
-      # binary holds far more of than it uses. The report says how many processes the limit
-      # stopped (the developer's decisions, 2026-11-11).
+      # they took the whole runner down, and no report came. When the group is full, the kernel
+      # stops one process in it, by its own score, which favors the one using the most memory.
+      # Which process it stops is the kernel's choice and is not pinned here. In a trial run it was
+      # the runaway test, which then failed, so its mutant counted as caught. If it stops gremlins
+      # or check.sh, the run goes red with no report; if it stops a server another test uses, that
+      # test fails and its mutant counts as caught when it may not be. OOMPolicy=continue keeps
+      # systemd from stopping the rest of the run at the first stop. The limit is on real memory,
+      # not reserved address space, which a test binary holds far more of than it uses. The report
+      # says how many processes the limit stopped, of any kind (the developer's decisions,
+      # 2026-11-11). sudo starts from a clean environment: a variable the run needs goes in the
+      # list after "sudo env" below, as well as in env:.
       - name: Mutate
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
         env:
@@ -122,7 +127,7 @@ jobs:
               status=$?
               events=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.events
               stopped=$(awk "\$1 == \"oom_kill\" {print \$2}" "$events" 2>/dev/null)
-              line="Test processes the 12 GiB memory limit stopped: ${stopped:-not read}"
+              line="Processes the 12 GiB memory limit stopped: ${stopped:-not read}"
               echo "mutation testing: $line"
               echo "$line" >> "$GITHUB_STEP_SUMMARY"
               exit $status'
