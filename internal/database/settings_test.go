@@ -346,6 +346,28 @@ func TestSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("If the database refuses for any reason the lines above do not name, then Take shall return ErrRefused.", func(t *testing.T) {
+		t.Parallel()
+		// A code beside the six, of the same class: configuration_limit_exceeded stays a stop,
+		// and a clash is only the two codes the contract names.
+		for _, code := range []string{"53400", "40002"} {
+			t.Run(code+", planted by a trigger that raises it: ErrRefused, matching no *TemporaryError, the row unchanged", func(t *testing.T) {
+				t.Parallel()
+				created := sharedServer(t).newBoard(t)
+				created.ownTrigger(t, "raise_code", "RAISE EXCEPTION 'planted by the test: "+code+"' USING ERRCODE = '"+code+"';")
+				before := created.row(t)
+				lease, err := take(t, created.file())
+				created.server.expectLoginError(t, created.login, "planted by the test: "+code)
+				expectTakeError(t, lease, err, database.ErrRefused, created.password)
+				var temporary *database.TemporaryError
+				if errors.As(err, &temporary) {
+					t.Fatalf("the error is %#v, a *TemporaryError, for %s", err, code)
+				}
+				expectUnchanged(t, created, before)
+			})
+		}
+	})
+
 	t.Run("If one of the six settings in the server's row is empty, not of its kind, or a port outside 0 to 65535, then Take shall return a *SettingError naming that column, and change nothing.", func(t *testing.T) {
 		t.Parallel()
 		for _, row := range badSettings() {
@@ -409,7 +431,8 @@ func TestSettings(t *testing.T) {
 			if got := lease.Settings(); got != first {
 				t.Fatalf("the Lease's Settings are %+v, want the row's %+v", got, first)
 			}
-			second := database.Settings{TelnetOn: false, TelnetPort: 2323, SSHOn: true, SSHPort: 0, TelnetsOn: false, TelnetsPort: 992}
+			// telnet_on and telnets_on differ here, so a Lease that swaps them is told.
+			second := database.Settings{TelnetOn: false, TelnetPort: 2323, SSHOn: true, SSHPort: 0, TelnetsOn: true, TelnetsPort: 992}
 			created.setSettings(t, second)
 			if got := lease.Settings(); got != first {
 				t.Fatalf("after the row changed the Lease's Settings are %+v, want those of its take, %+v", got, first)

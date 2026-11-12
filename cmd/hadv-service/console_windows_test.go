@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// What only Windows runs: the stop signal as a console break, and listening on port 23 with no
-// option, which an ordinary user may do at loopback on Windows but not on Linux.
+// What only Windows runs: the stop signal as a console break, and SSH and Telnet over TLS on
+// their seeded ports, 22 and 992, which an ordinary user may listen on at loopback on Windows but
+// not on Linux.
 package main_test
 
 import (

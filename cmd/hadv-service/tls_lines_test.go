@@ -1169,7 +1169,7 @@ func TestTLSProgram(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name+": one start_failed line and a non-zero exit, where good options start", func(t *testing.T) {
 				t.Parallel()
-				startProgram(t, telnetsOn(), row.options(t)...).expectRefusal(t)
+				startProgram(t, telnetAt(0), row.options(t)...).expectRefusal(t)
 				expectTLSStarts(t)
 			})
 		}
@@ -1269,7 +1269,7 @@ func TestTLSProgram(t *testing.T) {
 
 	t.Run("If the database does not answer, or answers that it is starting up, shutting down or recovering, that it has no connection free, that it is read-only, that it cancelled the statement, that a lock was not available, that a clash with another transaction stopped it, or that its disk or memory ran out, then the engine shall write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with Telnet over TLS on, a database that closes each connection: one waiting line, and the program listens nowhere", func(t *testing.T) {
+		t.Run("with both TLS files given, a database that closes each connection: one waiting line, and the program listens nowhere", func(t *testing.T) {
 			t.Parallel()
 			database := startAcceptor(t)
 			sharedServer(t)

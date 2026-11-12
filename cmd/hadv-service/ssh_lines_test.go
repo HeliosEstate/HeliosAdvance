@@ -246,7 +246,7 @@ func TestSSHProgram(t *testing.T) {
 		for _, row := range rows {
 			t.Run(row.name+": one start_failed line and a non-zero exit, where a good key starts", func(t *testing.T) {
 				t.Parallel()
-				startProgram(t, telnetAt(0).withSSH(0), row.options(t)...).expectRefusal(t)
+				startProgram(t, telnetAt(0), row.options(t)...).expectRefusal(t)
 				expectSSHStarts(t)
 			})
 		}

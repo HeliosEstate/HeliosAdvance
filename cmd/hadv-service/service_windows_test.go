@@ -541,18 +541,21 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 			service.awaitRunningOnWaiting(t)
 			expectLogText(t, service.logText(t), "waiting")
 		})
-		t.Run("every service off: running once its one started line is in the log file, the line naming no listener, and the service's process listening nowhere", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("every service off: running, its one started line naming no listener, and the service's process listening nowhere", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			service := installService(t, serviceSetup{settings: sharedRowSettings(t, allOff())})
 			service.startRunning(t)
-			// The state first, then the log file: a running state read before the line is in the
-			// file is the engine's fault.
+			// No line orders running against the started line with every service off, so the row
+			// waits for the line once the service runs. Running before the take is the waiting
+			// row's to catch: no build knows every service is off before it takes the lease.
 			giveUp := time.Now().Add(testrun.Patient(serviceStartBound))
 			for {
 				read := service.query(t)
-				text := service.logText(t)
 				if read.state == "RUNNING" {
-					if !strings.HasPrefix(text, "started=") || !strings.Contains(text, "\n") {
-						t.Fatalf("the service reported running while its log file held %q, before any started line", text)
+					text := service.logText(t)
+					lineBy := time.Now().Add(testrun.Patient(testrun.HangBound))
+					for !strings.Contains(text, "\n") && time.Now().Before(lineBy) {
+						pause(t, statePoll)
+						text = service.logText(t)
 					}
 					values := expectLogText(t, text, "started")
 					expectListensNowhere(t, values[0])
@@ -561,6 +564,7 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 					}
 					return
 				}
+				text := service.logText(t)
 				if read.state != "START_PENDING" {
 					t.Fatalf("the service is %s, codes %d and %d, where it was to report running; the log file holds %q",
 						read.state, read.windowsCode, read.serviceCode, text)
