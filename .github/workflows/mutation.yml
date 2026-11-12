@@ -103,4 +103,12 @@ jobs:
         run: |
           export PATH="$PGDIR:$PATH"
           if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
-          bash check.sh --mutation
+          sudo env "PATH=$PATH" "HOME=$HOME" "MUTATE=$MUTATE" "BASE=$BASE" "GATES=$GATES" "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" \
+            systemd-run --scope --quiet --collect -p MemoryMax=12G -p MemorySwapMax=0 \
+            --uid="$(id -u)" --gid="$(id -g)" --same-dir -- bash -c '
+              bash check.sh --mutation; status=$?
+              events=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.events
+              stopped=$(awk "\$1 == \"oom_kill\" {print \$2}" "$events")
+              echo "mutation testing: test processes the 12 GiB memory limit stopped: ${stopped:-unknown} (from $events)"
+              cat "$events"
+              exit $status'
