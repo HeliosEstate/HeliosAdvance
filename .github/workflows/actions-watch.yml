@@ -60,6 +60,8 @@ jobs:
             found=$(gh api "advisories?ecosystem=actions&affects=$action@$version&is_withdrawn=false&per_page=100" --jq "$fields")
             if [ -z "$found" ]; then echo "no advisory: $action $version"; continue; fi
             while IFS=$'\x1f' read -r ghsa severity summary url; do
+              # The backticks are the code block's fence, written as they are, not a command.
+              # shellcheck disable=SC2016
               body=$(printf 'The advisory database names %s %s, which the workflows pin: %s (%s).\n\nIts summary, as written:\n\n```text\n%s\n```\n\nDecide the update: the week'"'"'s grouped Dependabot pull request carries it, or a pull request can move the pin now.' \
                 "$action" "$version" "$ghsa" "$url" "$summary")
               open "<!-- actions-watch: $ghsa $action@$version -->" \
