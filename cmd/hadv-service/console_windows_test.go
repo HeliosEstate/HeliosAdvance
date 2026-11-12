@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// What only Windows runs: the stop signal as a console break, and listening on port 23 with no
-// option, which an ordinary user may do at loopback on Windows but not on Linux.
+// What only Windows runs: the stop signal as a console break, and SSH and Telnet over TLS on
+// their seeded ports, 22 and 992, which an ordinary user may listen on at loopback on Windows but
+// not on Linux.
 package main_test
 
 import (
@@ -10,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -118,49 +118,13 @@ func nextLine(t *testing.T, lines chan string, limit time.Duration) string {
 // that wrongly listened at 22 or 992 would hold it in their engines too, and the row would skip
 // the very fault it is there to see.
 func TestWindowsDefaultPort(t *testing.T) { //nolint:paralleltest // it must run alone
-	t.Run("When it starts with a bootstrap folder and no other command-line option, the engine shall listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("with a bootstrap folder and no other option, it names and serves 127.0.0.1:23 and [::1]:23, Telnet's alone; 22 and 992 refused where each was free", func(t *testing.T) { //nolint:paralleltest // it must run alone
-			// Port 23 is one port for every user of the machine: one held by anything else is
-			// a fault of the machine the test runs on, named as one.
-			for _, address := range []string{"127.0.0.1:23", "[::1]:23"} {
-				held, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", address)
-				if err != nil {
-					t.Fatalf("%s is not free on this machine, so this row cannot run: %v", address, err)
-				}
-				_ = held.Close()
-			}
-			// Port 22 is often held by the machine's own SSH server; only where it was free can a
-			// dial there tell that the engine does not listen for SSH.
-			// Port 992, Telnet over TLS's own, the same way: the engine must not listen there
-			// without a certificate.
-			var freeOtherKinds []string
-			for _, address := range []string{"127.0.0.1:22", "[::1]:22", "127.0.0.1:992", "[::1]:992"} {
-				if err := listenError(t, address); err != nil {
-					t.Logf("%s cannot be opened on this machine (%v), so this row cannot tell whether the engine listens there", address, err)
-					continue
-				}
-				freeOtherKinds = append(freeOtherKinds, address)
-			}
-			program := startProgram(t)
-			addresses := program.listening(t)
-			expectAddresses(t, addresses, "127.0.0.1:23", "[::1]:23")
-			for _, address := range addresses {
-				expectServed(t, address)
-			}
-			for _, address := range freeOtherKinds {
-				expectRefused(t, address)
-			}
-			_ = program.command.Process.Kill()
-			<-program.exited
-		})
-	})
-	t.Run("When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("with a host key and no SSH port: at 22 where it is free at both addresses; else refused, where an SSH port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
+	t.Run("The engine shall listen for SSH callers at 127.0.0.1 and ::1 on its server's `ssh_port`, beside its other listeners.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("ssh_port the seeded 22: at 22 where it is free at both addresses; else refused, where an SSH port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			defaultSSHPortRow(t)
 		})
 	})
-	t.Run("When the sysop passes a TLS certificate file and its key file on the command line, the engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on port 992, beside its other listeners.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("with a certificate and a key and no TLS port: at 992 where it opens at each address; refused where it opens at neither, where a TLS port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
+	t.Run("The engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on its server's `telnets_port`, beside its other listeners.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("telnets_port the seeded 992: at 992 where it opens at each address; refused where it opens at neither, where a TLS port the system picks starts", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			defaultTLSPortRow(t)
 		})
 	})

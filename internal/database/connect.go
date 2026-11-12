@@ -231,6 +231,10 @@ func classify(callerContext, tryContext context.Context, made *attempt, err erro
 	if errors.As(err, &badVersion) {
 		return badVersion
 	}
+	var badSetting *SettingError
+	if errors.As(err, &badSetting) {
+		return badSetting
+	}
 	var refusal *pgconn.PgError
 	if errors.As(err, &refusal) {
 		return bySQLState(refusal.Code)
@@ -268,6 +272,14 @@ func bySQLState(code string) error {
 		return ErrSignInRefused
 	case "25006":
 		return ErrReadOnly
+	case "57014":
+		return &TemporaryError{Reason: TemporaryCancelled}
+	case "55P03":
+		return &TemporaryError{Reason: TemporaryLockNotAvailable}
+	case "40001", "40P01":
+		return &TemporaryError{Reason: TemporaryClash}
+	case "53100", "53200":
+		return &TemporaryError{Reason: TemporaryRanOut}
 	}
 	if len(code) >= 2 && code[:2] == "08" {
 		return ErrUnreachable

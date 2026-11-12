@@ -10,8 +10,6 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/telnet"
 )
 
-const defaultPort = "23"
-
 // telnetTargets are Telnet's own list, so that its addresses can change without SSH's.
 var telnetTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}
 
