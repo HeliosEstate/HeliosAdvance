@@ -211,8 +211,8 @@ if [ "$MUTATION" = 0 ]; then
   git rev-parse -q --verify "$BASE" >/dev/null 2>&1 || fail "$BASE does not resolve, so the gates that judge this branch against it cannot run: fetch it, or set BASE to the commit to judge from"
 fi
 
-# 1. The standing instructions stay short: 100 lines (the developer, 2026-11-11). A repository
-# with no CLAUDE.md yet has none to cap, and says so.
+# 1. The standing instructions stay short. A repository with no CLAUDE.md yet has none to cap,
+# and says so.
 if [ -f CLAUDE.md ]; then
   lines=$(wc -l < CLAUDE.md)
   [ "$lines" -le 100 ] || fail "CLAUDE.md is $lines lines; the cap is 100"
