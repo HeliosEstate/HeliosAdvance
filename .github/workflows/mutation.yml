@@ -36,12 +36,12 @@ jobs:
     # A bound on a hang only: a mutation run's length is not limited.
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'development' }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # What to mutate, or nothing. A build is judged whole, from where it left development, never
@@ -95,6 +95,20 @@ jobs:
           compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
           echo "bin=$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")" >> "$GITHUB_OUTPUT"
       # The gates are the required check's, so they are skipped here.
+      # The run is held in one control group of at most 12 GiB of memory, out of the runner's 16.
+      # A mutant can make its tests grow memory without bound, and several run at once: unheld,
+      # they took the whole runner down, and no report came. When the group is full, the kernel
+      # stops one process in it, by its own score, which favors the one using the most memory.
+      # Which process it stops is the kernel's choice and is not pinned here. In a trial run the
+      # limit stopped one process and the run finished; the log does not say which. If it stops
+      # the runaway test, that test fails and its mutant counts as caught. If it stops gremlins or
+      # check.sh, the run goes red with no report; if it stops a server another test uses, that
+      # test fails and its mutant counts as caught when it may not be. OOMPolicy=continue keeps
+      # systemd from stopping the rest of the run at the first stop. The limit is on real memory,
+      # not reserved address space, which a test binary holds far more of than it uses. The report
+      # says how many processes the limit stopped, of any kind (the developer's decisions,
+      # 2026-11-11). sudo starts from a clean environment: a variable the run needs goes in the
+      # list after "sudo env" below, as well as in env:.
       - name: Mutate
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
         env:
@@ -105,4 +119,16 @@ jobs:
         run: |
           export PATH="$PGDIR:$PATH"
           if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
-          bash check.sh --mutation
+          sudo env "PATH=$PATH" "HOME=$HOME" "MUTATE=$MUTATE" "BASE=$BASE" "GATES=$GATES" \
+            "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" \
+            systemd-run --scope --quiet --collect \
+            -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue \
+            --uid="$(id -u)" --gid="$(id -g)" --same-dir -- bash -c '
+              bash check.sh --mutation
+              status=$?
+              events=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.events
+              stopped=$(awk "\$1 == \"oom_kill\" {print \$2}" "$events" 2>/dev/null)
+              line="Processes the 12 GiB memory limit stopped: ${stopped:-not read}"
+              echo "mutation testing: $line"
+              echo "$line" >> "$GITHUB_STEP_SUMMARY"
+              exit $status'
