@@ -86,6 +86,20 @@ func (settings services) turnsOn(scheme string) bool {
 	return false
 }
 
+// portOf is the port the settings give the kind a started line's listener names, by its scheme,
+// as a started line writes it; "" for a scheme of no kind.
+func (settings services) portOf(scheme string) string {
+	switch scheme {
+	case schemeTelnet:
+		return strconv.Itoa(settings.telnetPort)
+	case schemeSSH:
+		return strconv.Itoa(settings.sshPort)
+	case schemeTelnets:
+		return strconv.Itoa(settings.telnetsPort)
+	}
+	return ""
+}
+
 // expectKindsOn fails the row when the started line names a listener of a kind the settings the
 // row wrote turn off: a row whose program listens for a kind it was not asked for has not reached
 // its case.

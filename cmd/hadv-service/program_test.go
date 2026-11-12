@@ -265,11 +265,12 @@ const freedPortTries = 5
 
 // startOnFreedPort holds a port free at both loopback addresses, closes the hosts the row names
 // in freed, and starts the program with settings(port) and the options. Between that close and
-// the program's own listen, a test running in parallel may bind a freed address, and the program
-// does not reach the row's case: with every freed address taken it fails to start, and with one of
-// two taken it
-// listens at the other alone. A start_failed line that names a freed address as in use, or a
-// started line that leaves a freed address out, is that race, so the row tries a fresh port. Any
+// the program's own listen, a test running in parallel may bind a freed address, or the system may
+// give it to the program's own listener of a kind at port 0, and the program does not reach the
+// row's case: with every freed address taken it fails to start, and with one of two taken the kind
+// at the port listens at the other alone. A start_failed line that names a freed address as in
+// use, or a started line where no listener of the kind at the port names a freed address, is that
+// race, so the row tries a fresh port. Any
 // other first line is judged as listeners judges it, so a program that refuses over the address
 // the row holds still fails the row. A build that never listens at a freed address leaves it out
 // on every port, so the row fails once the tries run out. It returns the port and the started
@@ -287,7 +288,8 @@ func startOnFreedPort(t *testing.T, freed []string, settings func(port int) serv
 				_ = ipv6.Close()
 			}
 		}
-		program := startProgram(t, settings(portNumber(t, port)), options...)
+		rowSettings := settings(portNumber(t, port))
+		program := startProgram(t, rowSettings, options...)
 		line = program.firstLine(t)
 		if takenWhileFreed(line, port, freed) {
 			t.Logf("a freed address was taken before the program listened, %q: trying a fresh port", line)
@@ -299,8 +301,8 @@ func startOnFreedPort(t *testing.T, freed []string, settings func(port int) serv
 		}
 		listeners := strings.Split(value, ",")
 		program.settings.expectKindsOn(t, listeners)
-		if address := unnamedFreed(listeners, port, freed); address != "" {
-			t.Logf("the started line %q leaves out the freed address %s, which a test running in parallel may have taken: trying a fresh port", line, address)
+		if address := unnamedFreed(listeners, port, freed, rowSettings); address != "" {
+			t.Logf("in the started line %q no listener of the kind at the port names the freed address %s, which a test running in parallel or a kind at port 0 may have taken: trying a fresh port", line, address)
 			_ = program.command.Process.Kill()
 			<-program.exited
 			continue
@@ -311,13 +313,15 @@ func startOnFreedPort(t *testing.T, freed []string, settings func(port int) serv
 	return "", nil
 }
 
-// unnamedFreed returns a freed address at the port that no listener in the started line names,
-// or "" when it names them all.
-func unnamedFreed(listeners []string, port string, freed []string) string {
+// unnamedFreed returns a freed address at the port that no listener in the started line names
+// under a kind the settings put at that port, or "" when such listeners name them all. A freed
+// address named under another kind is not the row's: the system gave the port to a kind at port 0.
+func unnamedFreed(listeners []string, port string, freed []string, settings services) string {
 	for _, host := range freed {
 		address := net.JoinHostPort(host, port)
 		named := slices.ContainsFunc(listeners, func(listener string) bool {
-			return strings.HasSuffix(listener, "://"+address)
+			scheme, listenerAddress, found := strings.Cut(listener, "://")
+			return found && listenerAddress == address && settings.portOf(scheme) == port
 		})
 		if !named {
 			return address
