@@ -109,9 +109,9 @@ type Texts struct {
 //
 // A language is a folder in folder holding a file named exactly the folder's own name and .toml,
 // as folder lists it. An entry other than a regular file that cannot be opened to tell whether it
-// is one, such as a link to nothing, a link leading out of folder, a folder that cannot be read or
-// a socket, counts as a language whose folder cannot be read. Anything else in folder is not a
-// language and is left alone, but for the limit on how many entries a folder in it holds. A code,
+// is a language, such as a link to nothing, a link leading out of folder, a folder that cannot be
+// read or a socket, counts as a language whose file cannot be read. Anything else in folder is not
+// a language and is left alone, but for the limit on how many entries a folder in it holds. A code,
 // given as code or as a parent, names the language whose folder's name it matches without regard
 // to case (RFC 5646). The chain for code is code, then its parent, then that language's parent
 // and so on, then Fallback; Fallback's own parent, if it has one, is ignored, so every chain ends
@@ -126,8 +126,8 @@ type Texts struct {
 //     entries.
 //   - If a language's folder name is not a well-formed language tag in lower case, then Load shall
 //     return ErrFileRefused naming its file.
-//   - If a language's folder or file is a link leading out of folder, or its folder or file cannot
-//     be read, then Load shall return ErrFileRefused naming the file.
+//   - If a language's folder or file is a link leading out of folder, or its file cannot be read,
+//     then Load shall return ErrFileRefused naming the file.
 //   - If a language's file is over MostFileBytes, then Load shall return ErrFileRefused naming it,
 //     having read no more than MostFileBytes and one byte of it.
 //   - If a language's file is not UTF-8 and TOML 1.1, then Load shall return ErrFileRefused naming
