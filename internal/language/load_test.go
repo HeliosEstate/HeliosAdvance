@@ -310,6 +310,12 @@ func TestLoad(t *testing.T) {
 				expectShown(t, expectLoaded(t, folder, code), want)
 			})
 		}
+		t.Run("AZ-ZA, a code holding the first and the last capital letter, the edge inside: names az-za, loads", func(t *testing.T) {
+			t.Parallel()
+			const azZA = "az-za"
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), azZA: esFile(azZA, "", esTexts(azZA))})
+			expectShown(t, expectLoaded(t, folder, "AZ-ZA"), esShown(azZA))
+		})
 	})
 
 	t.Run("If a language's file other than Fallback's has a parent that is not a string or names no language in folder, or whose chain of parents leads back to that language, then Load shall return ErrFileRefused naming it.", func(t *testing.T) {
