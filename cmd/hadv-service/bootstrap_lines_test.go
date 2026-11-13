@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func goodFolder(t *testing.T) *bootstrapFolder {
 // file broken as the oracle's edits say.
 func brokenFolder(t *testing.T, edits string) *bootstrapFolder {
 	t.Helper()
-	return makeBootstrapFolder(t, []byte(sharedRowSettings(t).text(t)), edits)
+	return makeBootstrapFolder(t, []byte(sharedRowSettings(t, telnetAt(0)).text(t)), edits)
 }
 
 // keyBase is a good key file's 44 characters, without its line ending.
@@ -75,8 +76,9 @@ func (made *bootstrapFolder) keyBase() string {
 // a non-zero exit, and neither a password nor the key in its log, and returns the reason.
 func (made *bootstrapFolder) refused(t *testing.T) string {
 	t.Helper()
-	program := startWithFile(t, made.path, nil, portOption, "0")
+	program, release := made.start(t)
 	reason := program.expectRefusal(t)
+	release()
 	expectNoPassword(t, program)
 	made.expectKeyNotIn(t, program.text())
 	return reason
@@ -86,10 +88,26 @@ func (made *bootstrapFolder) refused(t *testing.T) string {
 // password nor the key in its log.
 func (made *bootstrapFolder) starts(t *testing.T) {
 	t.Helper()
-	program := startWithFile(t, made.path, nil, portOption, "0")
+	program, release := made.start(t)
 	program.listening(t)
+	release()
 	expectNoPassword(t, program)
 	made.expectKeyNotIn(t, program.text())
+}
+
+// start starts the program with the folder, in the folder's turn when it has one, and returns
+// what gives the turn back once the program has started or refused; a row that fails first
+// gives it back when it ends.
+func (made *bootstrapFolder) start(t *testing.T) (*run, func()) {
+	t.Helper()
+	release := func() {}
+	if made.turn != nil {
+		made.turn.Lock()
+		var once sync.Once
+		release = func() { once.Do(made.turn.Unlock) }
+		t.Cleanup(release)
+	}
+	return startWithFile(t, made.path, nil), release
 }
 
 // keyMissingReason is the reason for another check than most rows': a good bootstrap file whose
@@ -223,7 +241,7 @@ func folderCases() map[string]func(t *testing.T) *bootstrapFolder {
 func TestBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If the bootstrap folder is missing or unreadable, or the bootstrap file or the key file in it is missing, unreadable or a link leading out of the bootstrap folder, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap folder is missing or unreadable, the bootstrap file in it is missing, unreadable or a link leading out of the bootstrap folder, or, when the bootstrap file's key holder is the key file, the key file is, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, build := range folderCases() {
 			t.Run(name+": one start_failed line, and a non-zero exit", func(t *testing.T) {
@@ -262,7 +280,7 @@ func TestBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the key file is not in the key file's form, or holds a key of 32 zero bytes, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and the key file is not in the key file's form, or holds a key of 32 zero bytes, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, build := range malformedKeys {
 			t.Run(name+": one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
@@ -291,7 +309,7 @@ func TestBootstrapProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("If the bootstrap file's header is not format version 1's for the key file, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's header is not format version 1's for the key file or, on Windows, for the TPM or the software key store, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file or asking a key store, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, edits := range headerEdits {
 			t.Run(name+", alone, with the key file missing, unreadable and open to others: the same reason each time, not a missing key file's", func(t *testing.T) {
@@ -324,7 +342,7 @@ func TestBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap file does not unseal under the key in the key file, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file does not unseal under the key its key holder gives, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a good file under another key: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
@@ -356,16 +374,16 @@ func TestBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for a kind its server's settings turn on, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the old -database and a connection file, beside a good bootstrap folder: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
-			settings := sharedRowSettings(t)
+			settings := sharedRowSettings(t, telnetAt(0))
 			old := filepath.Join(t.TempDir(), "connection.json")
 			if err := os.WriteFile(old, []byte(settings.text(t)), 0o600); err != nil {
 				t.Fatalf("writing the old connection file: %v", err)
 			}
-			program := startWithFile(t, settings.write(t), nil, portOption, "0", "-database", old)
+			program := startWithFile(t, settings.write(t), nil, "-database", old)
 			reason := program.expectRefusal(t)
 			expectNoPassword(t, program)
 			expectOwnReason(t, reason, keyMissingReason(t), "a missing key file")
@@ -377,7 +395,7 @@ func TestBootstrapProgram(t *testing.T) {
 // settings padded with spaces so the bootstrap file is exactly size bytes.
 func paddedFolder(t *testing.T, size int) *bootstrapFolder {
 	t.Helper()
-	text := sharedRowSettings(t).text(t)
+	text := sharedRowSettings(t, telnetAt(0)).text(t)
 	plain := size - sealedOverhead
 	if len(text) > plain {
 		t.Fatalf("the settings are %d bytes, more than %d: a fault in the test", len(text), plain)

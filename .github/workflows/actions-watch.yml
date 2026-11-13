@@ -1,0 +1,75 @@
+# Opens an issue the day GitHub's advisory database names a version of an action the workflows
+# pin. The actions are pinned by commit hash, and Dependabot raises no alert for an action pinned
+# that way, only for one pinned by version tag; this watch gives back that warning, so a security
+# fix for an action is applied quickly (the developer, 2026-11-12). It reads each pin's version
+# from the comment beside its hash, a full x.y.z, so a version is never read as wider than it is.
+# A `uses:` not pinned that way fails the run, since this watch could not check it. A withdrawn
+# advisory is left out. One issue per advisory and version: an issue this workflow opened carrying
+# its marker, open or closed, whatever its labels, is not opened again.
+name: actions-watch
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    # A bound on a hang only.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open an issue for each pinned action an advisory names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          open() { # marker title body
+            local issues existing
+            # Only an issue this workflow opened counts, whatever its labels now: anyone may open an
+            # issue whose body holds the marker, and that must not silence a warning.
+            issues=$(gh issue list --state all --limit 1000 --json number,body,author)
+            existing=$(jq -r --arg m "$1" '[.[] | select(.author.login == "app/github-actions" and (.body | contains($m)))][0].number // empty' <<< "$issues")
+            if [ -n "$existing" ]; then echo "already raised in #$existing: $2"; return; fi
+            printf '%s\n\n%s\n' "$3" "$1" | gh issue create --title "$2" --label needs-developer --body-file - > /dev/null
+            echo "opened: $2"
+          }
+          files=(.github/workflows/*.yml .github/workflows/*.yaml)
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow file found, so nothing was checked"; exit 1; }
+          pin='uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[^@ ]+)?@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+'
+          # Any uses key, quoted or not, first on its line or not: one not in the pinned form above
+          # fails the run rather than go unchecked.
+          key="(^|[{,[:space:]])[\"']?uses[\"']?[[:space:]]*:"
+          if unpinned=$(grep -nE "$key" "${files[@]}" | grep -vE "$pin(\s|\}|$)"); then
+            echo "::error::these uses lines are not in the form this watch reads (uses: owner/repo@hash # vX.Y.Z), so it cannot check them:"
+            echo "$unpinned"
+            exit 1
+          fi
+          pins=$({ grep -hoE "$pin" "${files[@]}" || true; } | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
+          [ -n "$pins" ] || { echo "::error::no pinned action found, so nothing was checked"; exit 1; }
+          # Fields joined by the unit separator, which is not whitespace, so an empty one keeps its
+          # place; line breaks and backticks in a summary are flattened, since it goes in a code block.
+          fields='.[] | [.ghsa_id, .severity, .summary, .html_url] | map((. // "") | tostring | gsub("[\n\r\u001f]"; " ") | gsub("`"; "'"'"'")) | join("\u001f")'
+          while read -r action version; do
+            found=$(gh api "advisories?ecosystem=actions&affects=$action@$version&is_withdrawn=false&per_page=100" --jq "$fields")
+            if [ -z "$found" ]; then echo "no advisory: $action $version"; continue; fi
+            while IFS=$'\x1f' read -r ghsa severity summary url; do
+              # The backticks are the code block's fence, written as they are, not a command.
+              # shellcheck disable=SC2016
+              body=$(printf 'The advisory database names %s %s, which the workflows pin: %s (%s).\n\nIts summary, as written:\n\n```text\n%s\n```\n\nDecide the update: the week'"'"'s grouped Dependabot pull request carries it, or a pull request can move the pin now.' \
+                "$action" "$version" "$ghsa" "$url" "$summary")
+              open "<!-- actions-watch: $ghsa $action@$version -->" \
+                "Advisory $ghsa (${severity:-no severity}) names $action $version, which the workflows pin" "$body"
+            done <<< "$found"
+          done <<< "$pins"

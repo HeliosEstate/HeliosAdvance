@@ -27,66 +27,72 @@ const (
 )
 
 // checkKeyFile judges the owner and the access list of the key file from one read on the opened
-// file's handle, so a name swapped after the open changes nothing. Everything is read before
-// anything is judged, so an access list it cannot confirm is told from one that is reachable.
+// file's handle, so a name swapped after the open changes nothing.
 func checkKeyFile(file *os.File, _ fs.FileInfo) error {
 	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return ErrKeyFilePermissions
 	}
+	return judgeAccess(descriptor, ErrKeyFilePermissions, ErrKeyFileReachable)
+}
+
+// judgeAccess judges a descriptor's owner and access list. Everything is read before anything is
+// judged, so an access list it cannot confirm, which gives unconfirmed, is told from one that is
+// reachable, which gives reachable.
+func judgeAccess(descriptor *windows.SECURITY_DESCRIPTOR, unconfirmed, reachable error) error {
 	owner, _, err := descriptor.Owner()
 	if err != nil || owner == nil {
-		return ErrKeyFilePermissions
+		return unconfirmed
 	}
 	allowed, err := allowedAccounts()
 	if err != nil {
-		return ErrKeyFilePermissions
+		return unconfirmed
 	}
 	// The library gives one error for an absent list and for a failed read, so the control bits
 	// tell them apart.
 	control, _, err := descriptor.Control()
 	if err != nil {
-		return ErrKeyFilePermissions
+		return unconfirmed
 	}
 	if control&windows.SE_DACL_PRESENT == 0 {
-		return ErrKeyFileReachable
+		return reachable
 	}
 	list, _, err := descriptor.DACL()
 	if err != nil {
-		return ErrKeyFilePermissions
+		return unconfirmed
 	}
 	if list == nil {
-		return ErrKeyFileReachable
+		return reachable
 	}
 	accounts := []*windows.SID{owner}
 	for index := range uint32(list.AceCount) {
 		var entry *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(list, index, &entry); err != nil {
-			return ErrKeyFilePermissions
+			return unconfirmed
 		}
 		switch entry.Header.AceType {
 		case aceAllow:
 			account, ok := accountOf(entry)
 			if !ok {
-				return ErrKeyFilePermissions
+				return unconfirmed
 			}
 			accounts = append(accounts, account)
 		case aceDeny, aceDenyObject, aceDenyCallback, aceDenyCallbackObject:
 		default:
-			return ErrKeyFilePermissions
+			return unconfirmed
 		}
 	}
 	for _, account := range accounts {
 		if !isOneOf(account, allowed) {
-			return ErrKeyFileReachable
+			return reachable
 		}
 	}
 	return nil
 }
 
-// allowedAccounts are the only accounts that may own or reach the key file; the engine's own
-// user is read from its token, since no name stands for it.
+// allowedAccounts are the only accounts that may own or reach the key file or the key store key;
+// the engine's own user is read from its token, since no name stands for it.
 func allowedAccounts() ([]*windows.SID, error) {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {

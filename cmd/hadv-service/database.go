@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ const retryEvery = 10 * time.Second
 // serve takes the server's lease, listens while it holds it, and takes it again after a loss,
 // until a stop. It returns the exit code.
 func serve(stopContext context.Context, ready servicemanager.Ready, log func(key, value string),
-	server *database.ServerDatabase, options commandLine, hostKey *ssh.HostKey, certificate *telnets.Certificate,
+	server *database.ServerDatabase, hostKey *ssh.HostKey, certificate *telnets.Certificate,
 	texts *language.Texts,
 ) int {
 	count := listener.NewCount()
@@ -56,7 +57,7 @@ func serve(stopContext context.Context, ready servicemanager.Ready, log func(key
 			continue
 		}
 
-		listeners, addresses, err := newListeners(stopContext, options, hostKey, certificate, count, texts)
+		listeners, addresses, err := newListeners(stopContext, lease.Settings(), hostKey, certificate, count, texts)
 		if err != nil {
 			lease.EndLease()
 			log("start_failed", err.Error())
@@ -64,7 +65,11 @@ func serve(stopContext context.Context, ready servicemanager.Ready, log func(key
 		}
 		//nolint:contextcheck // a Listener lives one lease; its owner stops it with Stop
 		startAll(listeners)
-		log("started", strings.Join(addresses, ","))
+		if len(addresses) == 0 {
+			log("started", "listening nowhere: the server's settings turn no service on")
+		} else {
+			log("started", strings.Join(addresses, ","))
+		}
 		ready()
 		waitingFor = ""
 
@@ -89,7 +94,7 @@ func serve(stopContext context.Context, ready servicemanager.Ready, log func(key
 // stops it.
 func fixesItself(err error) bool {
 	for _, waited := range []error{database.ErrUnreachable, database.ErrNotReady, database.ErrNoConnectionFree,
-		database.ErrReadOnly, database.ErrLeaseHeld} {
+		database.ErrReadOnly, database.ErrLeaseHeld, database.ErrTemporary} {
 		if errors.Is(err, waited) {
 			return true
 		}
@@ -97,19 +102,34 @@ func fixesItself(err error) bool {
 	return false
 }
 
-// newListeners makes every kind's listener, sharing the one count. On a failure it stops those it
-// made.
-func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey,
+// newListeners makes the listener of each kind the settings turn on, sharing the one count. A
+// service turned on without its files opens nothing. On a failure it stops those it made.
+func newListeners(ctx context.Context, settings database.Settings, hostKey *ssh.HostKey,
 	certificate *telnets.Certificate, count *listener.ConnectionCount, texts *language.Texts,
 ) ([]*listener.Listener, []string, error) {
-	telnetListener, telnetAddresses, err := newTelnetListener(ctx, options.telnetPort, count, texts)
-	if err != nil {
-		return nil, nil, errors.New("telnet listeners: " + err.Error())
+	var missing []error
+	if settings.SSHOn && hostKey == nil {
+		missing = append(missing, errors.New("ssh is turned on, and the command line names no host key file, with -ssh-host-key"))
 	}
-	listeners := []*listener.Listener{telnetListener}
-	addresses := urls("telnet", telnetAddresses)
-	if hostKey != nil {
-		sshListener, sshAddresses, err := newSSHListener(ctx, options.sshPort, hostKey, count, texts)
+	if settings.TelnetsOn && certificate == nil {
+		missing = append(missing,
+			errors.New("telnets is turned on, and the command line names no certificate and key files, with -tls-cert and -tls-key"))
+	}
+	if len(missing) > 0 {
+		return nil, nil, errors.Join(missing...)
+	}
+	var listeners []*listener.Listener
+	var addresses []string
+	if settings.TelnetOn {
+		telnetListener, telnetAddresses, err := newTelnetListener(ctx, port(settings.TelnetPort), count, texts)
+		if err != nil {
+			return nil, nil, errors.New("telnet listeners: " + err.Error())
+		}
+		listeners = append(listeners, telnetListener)
+		addresses = append(addresses, urls("telnet", telnetAddresses)...)
+	}
+	if settings.SSHOn {
+		sshListener, sshAddresses, err := newSSHListener(ctx, port(settings.SSHPort), hostKey, count, texts)
 		if err != nil {
 			stopAll(listeners)
 			return nil, nil, errors.New("ssh listeners: " + err.Error())
@@ -117,9 +137,9 @@ func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey
 		listeners = append(listeners, sshListener)
 		addresses = append(addresses, urls("ssh", sshAddresses)...)
 	}
-	if certificate != nil {
+	if settings.TelnetsOn {
 		telnetsListener, telnetsAddresses, err := newTelnetsListener(
-			ctx, options.tlsPort, certificate, count, texts)
+			ctx, port(settings.TelnetsPort), certificate, count, texts)
 		if err != nil {
 			stopAll(listeners)
 			return nil, nil, errors.New("telnets listeners: " + err.Error())
@@ -128,6 +148,10 @@ func newListeners(ctx context.Context, options commandLine, hostKey *ssh.HostKey
 		addresses = append(addresses, urls("telnets", telnetsAddresses)...)
 	}
 	return listeners, addresses, nil
+}
+
+func port(number uint16) string {
+	return strconv.Itoa(int(number))
 }
 
 // startAll is apart from serve so that serve, which holds the stop context, does not call a

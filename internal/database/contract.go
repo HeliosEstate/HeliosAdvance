@@ -2,20 +2,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package database is the engine's side of the board's database: the connection settings the
-// bootstrap file seals, signing in, the checks made each time the lease is taken, and the server's
-// lease.
+// bootstrap file seals, signing in, the checks made each time the lease is taken, the server's
+// lease, and the server's settings.
 //
 // It owns reading the connection settings, the JSON the bootstrap unit unseals; connecting to
 // PostgreSQL over TLS and signing in by SCRAM-SHA-256 with channel binding, on
 // github.com/jackc/pgx/v5 at v5.11.0 or later; refusing a login that could change the schema;
-// reading the schema version and the server's row; and the lease: taking it, renewing it every
-// RenewSeconds while it is held, telling the program once it is lost, and ending it at a stop. The
-// schema and what a server's login may do with it are schema.sql, beside this file, and Schema
-// holds it.
+// reading the schema version and the server's row, and in it the server's settings: which of
+// Telnet, SSH and Telnet over TLS it runs, and their ports; and the lease: taking it, renewing it
+// every RenewSeconds while it is held, telling the program once it is lost, and ending it at a
+// stop. The schema and what a server's login may do with it are schema/schema.sql, in the schema
+// folder beside this file, which holds the unit's schema files and nothing else; Schema holds it.
 //
 // It does not own waiting and trying again, the listeners, or the local log: the program decides
 // from each error whether to wait or to stop, opens and closes the listeners, and writes every log
-// line in its own words. The command line, which names the bootstrap folder, is the program's; the
+// line in its own words; which listeners the settings open is the program's too. Writing a setting
+// belongs to no unit yet. The command line, which names the bootstrap folder, is the program's; the
 // bootstrap folder, its key file and the sealing are the bootstrap unit's. Creating the database,
 // the owner, the server's login and row, and the bootstrap file belong to hadv-setup; acting on
 // another server's ended lease, and the cleanup after a run whose lease ended, to later layers.
@@ -28,17 +30,21 @@
 // chains to the Connection's certificate authority and names its host, the other end may be
 // anyone, and nothing is sent to it but the TLS handshake. After it, the library reads every reply
 // from the database: the sign-in, the rows and the errors, each message at most ReplyMostBytes.
-// This package reads one integer, one row of three columns and the login's rights from those
-// replies, and keeps none of the database's text in an error. The connection settings are
-// hadv-setup's, sealed in the bootstrap file, not a caller's; they reach this package only once
-// the bootstrap unit has unsealed them, which bounds them. No caller's byte reaches this package.
-// There is no fuzz target here: the standard library parses the JSON and the library the wire.
+// This package reads one integer, one row of nine columns and the login's rights from those
+// replies, and keeps none of the database's text in an error. A setting that is empty, not of its
+// kind, or a port outside 0 to 65535 is refused, though the schema refuses each too, since a
+// value crosses this boundary and turning it into a port would wrap it silently. The connection
+// settings are hadv-setup's, sealed in the bootstrap file, not a caller's; they reach this package
+// only once the bootstrap unit has unsealed them, which bounds them. No caller's byte reaches this
+// package. There is no fuzz target here: the standard library parses the JSON and the library the
+// wire.
 //
 // # Oracles
 //
 // PostgreSQL itself, a real server driven from outside: the tests create the database from Schema
 // as the owner, a server's login as a member of hadv_server, the row and the bootstrap folder, as
-// hadv-setup will; read and write hadv.servers with SQL; stop and start the server; change its
+// hadv-setup will; read and write hadv.servers with SQL, and drop a column's check or its NOT NULL,
+// or change its type, to plant a value the schema refuses; stop and start the server; change its
 // sign-in rules; and make their own certificate authority, signing with ECDSA P-256 and SHA-256.
 // Tests run on Linux x86-64, Linux ARM64 and Windows x86-64, as an ordinary user.
 //
@@ -66,14 +72,14 @@ package database
 
 import (
 	"context"
-	_ "embed" // Schema is schema.sql, embedded.
+	_ "embed" // Schema is schema/schema.sql, embedded.
 	"errors"
 )
 
 const (
 	// SchemaVersionMadeFor is the schema version this engine was made for. It also accepts the
 	// next, so servers one version apart share the database during a rolling update.
-	SchemaVersionMadeFor = 1
+	SchemaVersionMadeFor = 2
 	// LeaseSeconds is how long after the database's time a take or a renewal ends the lease.
 	LeaseSeconds = 30
 	// LossSeconds is how long after it sent its last take or renewal that succeeded the Lease
@@ -93,9 +99,9 @@ const (
 )
 
 // Schema is the board's schema, version SchemaVersionMadeFor, and the rights of a server's login:
-// schema.sql, run once by the owner login.
+// schema/schema.sql, run once by the owner login.
 //
-//go:embed schema.sql
+//go:embed schema/schema.sql
 var Schema string
 
 // Why ParseConnection refused the connection settings. None holds any part of them, so the
@@ -110,9 +116,9 @@ var (
 	ErrFieldMissing = errors.New("database: the bootstrap file's connection settings are missing a field")
 )
 
-// Why Take failed. ErrUnreachable, ErrNotReady, ErrNoConnectionFree, ErrReadOnly and ErrLeaseHeld
-// fix themselves, so the program waits and takes again; every other one does not, so the program
-// stops. None holds the password or any text the database sent.
+// Why Take failed. ErrUnreachable, ErrNotReady, ErrNoConnectionFree, ErrReadOnly, ErrLeaseHeld and
+// ErrTemporary fix themselves, so the program waits and takes again; every other one does not, so
+// the program stops. None holds the password or any text the database sent.
 var (
 	// ErrUnreachable means the database did not answer within TrySeconds, refused the
 	// connection, or the connection failed after it was made.
@@ -129,6 +135,12 @@ var (
 	ErrRefused = errors.New("database: the database refuses")
 	// ErrLeaseHeld means the server's lease has not ended and its holder is not this run's own.
 	ErrLeaseHeld = errors.New("database: the server's lease is held by another run")
+	// ErrTemporary is what a TemporaryError matches through errors.Is: the database answered that
+	// it cancelled the statement (57014, query_canceled), that a lock was not available (55P03,
+	// lock_not_available), that a clash with another transaction stopped it (40001,
+	// serialization_failure; 40P01, deadlock_detected), or that its disk or memory ran out (53100,
+	// disk_full; 53200, out_of_memory): each passes without anyone changing a setting.
+	ErrTemporary = errors.New("database: the database refused for a reason that passes on its own")
 	// ErrCertificate means the database's certificate does not chain to the Connection's
 	// certificate authority, does not name its host, or cannot be used for channel binding.
 	ErrCertificate = errors.New("database: the database's certificate fails its check")
@@ -164,6 +176,81 @@ func (failure *SchemaVersionError) Error() string {
 // Unwrap returns ErrSchemaVersion, so errors.Is matches it.
 func (failure *SchemaVersionError) Unwrap() error {
 	return ErrSchemaVersion
+}
+
+// ErrSetting is what a SettingError matches through errors.Is.
+var ErrSetting = errors.New("database: a setting is empty, not of its kind, or a port outside 0 to 65535")
+
+// SettingError means a setting in the server's row is empty, not of its kind (a boolean for an
+// on-or-off setting, an integer for a port), or a port outside 0 to 65535. The schema refuses each,
+// but the value crosses a trust boundary, and turning it into a port would wrap it silently. It
+// matches ErrSetting through errors.Is, and names the column, never the value or text the
+// database sent.
+type SettingError struct {
+	// Setting is the column: telnet_on, telnet_port, ssh_on, ssh_port, telnets_on or telnets_port.
+	Setting string
+}
+
+// Error names the setting.
+func (failure *SettingError) Error() string {
+	return settingText(failure)
+}
+
+// Unwrap returns ErrSetting, so errors.Is matches it.
+func (failure *SettingError) Unwrap() error {
+	return ErrSetting
+}
+
+// TemporaryReason is which of the four refusals that pass on their own the database gave, so the
+// program can say which: a sysop who reads that the disk or memory ran out has something to fix,
+// and one who reads that a lock was not available looks elsewhere.
+type TemporaryReason int
+
+// The four reasons, each with the SQLSTATE codes behind it.
+const (
+	// TemporaryCancelled means the database cancelled the statement (57014).
+	TemporaryCancelled TemporaryReason = iota + 1
+	// TemporaryLockNotAvailable means a lock was not available (55P03).
+	TemporaryLockNotAvailable
+	// TemporaryClash means a clash with another transaction stopped it (40001, 40P01).
+	TemporaryClash
+	// TemporaryRanOut means the database's disk or memory ran out (53100, 53200).
+	TemporaryRanOut
+)
+
+// TemporaryError means the database refused for a reason that passes on its own, and says which.
+// It matches ErrTemporary through errors.Is, and holds the reason, never text the database sent.
+type TemporaryError struct {
+	// Reason is which of the four it was.
+	Reason TemporaryReason
+}
+
+// Error names the reason.
+func (failure *TemporaryError) Error() string {
+	return temporaryText(failure)
+}
+
+// Unwrap returns ErrTemporary, so errors.Is matches it.
+func (failure *TemporaryError) Unwrap() error {
+	return ErrTemporary
+}
+
+// Settings are the server's settings, as its row in hadv.servers held them when the lease was
+// taken. Every service is off until its own setting turns it on; a port of 0 lets the operating
+// system pick one.
+type Settings struct {
+	// TelnetOn is telnet_on: listen for Telnet callers.
+	TelnetOn bool
+	// TelnetPort is telnet_port: Telnet's port.
+	TelnetPort uint16
+	// SSHOn is ssh_on: listen for SSH callers.
+	SSHOn bool
+	// SSHPort is ssh_port: SSH's port.
+	SSHPort uint16
+	// TelnetsOn is telnets_on: listen for Telnet over TLS callers.
+	TelnetsOn bool
+	// TelnetsPort is telnets_port: Telnet over TLS's port.
+	TelnetsPort uint16
 }
 
 // Connection is what the connection settings hold: where the database is and how this server signs
@@ -263,11 +350,19 @@ func NewServerDatabase(connection Connection) *ServerDatabase {
 //     *SchemaVersionError naming the version found, or Missing.
 //   - If hadv.servers holds no row for the Connection's server ID, then Take shall return
 //     ErrNoServerRow.
+//   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
+//     then Take shall return ErrLeaseHeld and change nothing.
+//   - If the database answers with SQLSTATE 57014, 55P03, 40001, 40P01, 53100 or 53200, then
+//     Take shall return a *TemporaryError naming which: TemporaryCancelled for 57014,
+//     TemporaryLockNotAvailable for 55P03, TemporaryClash for 40001 and 40P01, TemporaryRanOut
+//     for 53100 and 53200; and change nothing.
+//   - If one of the six settings in the server's row is empty, not of its kind, or a port outside
+//     0 to 65535, then Take shall return a *SettingError naming that column, and change nothing.
 //   - When the server's row's lease has ended, or its lease holder is the one this ServerDatabase
 //     last sent, Take shall write a new random lease holder and a lease end LeaseSeconds after
 //     the database's current time to that row, and return the Lease.
-//   - If the lease has not ended and its holder is not the one this ServerDatabase last sent,
-//     then Take shall return ErrLeaseHeld and change nothing.
+//   - Take shall return a Lease whose Settings are the six settings the server's row holds, read
+//     in the same Take.
 //   - If the database refuses for any reason the lines above do not name, then Take shall return
 //     ErrRefused.
 //   - If the context has ended when Take is called, or ends while it waits, then Take shall
@@ -310,6 +405,12 @@ func (lease *Lease) Lost() <-chan struct{} {
 	return lease.lost()
 }
 
+// Settings returns the server's settings as they stood when this Lease was taken. They are fixed
+// for this Lease: a setting changed while it is held reaches only the Lease of a later Take.
+func (lease *Lease) Settings() Settings {
+	return lease.settings()
+}
+
 // EndLease ends the lease at a stop: it renews no more, sets the lease end to the database's
 // current time while the holder is its own, waiting at most EndWaitMilliseconds, and closes its
 // connection. It returns nothing: when the database does not answer, the lease ends LeaseSeconds
@@ -317,6 +418,9 @@ func (lease *Lease) Lost() <-chan struct{} {
 //
 //   - EndLease shall set the row's lease end to the database's current time, only while the row's
 //     lease holder is its own, waiting on the database at most EndWaitMilliseconds.
+//   - When the database has ended the Lease's connection, EndLease shall still set the lease end
+//     within the same EndWaitMilliseconds, connecting as Take does: over TLS 1.2 or 1.3, only to a
+//     certificate that passes Take's check, and only by SCRAM-SHA-256 with channel binding.
 //   - EndLease shall stop the renewals and close the Lease's connection before it returns.
 func (lease *Lease) EndLease() {
 	lease.endLease()

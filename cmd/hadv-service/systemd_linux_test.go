@@ -103,7 +103,7 @@ func newUnit(t *testing.T, settings connectionFile) *systemdUnit {
 // table of sockets, every process's.
 func expectPort23FreeLinux(t *testing.T) {
 	t.Helper()
-	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+	for _, table := range socketTables {
 		text, err := os.ReadFile(table)
 		if err != nil {
 			t.Fatalf("reading the socket table %s: %v", table, err)
@@ -332,7 +332,7 @@ func runSudo(t *testing.T, arguments ...string) (int, string) {
 func startLockedUnit(t *testing.T) (*systemdUnit, *rowLock, time.Time) {
 	t.Helper()
 	server := sharedServer(t)
-	created := server.newBoard(t)
+	created := server.newBoard(t, telnetAt(23))
 	lock := created.lockRow(t)
 	unit := newUnit(t, created.file())
 	unit.install(t)
@@ -395,9 +395,9 @@ func TestLinuxRootSystemd(t *testing.T) { //nolint:paralleltest // it must run a
 		})
 		t.Run("SSH on with its port held by the test at both addresses, so Telnet listens and SSH fails: the unit failed and never counted active, its journal's line start_failed; started again with that port free, it becomes active", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			port, ipv4, ipv6 := heldPort(t)
-			unit := newUnit(t, sharedRowSettings(t))
+			unit := newUnit(t, sharedRowSettings(t, telnetAt(23).withSSH(portNumber(t, port))))
 			hostKey := unit.installFile(t, makeKey(t, "ed25519", ""), "host_key")
-			unit.install(t, sshPortOption, port, hostKeyOption, hostKey)
+			unit.install(t, hostKeyOption, hostKey)
 			unit.start(t)
 			unit.awaitFailed(t)
 			if entered := unit.property(t, "ActiveEnterTimestampMonotonic"); entered != "0" {
@@ -411,11 +411,25 @@ func TestLinuxRootSystemd(t *testing.T) { //nolint:paralleltest // it must run a
 			unit.start(t)
 			unit.awaitActiveState(t, "active", time.Now().Add(testrun.Patient(testrun.HangBound)))
 		})
+		t.Run("every service off: active, its journal's one line started naming no listener, and the account it runs as listening nowhere", func(t *testing.T) { //nolint:paralleltest // it must run alone
+			unit := newUnit(t, sharedRowSettings(t, allOff()))
+			unit.install(t)
+			unit.start(t)
+			unit.awaitActiveState(t, "active", time.Now().Add(testrun.Patient(testrun.HangBound)))
+			values := expectLogText(t, unit.awaitJournalLines(t, 1), "started")
+			expectListensNowhere(t, values[0])
+			// The unit runs as hadv, whose process an ordinary user may not read in /proc, so its
+			// sockets are those the system's table gives hadv's user ID; these rows run alone, and
+			// nothing else runs as hadv.
+			if sockets := listeningSocketsOfUser(t, strings.TrimSpace(sudo(t, "id", "-u", daemonUser))); len(sockets) != 0 {
+				t.Fatalf("%s listens at %q, with every service off", daemonUser, sockets)
+			}
+		})
 	})
 
-	t.Run("When systemd starts it as an ordinary user holding no capability but the right to bind ports below 1024, the engine shall listen for Telnet callers on port 23.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("run as hadv holding CAP_NET_BIND_SERVICE alone, as /proc reads back, with no port: active, 127.0.0.1:23 and [::1]:23 served, and the started line names both", func(t *testing.T) { //nolint:paralleltest // it must run alone
-			unit := newUnit(t, sharedRowSettings(t))
+	t.Run("When systemd starts it as an ordinary user holding no capability but the right to bind ports below 1024, and its server's settings turn Telnet on at port 23, the engine shall listen for Telnet callers on port 23.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("run as hadv holding CAP_NET_BIND_SERVICE alone, as /proc reads back, Telnet on at 23: active, 127.0.0.1:23 and [::1]:23 served, and the started line names both", func(t *testing.T) { //nolint:paralleltest // it must run alone
+			unit := newUnit(t, sharedRowSettings(t, telnetAt(23)))
 			unit.install(t)
 			unit.start(t)
 			unit.awaitActiveState(t, "active", time.Now().Add(testrun.Patient(testrun.HangBound)))

@@ -37,7 +37,7 @@ jobs:
     outputs:
       list: ${{ steps.list.outputs.list }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Found by a search of the test files, so nothing is built to name them.
@@ -67,11 +67,11 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # No build cache: it would hold the night's inputs, and a pull request could read it.
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: false
@@ -144,7 +144,7 @@ jobs:
                                       locations: [{physicalLocation: {artifactLocation: {uri: $file}, region: {startLine: $line}}}],
                                       partialFingerprints: {"fuzzRun/v1": ($id + "#" + .part)}})}]}' > "$RUNNER_TEMP/fuzz.sarif"
           echo "category=$id" >> "$GITHUB_OUTPUT"
-      - uses: github/codeql-action/upload-sarif@v4
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: steps.finding.outcome == 'success'
         with:
           sarif_file: ${{ runner.temp }}/fuzz.sarif
@@ -167,7 +167,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: An upload with no result
@@ -180,7 +180,7 @@ jobs:
           jq -n '{version: "2.1.0", "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
                   runs: [{tool: {driver: {name: "fuzz", informationUri: "https://go.dev/doc/security/fuzz/", rules: []}}, results: []}]}' \
             > "$RUNNER_TEMP/fuzz.sarif"
-      - uses: github/codeql-action/upload-sarif@v4
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: ${{ runner.temp }}/fuzz.sarif
           category: ${{ inputs.close }}

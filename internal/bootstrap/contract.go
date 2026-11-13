@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package bootstrap is the engine's bootstrap folder: the bootstrap file, sealed, and the key file
-// that holds its key.
+// Package bootstrap is the engine's bootstrap folder: the bootstrap file, sealed, and where its key
+// is held: the key file, or on Windows a machine key in Microsoft's TPM or software key store.
 //
 // It owns reading both files through the folder; the bootstrap file's layout, format version 1;
-// checking the key file's owner and permissions; the key file's form; and unsealing the bootstrap
-// file with AES-256-GCM. It hands back the sealed JSON as bytes and knows nothing of what it
-// means: the connection settings are the database unit's. It does not own the command line, which
-// names the folder, or the local log, which are the program's; making the folder, its permissions,
-// the key and both files, which are hadv-setup's; writing the bootstrap file, which is the vault's;
-// or any way of holding the key but the key file, which later parts add.
+// checking the key file's owner and permissions and its form; on Windows, finding the key store's
+// key, checking who has access to it and unwrapping the bootstrap file's key under it; and
+// unsealing the bootstrap file with AES-256-GCM. It hands back the sealed JSON as bytes and knows
+// nothing of what it means: the connection settings are the database unit's. It does not own the
+// command line, which names the folder, or the local log, which are the program's; making the
+// folder, its permissions, the key file, the key store's key and its access list, and both files,
+// which are hadv-setup's; writing the bootstrap file, which is the vault's; or holding the key in
+// systemd or a Swarm secret, which a later part adds.
 //
 // What the engine does as a whole, this package included, is in docs/behavior.md.
 //
@@ -20,9 +22,12 @@
 //
 //	offset 0     8 bytes   HADVBOOT
 //	offset 8     2 bytes   format version: 1
-//	offset 10    1 byte    key holder: 1, the key file
-//	offset 11    2 bytes   sealed-key length: 0 for the key file
-//	offset 13    n bytes   sealed key: none for the key file
+//	offset 10    1 byte    key holder: 1, the key file; 2, the TPM key store; 3, the software
+//	                       key store
+//	offset 11    2 bytes   sealed-key length: 0 for the key file, SealedKeyBytes for 2 and 3
+//	offset 13    n bytes   sealed key: none for the key file; for 2 and 3, the key store key's
+//	                       name (KeyNameBytes: KeyNamePrefix and 32 lower-case hex digits), then
+//	                       the bootstrap file's key wrapped under it (WrappedKeyBytes)
 //	then        12 bytes   nonce
 //	then         m bytes   the JSON, AES-256-GCM under the key
 //	then        16 bytes   the GCM tag
@@ -35,16 +40,28 @@
 // the 32-byte key with the bits after its last byte zero, then nothing, one line feed, or one
 // carriage return and line feed.
 //
+// # The key store's key
+//
+// Under key holder 2, a machine key in Microsoft Platform Crypto Provider, the TPM's key store;
+// under 3, one in Microsoft Software Key Storage Provider. An RSA-2048 key whose name is the sealed
+// key's first KeyNameBytes; the rest of the sealed key is the bootstrap file's 32-byte key wrapped
+// under it by RSA-OAEP with SHA-256. Its owner and access list are judged as the key file's are
+// on Windows. The key store is loaded from System32 alone, and a call into it is not cut short:
+// Windows offers no way to.
+//
 // # Untrusted input
 //
 // The bootstrap file is untrusted until its tag verifies: its size is bounded, its first
-// HeaderBytes are checked before anything after them is used, and nothing after them is used
-// before the tag verifies. The key
-// file is untrusted until its form is checked. Both come from the bootstrap folder, which only
-// hadv-setup and administrators should write; the key file's owner and permissions are checked
-// because a key file someone else can write or replace could point the engine at a database of
-// their choosing. No caller's byte reaches this package. Fuzz targets: the header reader and the
-// key file's reader.
+// HeaderBytes are checked before anything after them is used, and nothing after them but the
+// sealed key is used before the tag verifies. The sealed key, under key holder 2 or 3, is used
+// before: its name is checked against its form before the key store is asked for it, and is
+// never a path; its wrapped bytes go only to the key store's own RSA-OAEP decryption, whose result
+// is bounded and checked. The key file is untrusted until its form is checked. Both files come
+// from the bootstrap folder, which only hadv-setup and administrators should write; the key
+// file's owner and permissions are checked because a key file someone else can write or replace
+// could point the engine at a database of their choosing, and the key store's key is checked
+// because anyone with access to it can unwrap the bootstrap file's key. No caller's byte reaches
+// this package. Fuzz targets: the header reader and the key file's reader.
 //
 // The package builds for Linux and Windows only, the two systems whose key file checks it holds,
 // so the engine is never built where it would start with the key file unchecked.
@@ -56,7 +73,10 @@
 // bootstrap file with, good and broken; RFC 4648's test vectors for the key file's reader; and the
 // real file systems on Linux x86-64, Linux ARM64 and Windows x86-64, whose modes and access lists,
 // and on Windows owners, the tests set from outside, and on Linux the system's own answer to
-// whether the account `nobody` may read or write the key file.
+// whether the account `nobody` may read or write the key file; and on Windows, the real key
+// stores, driven from outside through PowerShell and .NET's CngKey and RSACng, which make each
+// key store key with its access list, wrap the bootstrap file's key and delete the key: the TPM's
+// where there is one and the process is elevated, the software key store's on CI.
 //
 // # What it needs from its callers
 //
@@ -87,6 +107,22 @@ const (
 	FormatVersion = 1
 	// KeyHolderKeyFile is the header's number for a key kept in the key file.
 	KeyHolderKeyFile = 1
+	// KeyHolderTPM is the header's number for a key wrapped by a machine key in Microsoft's TPM
+	// key store.
+	KeyHolderTPM = 2
+	// KeyHolderSoftwareKeyStore is the header's number for a key wrapped by a machine key in
+	// Microsoft's software key store.
+	KeyHolderSoftwareKeyStore = 3
+	// SealedKeyBytes is the sealed key's length under key holders 2 and 3: the key store key's
+	// name, then the wrapped key.
+	SealedKeyBytes = KeyNameBytes + WrappedKeyBytes
+	// KeyNameBytes is the key store key's name: KeyNamePrefix and 32 lower-case hex digits.
+	KeyNameBytes = len(KeyNamePrefix) + 32
+	// KeyNamePrefix is how every key store key's name starts.
+	KeyNamePrefix = "hadv-"
+	// WrappedKeyBytes is the bootstrap file's key wrapped by the RSA-2048 key store key, OAEP with
+	// SHA-256.
+	WrappedKeyBytes = 256
 	// HeaderBytes is the header's fixed start: the magic, the version, the key holder and the
 	// sealed-key length.
 	HeaderBytes = 13
@@ -119,8 +155,10 @@ var (
 	ErrFileUnreadable = errors.New("bootstrap: the bootstrap file cannot be read")
 	// ErrFileTooLarge means the bootstrap file is longer than FileMostBytes.
 	ErrFileTooLarge = errors.New("bootstrap: the bootstrap file is too large")
-	// ErrHeader means the bootstrap file's header is not format version 1's for the key file, or
-	// the file is too short for its header, nonce and tag.
+	// ErrHeader means the bootstrap file's header is not format version 1's for a key holder this
+	// system has (the key file; on Windows also the TPM and the software key store), the file is
+	// too short for its header, sealed key, nonce and tag, or the sealed key's name is not in its
+	// form.
 	ErrHeader = errors.New("bootstrap: the bootstrap file's header is not one this engine reads")
 	// ErrKeyFileMissing means the bootstrap folder holds no key file.
 	ErrKeyFileMissing = errors.New("bootstrap: the key file does not exist")
@@ -136,13 +174,29 @@ var (
 	ErrKeyFileReachable = errors.New("bootstrap: someone but the engine's account, SYSTEM or Administrators can reach the key file")
 	// ErrKeyFileForm means the key file is not in its form, or holds a key of 32 zero bytes.
 	ErrKeyFileForm = errors.New("bootstrap: the key file is not in its form")
-	// ErrUnseal means the bootstrap file does not unseal under the key: a wrong key or a changed
-	// file, which cannot be told apart.
-	ErrUnseal = errors.New("bootstrap: the bootstrap file does not unseal under the key in the key file")
+	// ErrKeyStore means, under key holder 2 or 3, that the key store the header names will not
+	// load or open, the key store key is not in it, or the key store refuses to open the key or to
+	// unwrap with it for any reason but a result longer than the buffer. Windows' answer is wrapped
+	// beneath it.
+	ErrKeyStore = errors.New("bootstrap: the key store key cannot be used")
+	// ErrKeyStorePermissions means Open is unable to confirm who has access to the key store key:
+	// its owner or access list could not be read, or its access list holds an entry of a kind Open
+	// does not judge.
+	ErrKeyStorePermissions = errors.New("bootstrap: who has access to the key store key cannot be confirmed")
+	// ErrKeyStoreReachable means someone but the engine's own account, SYSTEM or Administrators
+	// owns the key store key or has access to it, or it has no access list.
+	ErrKeyStoreReachable = errors.New("bootstrap: someone but the engine's account, SYSTEM or Administrators can use the key store key")
+	// ErrUnwrap means the unwrap under the key store key gave other than KeyBytes bytes, a result
+	// longer than the buffer included, or KeyBytes zero bytes.
+	ErrUnwrap = errors.New("bootstrap: the key store key does not unwrap a 32-byte key")
+	// ErrUnseal means the bootstrap file does not unseal under the key its key holder gives: a
+	// wrong key or a changed file, which cannot be told apart.
+	ErrUnseal = errors.New("bootstrap: the bootstrap file does not unseal under its key")
 )
 
-// Open opens the bootstrap folder, checks the bootstrap file and its header, then the key file,
-// and unseals the bootstrap file. It returns the sealed JSON, which the caller wipes once read.
+// Open opens the bootstrap folder, checks the bootstrap file and its header, then, by the key
+// holder the header names, the key file or the key store key, takes the key, and unseals the
+// bootstrap file. It returns the sealed JSON, which the caller wipes once read.
 // The checks run in the order of the lines below, and the first that applies is the result.
 //
 //   - Open shall check in the order of these lines and return the first refusal that applies.
@@ -157,8 +211,15 @@ var (
 //   - If the bootstrap file is longer than FileMostBytes, then Open shall return ErrFileTooLarge,
 //     having read at most FileMostBytes and one byte more of it.
 //   - If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its
-//     first HeaderBytes are not Magic, FormatVersion, KeyHolderKeyFile and a sealed-key length of
-//     0, then Open shall return ErrHeader before it opens the key file.
+//     first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key
+//     length of 0 or, on Windows, KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key
+//     length of SealedKeyBytes, or, under key holder 2 or 3, the file is too short for the sealed
+//     key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32
+//     lower-case hex digits, then Open shall return ErrHeader before it opens the key file or asks
+//     a key store.
+//   - Under KeyHolderKeyFile, Open shall take the key from the key file by the lines that follow
+//     on the key file, and under KeyHolderTPM or KeyHolderSoftwareKeyStore by the lines on the key
+//     store key, never by the other's; it shall not open the key file under key holder 2 or 3.
 //   - If the bootstrap folder holds no key file, then Open shall return ErrKeyFileMissing.
 //   - If the key file will not open, is not a regular file, or is a link leading out of the
 //     bootstrap folder, then Open shall return ErrKeyFileUnreadable.
@@ -179,12 +240,38 @@ var (
 //   - If the key file is longer than KeyFileMostBytes, is not in the form the package comment
 //     gives, or holds a key of 32 zero bytes, then Open shall return ErrKeyFileForm, having read
 //     at most KeyFileMostBytes and one byte more of it.
+//   - Under KeyHolderTPM, Open shall look for the key store key the sealed key names only among
+//     the machine keys of Microsoft Platform Crypto Provider, and under KeyHolderSoftwareKeyStore
+//     only among those of Microsoft Software Key Storage Provider.
+//   - Open shall load the key store from the System32 folder alone. [read]
+//   - Open shall make every key store call silent, so a key that would ask for a prompt is refused
+//     at once rather than waited on. [read]
+//   - If the key store will not load or open, the key store key is not there, or the key store
+//     refuses to open it, then Open shall return ErrKeyStore, with the key store's answer beneath
+//     it.
+//   - If reading the key store key's owner or access list fails, or an entry of its access list
+//     that allows access is of a kind other than a plain allow entry, such as a conditional entry,
+//     then Open shall return ErrKeyStorePermissions.
+//   - If the key store key's owner, or any entry of its access list that allows access, whether
+//     the key's own or inherited, names anyone but SYSTEM (S-1-5-18), Administrators
+//     (S-1-5-32-544) or the user of the engine's own token, or the key has no access list, then
+//     Open shall return ErrKeyStoreReachable. An entry that denies access is not counted.
+//   - Open shall read the key store key's owner and access list from the key it opened, never by
+//     its name again. [read]
+//   - Open shall take the bootstrap file's key by unwrapping the sealed key's last WrappedKeyBytes
+//     under the key store key by RSA-OAEP with SHA-256, reading at most KeyBytes and one byte more.
+//   - If the unwrap gives other than KeyBytes bytes, a result longer than KeyBytes and one byte
+//     included, or KeyBytes zero bytes, then Open shall return ErrUnwrap.
+//   - If the key store refuses the unwrap for any other reason, then Open shall return ErrKeyStore,
+//     with the key store's answer beneath it.
 //   - If the bootstrap file's tag does not verify under the key, then Open shall return ErrUnseal
 //     and no bytes.
-//   - When it returns, Open shall have closed the bootstrap folder and both files.
-//   - Open shall wipe each buffer it allocates for the key, the key file's text and the bootstrap
-//     file's bytes before it returns, keeping only the JSON it returns; the copies Go's AES and GCM
-//     keep inside the cipher are out of its reach. [read]
+//   - When it returns, Open shall have closed the bootstrap folder and the files it opened, and
+//     freed every key store handle it opened.
+//   - Open shall wipe each buffer it allocates for the key, the key file's text, the unwrapped key
+//     and the bootstrap file's bytes before it returns, keeping only the JSON it returns; the
+//     copies Go's AES and GCM keep inside the cipher, and the key store's own, are out of its
+//     reach. [read]
 func Open(folder string) ([]byte, error) {
 	return open(folder)
 }

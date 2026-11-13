@@ -11,8 +11,6 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/telnets"
 )
 
-const defaultTLSPort = "992"
-
 // telnetsTargets are Telnet over TLS's own list, so that its addresses can change without the
 // others'.
 var telnetsTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}

@@ -99,7 +99,7 @@ func expectNothingWritten(t *testing.T, name, text string) {
 func startLogged(t *testing.T, path string, skip int) []byte {
 	t.Helper()
 	send := stopSignals()[0].prepare(t)
-	program := startProgram(t, portOption, "0", logFileOption, path)
+	program := startProgram(t, telnetAt(0), logFileOption, path)
 	expectStartedLine(t, readLogFile(t, program, path, skip, 1)[0])
 	stopProgram(t, program, send)
 	expectNothingWritten(t, "standard output", program.text())
@@ -121,7 +121,7 @@ func TestLogFile(t *testing.T) {
 		t.Run("no log file: the started line on standard output, and nothing on standard error after a stop", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			program.listening(t)
 			stopProgram(t, program, send)
 			program.expectLog(t, "started")
@@ -153,7 +153,7 @@ func TestLogFile(t *testing.T) {
 		t.Run("a refusal, no bootstrap folder, with a log file: its start_failed line in the file, nothing on standard output, a non-zero exit", func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "hadv.log")
-			program := startBare(t, portOption, "0", logFileOption, path)
+			program := startBare(t, logFileOption, path)
 			code, _ := program.exit(t, time.Now().Add(startLimit))
 			if code == 0 {
 				t.Fatalf("the program refused to start but exited with 0")
@@ -209,7 +209,7 @@ func TestLogFile(t *testing.T) {
 			t.Run(name+": one start_failed line on standard output naming the log file, a reason of its own, a non-zero exit, and the path left as it was", func(t *testing.T) {
 				t.Parallel()
 				path, unchanged := prepare(t)
-				reason := startProgram(t, portOption, "0", logFileOption, path).expectRefusal(t)
+				reason := startProgram(t, telnetAt(0), logFileOption, path).expectRefusal(t)
 				expectNamesLogFile(t, reason, path)
 				expectOwnReason(t, reason, noFileReason(t), "no bootstrap folder")
 				unchanged(t)

@@ -92,8 +92,8 @@ type engine struct {
 	key       string
 }
 
-// startEngine starts the program with a host key ssh-keygen made for the row and ports the
-// system picks, and waits for its started line.
+// startEngine starts the program with a host key ssh-keygen made for the row, its row setting
+// Telnet and SSH on at ports the system picks, and waits for its started line.
 func startEngine(t *testing.T) *engine {
 	t.Helper()
 	return startEngineAt(t, programPath)
@@ -103,7 +103,7 @@ func startEngine(t *testing.T) *engine {
 func startEngineAt(t *testing.T, path string, options ...string) *engine {
 	t.Helper()
 	key := makeKey(t, "ed25519", "")
-	program := runProgramAt(t, path, append([]string{"-port", "0", "-ssh-host-key", key, "-ssh-port", "0"}, options...)...)
+	program := runProgramAt(t, path, append([]string{"-ssh-host-key", key}, options...)...)
 	program.key = key
 	line := program.first(t)
 	value, found := strings.CutPrefix(line, "started=")
