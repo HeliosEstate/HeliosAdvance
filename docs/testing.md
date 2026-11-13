@@ -39,6 +39,11 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   separator. Where a line says only that a message says something, the row compares the message
   with a sibling case's, such as an unknown code's refusal with that code taken out, rather than
   reading its words.
+- A row that proves something is left alone gives it a form the fault it guards against would
+  refuse. A plain file named `notes.txt` is left alone for its name whatever the code does with
+  plain files, so the row that proves an unreadable plain file is left alone names it as a
+  language tag; and a left-alone name that only holds characters a tag never holds says nothing
+  about a name of letters alone, so one row uses a single letter.
 - A time limit is proved with a window: it opens at a moment provably before the engine's own
   clock started, such as before the dial or the call, and closes at the limit plus the margin
   measured on every runner. Each timed row logs how far into its window the event came.
@@ -147,6 +152,13 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
+- A socket for a row on Linux is made with mknod, `S_IFSOCK`, bound by nothing: a socket's
+  address holds about 108 bytes, which a row's own folder can pass, and opening one bound by
+  nothing fails as opening a bound one does (ENXIO). Windows has the same limit on a socket's
+  address and no such call.
+- A row that copies the program into a folder of its own places the shipped `lang` folder
+  beside the copy, as the service rows do; without it the program refuses to start before the
+  row's case is reached.
 - A bound on what the engine reads is a bound on the bytes read from that one file (the
   developer, 2026-11-10), never the process's count of bytes read (`rchar` in /proc/self/io on
   Linux, ReadTransferCount on Windows). That count also holds what the Go runtime reads for
@@ -211,7 +223,9 @@ test that can run on Linux alone is named `TestLinux…`, one that needs root th
 `TestLinuxRoot…`, one that needs a Linux container oracle `TestOracle…`, and one that needs an
 elevated Windows process `TestWindowsElevated…`. Windows CI skips `TestOracle…` and `TestLinux…`;
 a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSKIP`. Green is
-`bash check.sh`, never `go test` alone.
+`bash check.sh`, never `go test` alone. A merge of `development` into a build branch that changes
+how the program starts meets CI's elevated Windows runner before it merges, since the elevated
+rows run nowhere else and a run here skips them.
 
 ## Service managers
 

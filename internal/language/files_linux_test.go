@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pascal Fairchild
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Load's lines on Linux that need the system's own links and modes: a language's folder or file
-// a symbolic link out of the lang folder, and a file link that stays inside it.
+// Load's lines on Linux that need the system's own links, modes and sockets: a language's folder
+// or file a symbolic link out of the lang folder, a file link that stays inside it, and an entry
+// that cannot be opened, refused when named as a language tag and left alone when not.
 package language_test
 
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -87,5 +89,94 @@ func TestLinuxLoad(t *testing.T) {
 			}
 			expectShown(t, expectLoaded(t, folder, frFR), frShown)
 		})
+		t.Run("fr-fr's folder of mode 0000, fr-fr.toml in it, the board en-us: ErrFileRefused naming fr-fr.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: frFile(nil)})
+			makeUnopenable(t, filepath.Join(folder, frFR))
+			expectRefused(t, folder, fallbackCode, fileName(frFR))
+		})
+		t.Run("fr-fr a relative symbolic link to nothing, the board en-us: ErrFileRefused naming fr-fr.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Symlink("gone", filepath.Join(folder, frFR)); err != nil {
+				t.Fatalf("linking fr-fr to nothing: %v", err)
+			}
+			expectRefused(t, folder, fallbackCode, fileName(frFR))
+		})
+		t.Run("fr-fr a socket, the board en-us: ErrFileRefused naming fr-fr.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			makeSocket(t, filepath.Join(folder, frFR))
+			expectRefused(t, folder, fallbackCode, fileName(frFR))
+		})
+		t.Run("fr-fr a plain file of mode 0000, named as a tag, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.WriteFile(filepath.Join(folder, frFR), []byte("notes"), 0o600); err != nil {
+				t.Fatalf("writing the plain file fr-fr: %v", err)
+			}
+			makeUnopenable(t, filepath.Join(folder, frFR))
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
 	})
+
+	t.Run("If a language's folder name is not a well-formed language tag in lower case, then Load shall return ErrFileRefused naming its file.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("Fr-FR a relative symbolic link to nothing, a tag in mixed case: ErrFileRefused naming Fr-FR.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Symlink("gone", filepath.Join(folder, "Fr-FR")); err != nil {
+				t.Fatalf("linking Fr-FR to nothing: %v", err)
+			}
+			expectRefused(t, folder, fallbackCode, fileName("Fr-FR"))
+		})
+		t.Run("e, a name of one letter that is no tag, a relative symbolic link to nothing, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Symlink("gone", filepath.Join(folder, "e")); err != nil {
+				t.Fatalf("linking e to nothing: %v", err)
+			}
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run(".#README.txt, an editor's lock file, a symbolic link to nothing, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Symlink("ann@host.1234:1700000000", filepath.Join(folder, ".#README.txt")); err != nil {
+				t.Fatalf("linking .#README.txt to nothing: %v", err)
+			}
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run("outside_lang, a symbolic link to a folder outside holding fr-fr.toml, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Symlink(outside(t, folder), filepath.Join(folder, "outside_lang")); err != nil {
+				t.Fatalf("linking outside_lang to a folder outside: %v", err)
+			}
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run("my_private, a folder of mode 0000, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Mkdir(filepath.Join(folder, "my_private"), 0o700); err != nil {
+				t.Fatalf("making my_private/: %v", err)
+			}
+			makeUnopenable(t, filepath.Join(folder, "my_private"))
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run("app.sock, a socket, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			makeSocket(t, filepath.Join(folder, "app.sock"))
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+	})
+}
+
+// makeSocket makes a socket at path with mknod, bound by nothing, which an open fails on as it
+// does on a bound one; a socket's address is too short for some of the rows' folders.
+func makeSocket(t *testing.T, path string) {
+	t.Helper()
+	if err := syscall.Mknod(path, syscall.S_IFSOCK|0o600, 0); err != nil {
+		t.Fatalf("making a socket at %s: %v", path, err)
+	}
 }

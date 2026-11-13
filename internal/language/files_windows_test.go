@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Load's lines on Windows that need the system's own links and handles: a language's folder a
-// junction out of the lang folder, and a file or folder held open with no sharing. A symbolic link
+// junction out of the lang folder, a file or folder held open with no sharing, and an entry that
+// cannot be opened, refused when named as a language tag and left alone when not. A symbolic link
 // to a file needs a privilege only an elevated process holds, so those rows are
 // TestWindowsElevated's. The count of bytes this process has read is Linux's alone here: Windows
 // gives it only through a raw pointer, which the engine's imports refuse, or by asking another
@@ -87,7 +88,94 @@ func TestWindowsLoad(t *testing.T) {
 			junctionOutside(t, folder)
 			expectRefused(t, folder, fallbackCode, fileName(frFR))
 		})
+		t.Run("fr-fr's folder held open with no sharing, fr-fr.toml in it, the board en-us: ErrFileRefused naming fr-fr.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: frFile(nil)})
+			makeUnopenable(t, filepath.Join(folder, frFR))
+			expectRefused(t, folder, fallbackCode, fileName(frFR))
+		})
+		t.Run("fr-fr a junction to a folder since removed, the board en-us: ErrFileRefused naming fr-fr.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			junctionToNothing(t, folder, frFR)
+			expectRefused(t, folder, fallbackCode, fileName(frFR))
+		})
+		t.Run("fr-fr a plain file held open with no sharing, named as a tag, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.WriteFile(filepath.Join(folder, frFR), []byte("notes"), 0o600); err != nil {
+				t.Fatalf("writing the plain file fr-fr: %v", err)
+			}
+			makeUnopenable(t, filepath.Join(folder, frFR))
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
 	})
+
+	t.Run("If a language's folder name is not a well-formed language tag in lower case, then Load shall return ErrFileRefused naming its file.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("Fr-FR a junction to a folder since removed, a tag in mixed case: ErrFileRefused naming Fr-FR.toml", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			junctionToNothing(t, folder, "Fr-FR")
+			expectRefused(t, folder, fallbackCode, fileName("Fr-FR"))
+		})
+		t.Run("e, a name of one letter that is no tag, a junction to a folder since removed, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			junctionToNothing(t, folder, "e")
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run(".#README.txt a junction to a folder since removed, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			junctionToNothing(t, folder, ".#README.txt")
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run("outside_lang, a junction to a folder outside holding fr-fr.toml, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			base := filepath.Dir(folder)
+			writeLanguage(t, filepath.Join(base, "outside"), frFR, []byte(frFile(nil)))
+			junction(t, base, "outside_lang", filepath.Join("outside", frFR))
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run("my_private, a folder held open with no sharing, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Mkdir(filepath.Join(folder, "my_private"), 0o700); err != nil {
+				t.Fatalf("making my_private/: %v", err)
+			}
+			makeUnopenable(t, filepath.Join(folder, "my_private"))
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+	})
+}
+
+// junction puts in the lang folder beside base an entry called name, a junction to target, a path
+// relative to base. cmd reads a comma as a space, and a row's folder carries its name's commas, so
+// mklink is given relative names, run in base.
+func junction(t *testing.T, base, name, target string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testrun.Patient(testrun.HangBound))
+	defer cancel()
+	command := exec.CommandContext(ctx, "cmd", "/c", "mklink", "/J", filepath.Join(langFolder, name), target)
+	command.Dir = base
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("making a junction at %s: %v: %s", name, err, strings.TrimSpace(string(output)))
+	}
+}
+
+// junctionToNothing puts in lang an entry called name, a junction to a folder it then removes.
+func junctionToNothing(t *testing.T, lang, name string) {
+	t.Helper()
+	base := filepath.Dir(lang)
+	if err := os.Mkdir(filepath.Join(base, "gone"), 0o700); err != nil {
+		t.Fatalf("making the folder the junction leads to: %v", err)
+	}
+	junction(t, base, name, "gone")
+	if err := os.Remove(filepath.Join(base, "gone")); err != nil {
+		t.Fatalf("removing the folder the junction leads to: %v", err)
+	}
 }
 
 // TestWindowsElevatedLoad holds the rows only an elevated process can set up: a symbolic link to

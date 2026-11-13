@@ -137,6 +137,21 @@ func fileWith(name, parent string, each texts) string {
 	return languageFile(top, each.lines())
 }
 
+// deFile is a valid language file for de-de, holding the French texts, for an entry the rows
+// make that must not be read.
+func deFile() string { return fileWith("Deutsch", "", frTexts) }
+
+// entryFile is the file an entry in lang called name would hold, as a refusal names it: a path
+// with a separator, which no row's own temporary folder holds in its name.
+func entryFile(name string) string { return filepath.Join(name, name+".toml") }
+
+// expectLeftAlone starts the program at programFile, its board en-us, and checks that it starts
+// and shows en-us's texts, whatever else lang holds.
+func expectLeftAlone(t *testing.T, programFile string) {
+	t.Helper()
+	expectShown(t, startPlaced(t, programFile).telnetAmidMissing(t)[0], languageCaller, enUSShown(languageCaller))
+}
+
 // enUSFile is the page's en-us file, and frFile the full French one with no parent.
 func enUSFile() string { return fileWith(enUSName, "", enUSTexts) }
 func frFile() string   { return fileWith(frName, "", frTexts) }
