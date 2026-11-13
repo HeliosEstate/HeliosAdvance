@@ -107,15 +107,16 @@ type Texts struct {
 // shows for code, the board's language. With an error it returns no Texts. Results:
 // ErrNotInstalled, ErrFileRefused.
 //
-// A language is a folder in folder holding a file named exactly the folder's own name and .toml,
-// as folder lists it. An entry other than a regular file that cannot be opened to tell whether it
-// is a language, such as a link to nothing, a link leading out of folder, a folder that cannot be
-// read or a socket, counts as a language whose file cannot be read. Anything else in folder is not
-// a language and is left alone, but for the limit on how many entries a folder in it holds. A code,
-// given as code or as a parent, names the language whose folder's name it matches without regard
-// to case (RFC 5646). The chain for code is code, then its parent, then that language's parent
-// and so on, then Fallback; Fallback's own parent, if it has one, is ignored, so every chain ends
-// there.
+// A language is an entry in folder, as folder lists it, of one of two kinds: a folder holding a
+// file named exactly the folder's own name and .toml; or an entry that is not a regular file,
+// whose name is a well-formed language tag in lower case, and that cannot be opened to tell
+// whether it is such a folder, such as a link to nothing, a link leading out of folder, a folder
+// that cannot be read or a socket, which is a language whose file cannot be read. Anything else in
+// folder is not a language and is left alone, but for the limit on how many entries a folder in it
+// holds. A code, given as code or as a parent, names the language whose folder's name it matches
+// without regard to case (RFC 5646). The chain for code is code, then its parent, then that
+// language's parent and so on, then Fallback; Fallback's own parent, if it has one, is ignored, so
+// every chain ends there.
 //
 // Load makes the checks below in the order listed, the languages taken in the order of their
 // folders' names, and returns the first that fails.
