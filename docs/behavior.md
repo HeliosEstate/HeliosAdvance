@@ -586,3 +586,8 @@ on the local log and on the texts a caller is shown.
   shall write one `start_failed` line naming the file and why, and exit with a non-zero code.
 - If the `lang` folder, or a folder in it, holds more than 256 entries, then the engine shall
   write one `start_failed` line naming the folder and why, and exit with a non-zero code.
+- If the engine fails to open an entry in the `lang` folder, other than a plain file, whose name
+  is a well-formed language tag in any case, to tell whether it is a language, such as a link to
+  nothing, a link leading out of the folder, a folder the engine has no right to read, or a
+  socket, then the engine shall write one `start_failed` line naming the file that entry would
+  hold and why, and exit with a non-zero code.
