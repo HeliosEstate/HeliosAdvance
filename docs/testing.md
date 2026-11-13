@@ -218,6 +218,17 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
   cannot order a line against READY=1. On Windows a row reads the service's state and then the
   log file, in that order: a running state read before the line is in the file is the engine's
   fault.
+- The Go team's `svc.Run`, under `RunWindowsService`, writes variables the whole process shares
+  before it tries to connect, and Windows answers a second call in the same process "already
+  running", not "cannot connect". The engine calls it once per process, as the contract asks of
+  its callers; nothing in the engine enforces that. So a test process calls it once, through a
+  `sync.OnceValues` at package level, and every row that needs the result reads that one result:
+  one declared inside a test would call again on each `-count` round. Two calls side by side are
+  a data race. The race detector reports two accesses that nothing orders, whether or not they
+  ran at the same moment, but it misses them when something in that run happens to order them,
+  such as the test framework handing a parallel slot from one subtest to the next, or when its
+  memory of older accesses has run out. So a green race run does not show the rows are safe;
+  reading the code does.
 - A row that registers the one service name the page gives, or listens on port 23, runs alone.
   Its cleanup ends any process left running its own copy of the program, by an image name no
   other process has, and touches a registered service only when its program is a test's copy.
@@ -242,6 +253,29 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has
   let go of a file yet is its timing.
+
+## Windows' key stores
+
+- A key store key is made, wrapped under and deleted from outside the engine, by Windows
+  PowerShell and .NET's CngKey and RSACng, the script held in a Go string in the test file and run
+  by `-EncodedCommand`, so no file a test needs lies outside the files the QA commit locks. Its
+  answer to an open or an unwrap is the HRESULT .NET carries, handed back as an unsigned number.
+- Making a machine key needs an elevated process, in either store; asking for a key that is not
+  there does not. CI's Windows runners have no TPM: every call into the TPM's store answers that
+  its device is not ready.
+- Both stores keep an access list as it is given at creation, with one exception: the TPM's store
+  drops an entry's inherited mark. A TPM key made with no list gets one naming CREATOR OWNER
+  beside SYSTEM and Administrators; a software key gets SYSTEM and Administrators. A list can be
+  changed after the key is made.
+- Every list a row gives keeps the elevated runner's right to delete the key, but one the TPM's
+  store then refuses the runner, such as SYSTEM alone: that key is deleted through its file, given
+  back to Administrators first. The TPM store's unique name for a key is its file's full path; the
+  software store's is the file's name alone.
+- The TPM serves one command at a time, and making a key there took 0.4 to 24 seconds on the
+  TPM it was measured on. Rows that use the TPM take their turn at it, the oracle's calls and Open's alike, so the
+  hang bound measures one call alone and never a queue.
+- A row that kills its run leaves its keys. Only CI's runners, which are thrown away, and an
+  administrator's elevated run make keys; that run lists both stores afterwards.
 
 ## A database the tests make
 

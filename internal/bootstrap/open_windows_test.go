@@ -116,7 +116,7 @@ func TestWindowsOpen(t *testing.T) {
 		})
 	})
 
-	t.Run("When it returns, Open shall have closed the bootstrap folder and both files.", func(t *testing.T) {
+	t.Run("When it returns, Open shall have closed the bootstrap folder and the files it opened, and freed every key store handle it opened.", func(t *testing.T) {
 		t.Parallel()
 		for name, way := range closingOutcomes() {
 			t.Run(name+": the folder and each file there open with no sharing at once", func(t *testing.T) {

@@ -24,9 +24,9 @@ func TestLinuxTLSProgram(t *testing.T) {
 		t.Fatalf("these rows need an ordinary user: root reads a file of any mode, and listens at 992")
 	}
 
-	t.Run("When the sysop passes a TLS certificate file and its key file on the command line, the engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on port 992, beside its other listeners.", func(t *testing.T) {
+	t.Run("The engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on its server's `telnets_port`, beside its other listeners.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with a certificate and a key and no TLS port, as an ordinary user who may not listen below 1024: refused, 992 opening at neither address, where a TLS port the system picks starts", func(t *testing.T) {
+		t.Run("telnets_port the seeded 992, as an ordinary user who may not listen below 1024: refused, 992 opening at neither address, where a TLS port the system picks starts", func(t *testing.T) {
 			t.Parallel()
 			setting, err := os.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start")
 			if err != nil {
@@ -37,16 +37,12 @@ func TestLinuxTLSProgram(t *testing.T) {
 			}
 			defaultTLSPortRow(t)
 		})
-	})
-
-	t.Run("When the sysop passes a Telnet over TLS port on the command line as well, the engine shall listen for Telnet over TLS callers on that port in place of port 992.", func(t *testing.T) {
-		t.Parallel()
-		t.Run("with -tls-port 65535, the highest port, it names and serves it", func(t *testing.T) {
+		t.Run("telnets_port 65535, the highest port, it names and serves it", func(t *testing.T) {
 			t.Parallel()
 			highestPort.Lock()
 			defer highestPort.Unlock()
 			files := goodTLSFiles(t, tlsP256)
-			program := startProgram(t, portOption, "0", tlsCertificateOption, files.certificate, tlsKeyOption, files.key, tlsPortOption, "65535")
+			program := startProgram(t, telnetAt(0).withTelnets(65535), files.options()...)
 			_, _, telnets := threeKinds(t, program.listeners(t))
 			expectAddresses(t, telnets, "127.0.0.1:65535", "[::1]:65535")
 			for _, address := range telnets {
@@ -114,7 +110,7 @@ func TestLinuxTLSProgram(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
 			setMode(t, files.key, 0o644)
-			program := startProgram(t, files.options()...)
+			program := startProgram(t, telnetsOn(), files.options()...)
 			expectFileRefused(t, program)
 			expectNoKeyInLog(t, program.text(), files.key)
 		})
@@ -125,7 +121,7 @@ func TestLinuxTLSProgram(t *testing.T) {
 		t.Run("with SSH and Telnet over TLS on, every listening socket the system's table shows for the program is at 127.0.0.1 or ::1, six of them", func(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
-			program := startProgram(t, files.options(hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")...)
+			program := startProgram(t, telnetsOn().withSSH(0), files.options(hostKeyOption, makeKey(t, "ed25519", ""))...)
 			listeners := program.listeners(t)
 			sockets := listeningSockets(t, program.command.Process.Pid)
 			if len(sockets) != 6 {

@@ -19,7 +19,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"syscall"
 
 	"github.com/heliosestate/heliosadvance/internal/bootstrap"
@@ -158,8 +157,7 @@ func run(arguments []string, console io.Writer, stopContext context.Context,
 		return exitFailed
 	}
 
-	return serve(stopContext, ready, log, database.NewServerDatabase(connection), options, hostKey, certificate,
-		texts)
+	return serve(stopContext, ready, log, database.NewServerDatabase(connection), hostKey, certificate, texts)
 }
 
 // loadTexts reads the lang folder beside the executable, as the system names the executable and
@@ -205,14 +203,12 @@ func newLocalLog(output io.Writer) func(key, value string) {
 	}
 }
 
-// commandLine is what the sysop asked for: the ports as decimal strings, the bootstrap folder that
-// holds what the database needs, the host key file that turns SSH on, and the certificate and key
-// files that turn Telnet over TLS on, the log file that takes the local log from standard
-// output, and the code of the board's language.
+// commandLine is what the sysop asked for: the bootstrap folder that holds what the database
+// needs, the host key file for SSH, the certificate and key files for Telnet over TLS, the log
+// file that takes the local log from standard output, and the code of the board's language. Which
+// services run, and on which ports, is the server's settings in the database, never the command
+// line.
 type commandLine struct {
-	telnetPort      string
-	sshPort         string
-	tlsPort         string
 	hostKeyPath     string
 	certificatePath string
 	keyPath         string
@@ -221,47 +217,23 @@ type commandLine struct {
 	language        string
 }
 
-// portFlag reads a port the way every port option does. ParseUint with base 10 refuses the 0x
-// prefix, a sign and underscores that flag.Int takes.
-func portFlag(port *string) func(string) error {
-	return func(value string) error {
-		parsed, err := strconv.ParseUint(value, 10, 16)
-		if err != nil {
-			return err
-		}
-		*port = strconv.FormatUint(parsed, 10)
-		return nil
-	}
-}
-
 // parseCommandLine takes the last of an option given twice.
 func parseCommandLine(arguments []string) (commandLine, error) {
-	options := commandLine{telnetPort: defaultPort, sshPort: defaultSSHPort, tlsPort: defaultTLSPort,
-		language: language.Fallback}
-	sshPortGiven, tlsPortGiven := false, false
+	options := commandLine{language: language.Fallback}
 	flags := flag.NewFlagSet("hadv-service", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	flags.Func("port", "port to listen on for Telnet", portFlag(&options.telnetPort))
-	flags.Func("ssh-port", "port to listen on for SSH", func(value string) error {
-		sshPortGiven = true
-		return portFlag(&options.sshPort)(value)
-	})
 	flags.Func("bootstrap", "bootstrap folder, which holds what the database needs", func(value string) error {
 		options.bootstrapFolder = value
 		return nil
 	})
-	flags.Func("ssh-host-key", "host key file, which turns SSH on", func(value string) error {
+	flags.Func("ssh-host-key", "host key file, which SSH needs when the server's settings turn it on", func(value string) error {
 		if value == "" {
 			return errors.New("the host key file's path is empty")
 		}
 		options.hostKeyPath = value
 		return nil
 	})
-	flags.Func("tls-port", "port to listen on for Telnet over TLS", func(value string) error {
-		tlsPortGiven = true
-		return portFlag(&options.tlsPort)(value)
-	})
-	flags.Func("tls-cert", "certificate file, which turns Telnet over TLS on", func(value string) error {
+	flags.Func("tls-cert", "certificate file, which Telnet over TLS needs when the server's settings turn it on", func(value string) error {
 		if value == "" {
 			return errors.New("the certificate file's path is empty")
 		}
@@ -293,14 +265,8 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 	if flags.NArg() > 0 {
 		return commandLine{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
-	if sshPortGiven && options.hostKeyPath == "" {
-		return commandLine{}, errors.New("-ssh-port needs -ssh-host-key")
-	}
 	if (options.certificatePath == "") != (options.keyPath == "") {
 		return commandLine{}, errors.New("-tls-cert and -tls-key go together")
-	}
-	if tlsPortGiven && options.certificatePath == "" {
-		return commandLine{}, errors.New("-tls-port needs -tls-cert and -tls-key")
 	}
 	return options, nil
 }

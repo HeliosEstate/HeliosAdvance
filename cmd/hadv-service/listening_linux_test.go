@@ -14,6 +14,9 @@ import (
 	"testing"
 )
 
+// socketTables are the system's tables of TCP sockets, IPv4's and IPv6's.
+var socketTables = []string{"/proc/net/tcp", "/proc/net/tcp6"}
+
 // listeningSockets reads the operating system's own table of listening TCP sockets, the one ss
 // shows the sysop, and returns the address of each socket the process holds. Linux alone keeps
 // the table and the process's open files in /proc.
@@ -32,7 +35,7 @@ func listeningSockets(t *testing.T, processID int) []string {
 		}
 	}
 	var sockets []string
-	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+	for _, table := range socketTables {
 		text, err := os.ReadFile(table)
 		if err != nil {
 			t.Fatalf("reading the socket table %s: %v", table, err)
@@ -43,6 +46,29 @@ func listeningSockets(t *testing.T, processID int) []string {
 			// socket's inode, which ties it to the process's open files.
 			fields := strings.Fields(line)
 			if len(fields) < 10 || fields[3] != "0A" || !held[fields[9]] {
+				continue
+			}
+			sockets = append(sockets, tableAddress(t, fields[1]))
+		}
+	}
+	return sockets
+}
+
+// listeningSocketsOfUser returns the address of each listening TCP socket the system's table
+// gives to the user ID: the way to read the sockets of a process another account runs, whose open
+// files an ordinary user may not list.
+func listeningSocketsOfUser(t *testing.T, userID string) []string {
+	t.Helper()
+	var sockets []string
+	for _, table := range socketTables {
+		text, err := os.ReadFile(table)
+		if err != nil {
+			t.Fatalf("reading the socket table %s: %v", table, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(text)), "\n")[1:] {
+			// The eighth field is the socket's user ID.
+			fields := strings.Fields(line)
+			if len(fields) < 10 || fields[3] != "0A" || fields[7] != userID {
 				continue
 			}
 			sockets = append(sockets, tableAddress(t, fields[1]))

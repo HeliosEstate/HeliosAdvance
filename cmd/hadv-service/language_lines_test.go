@@ -192,11 +192,17 @@ func boardWith(t *testing.T, languages map[string]string) string {
 	return program
 }
 
-// startPlaced starts the program at the path given, on a row of the shared board at ports the
-// system picks, with the options given after.
+// startPlaced starts the program at the path given, on a row of the shared board with Telnet alone
+// on at a port the system picks, with the options given after.
 func startPlaced(t *testing.T, program string, options ...string) *run {
 	t.Helper()
-	arguments := append([]string{databaseOption, sharedRowFile(t), portOption, "0"}, options...)
+	return startPlacedWith(t, program, telnetAt(0), options...)
+}
+
+// startPlacedWith is startPlaced on a row with the settings given.
+func startPlacedWith(t *testing.T, program string, settings services, options ...string) *run {
+	t.Helper()
+	arguments := append([]string{databaseOption, sharedRowFile(t, settings)}, options...)
 	return startCommand(t, exec.CommandContext(t.Context(), program, arguments...))
 }
 
@@ -458,7 +464,7 @@ func TestLanguageLines(t *testing.T) {
 			t.Parallel()
 			elsewhere := t.TempDir()
 			writeLanguages(t, elsewhere, map[string]string{fallbackCode: fileWith(enUSName, "", texts{"Elsewhere", "Where? ", "Hi {$NAME}"})})
-			command := exec.CommandContext(t.Context(), boardWith(t, map[string]string{fallbackCode: enUSFile()}), databaseOption, sharedRowFile(t), portOption, "0")
+			command := exec.CommandContext(t.Context(), boardWith(t, map[string]string{fallbackCode: enUSFile()}), databaseOption, sharedRowFile(t, telnetAt(0)))
 			command.Dir = elsewhere
 			program := startCommand(t, command)
 			expectShown(t, program.telnetAmidMissing(t)[0], languageCaller, enUSShown(languageCaller))
@@ -512,7 +518,7 @@ func TestLanguageLines(t *testing.T) {
 		t.Run("the shipped lang folder and no -lang: the page's en-us texts byte for byte, and no text_missing line", func(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
-			program := startProgram(t, portOption, "0")
+			program := startProgram(t, telnetAt(0))
 			expectShown(t, program.telnetAmidMissing(t)[0], languageCaller, enUSShown(languageCaller))
 			expectMissingLog(t, program, send, fallbackCode)
 		})
@@ -545,8 +551,8 @@ func TestLanguageLines(t *testing.T) {
 		t.Run("-lang fr-fr over Telnet over TLS: fr-fr's greeting, prompt and reply, byte for byte", func(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
-			program := startPlaced(t, boardWith(t, map[string]string{fallbackCode: enUSFile(), frFR: frFile()}),
-				tlsCertificateOption, files.certificate, tlsKeyOption, files.key, tlsPortOption, "0", langOption, frFR)
+			program := startPlacedWith(t, boardWith(t, map[string]string{fallbackCode: enUSFile(), frFR: frFile()}), telnetsOn(),
+				tlsCertificateOption, files.certificate, tlsKeyOption, files.key, langOption, frFR)
 			_, _, telnets := threeKinds(t, program.listeners(t))
 			call := dialTLS(t, telnets[0], tlsConfig(tls.VersionTLS13))
 			call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))

@@ -101,10 +101,14 @@ type tlsFiles struct {
 	certificate, key string
 }
 
-// options are the command-line options that turn Telnet over TLS on with these files, at a port
-// the system picks, with Telnet's at one too.
+// options are the command-line options that name these files, then the extra ones.
 func (files tlsFiles) options(extra ...string) []string {
-	return append([]string{portOption, "0", tlsCertificateOption, files.certificate, tlsKeyOption, files.key, tlsPortOption, "0"}, extra...)
+	return append([]string{tlsCertificateOption, files.certificate, tlsKeyOption, files.key}, extra...)
+}
+
+// telnetsOn is Telnet over TLS on at a port the system picks, with Telnet on at one too.
+func telnetsOn() services {
+	return telnetAt(0).withTelnets(0)
 }
 
 // runOpenSSL runs openssl in the folder given; a missing openssl or a failed run fails the row.

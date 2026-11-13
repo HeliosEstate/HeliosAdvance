@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/heliosestate/heliosadvance/internal/testrun"
@@ -51,6 +52,10 @@ type bootstrapFolder struct {
 	key       []byte
 	keyText   string
 	plaintext []byte
+	// turn, when set, is held while the program starts: the TPM serves one command at a time, so a
+	// start would otherwise wait on every other row's, and on the oracle's keys, which take seconds
+	// each.
+	turn *sync.Mutex
 }
 
 // newBootstrapKey makes a random key, never 32 zero bytes, and its key file's text with one line

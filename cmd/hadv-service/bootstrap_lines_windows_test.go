@@ -14,7 +14,7 @@ import (
 func TestWindowsBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Windows, the key file's owner, or any entry of its access list that allows access, names anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no access list, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and, on Windows, the key file's owner, or any entry of its access list that allows access, names anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no access list, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("an entry allowing Users to read, beside the account's own: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
@@ -52,7 +52,7 @@ func TestWindowsBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the engine is unable to confirm that no account but those above has access to the key file, such as on Windows an access-list entry of a kind it does not judge, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and the engine is unable to confirm that no account but those above has access to the key file, such as on Windows an access-list entry of a kind it does not judge, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a conditional entry allowing Everyone to read when a member of Administrators, beside the account's own: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
@@ -81,7 +81,7 @@ func conditionalAllow(t *testing.T) string {
 func TestWindowsElevatedBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Windows, the key file's owner, or any entry of its access list that allows access, names anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no access list, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and, on Windows, the key file's owner, or any entry of its access list that allows access, names anyone but SYSTEM, Administrators or the account the engine runs as, or the key file has no access list, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("Users the owner, the access list the account's alone: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()
@@ -91,7 +91,7 @@ func TestWindowsElevatedBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap folder is missing or unreadable, or the bootstrap file or the key file in it is missing, unreadable or a link leading out of the bootstrap folder, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap folder is missing or unreadable, the bootstrap file in it is missing, unreadable or a link leading out of the bootstrap folder, or, when the bootstrap file's key holder is the key file, the key file is, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the bootstrap file a symbolic link to a good one outside: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()

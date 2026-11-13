@@ -69,7 +69,7 @@ func TestLinuxLogFile(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "hadv.log")
 				// The shell sets the mask the program inherits, then becomes the program.
 				command := exec.CommandContext(t.Context(), "sh", "-c", "umask "+mask+`; exec "$0" "$@"`,
-					programPath, databaseOption, sharedRowFile(t), portOption, "0", logFileOption, path)
+					programPath, databaseOption, sharedRowFile(t, telnetAt(0)), logFileOption, path)
 				program := startCommand(t, command)
 				expectStartedLine(t, readLogFile(t, program, path, 0, 1)[0])
 				info, err := os.Stat(path)

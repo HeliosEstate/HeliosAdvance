@@ -31,7 +31,7 @@ const (
 	renewEvery     = 10 * time.Second
 	endWait        = time.Second
 	replyMostBytes = 1048576
-	versionMadeFor = 1
+	versionMadeFor = 2
 	waitForNoDial  = time.Second
 	// foreignHolder is another run's lease holder, which the tests write into a row.
 	foreignHolder  = "11111111-2222-4333-8444-555555555555"
@@ -50,7 +50,7 @@ const timingMargin = 2 * time.Second
 var takeErrors = []error{database.ErrUnreachable, database.ErrNotReady, database.ErrNoConnectionFree,
 	database.ErrReadOnly, database.ErrRefused, database.ErrLeaseHeld, database.ErrCertificate,
 	database.ErrSignInMethod, database.ErrSignInRefused, database.ErrTooPowerful, database.ErrNoServerRow,
-	database.ErrSchemaVersion}
+	database.ErrSchemaVersion, database.ErrTemporary, database.ErrSetting}
 
 var holderPattern = regexp.MustCompile(versionPattern)
 
@@ -661,7 +661,7 @@ func TestTake(t *testing.T) {
 				}
 			})
 		}
-		for _, version := range []int32{0, 3, 7, -1} {
+		for _, version := range []int32{0, 1, 4, 7, -1} {
 			t.Run(fmt.Sprintf("version %d: a *SchemaVersionError naming %d", version, version), func(t *testing.T) {
 				t.Parallel()
 				created := sharedServer(t).newBoard(t)

@@ -64,7 +64,7 @@ func threeKinds(t *testing.T, listeners []string) (telnet, ssh, telnets []string
 // and returns it and the two Telnet over TLS addresses its started line names.
 func startTLS(t *testing.T, files tlsFiles, extra ...string) (*run, []string) {
 	t.Helper()
-	program := startProgram(t, files.options(extra...)...)
+	program := startProgram(t, telnetsOn(), files.options(extra...)...)
 	_, _, telnets := threeKinds(t, program.listeners(t))
 	loopbackPorts(t, telnets)
 	return program, telnets
@@ -79,15 +79,15 @@ func expectTLSStarts(t *testing.T) {
 	expectTLSServed(t, telnets[0])
 }
 
-// defaultTLSPortRow is the row for port 992 by default. The program listens for Telnet over TLS
-// at every address where 992 opened just before; where it opened at neither, because something
-// else holds it or the system keeps it from an ordinary user, the program refuses to start, while
-// the same command with a TLS port the system picks starts.
+// defaultTLSPortRow is the row for the seeded port, 992, in telnets_port. The program listens for
+// Telnet over TLS at every address where 992 opened just before; where it opened at neither,
+// because something else holds it or the system keeps it from an ordinary user, the program
+// refuses to start, while the same command with a TLS port the system picks starts.
 func defaultTLSPortRow(t *testing.T) {
 	t.Helper()
 	files := goodTLSFiles(t, tlsP256)
 	free := opensAt(t, "992")
-	program := startProgram(t, portOption, "0", tlsCertificateOption, files.certificate, tlsKeyOption, files.key)
+	program := startProgram(t, telnetAt(0).withTelnets(seededTelnetsPort), files.options()...)
 	if len(free) > 0 {
 		_, _, telnets := threeKinds(t, program.listeners(t))
 		expectAddresses(t, telnets, free...)
@@ -117,7 +117,7 @@ func expectFileRefused(t *testing.T, program *run) {
 // malformed command line's: the options were read, and a file refused.
 func tlsReason(t *testing.T, files tlsFiles) string {
 	t.Helper()
-	reason := startProgram(t, files.options()...).expectRefusal(t)
+	reason := startProgram(t, telnetsOn(), files.options()...).expectRefusal(t)
 	if reason == malformedReason(t) {
 		t.Fatalf("the program refused the files as a malformed command line: %q", reason)
 	}
@@ -366,16 +366,15 @@ var shownCertificate = regexp.MustCompile(`(?s)-----BEGIN CERTIFICATE-----.*?---
 func TestTLSProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("When the sysop passes a Telnet over TLS port on the command line as well, the engine shall listen for Telnet over TLS callers on that port in place of port 992.", func(t *testing.T) {
+	t.Run("The engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on its server's `telnets_port`, beside its other listeners.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with -tls-port and a free port, it names and serves that port at both addresses, beside Telnet's and SSH's, the three kinds in one started line", func(t *testing.T) {
+		t.Run("telnets_port a free port, it names and serves that port at both addresses, beside Telnet's and SSH's, the three kinds in one started line", func(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
 			key := makeKey(t, "ed25519", "")
-			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port string) []string {
-				return []string{portOption, "0", hostKeyOption, key, sshPortOption, "0",
-					tlsCertificateOption, files.certificate, tlsKeyOption, files.key, tlsPortOption, port}
-			})
+			port, listeners := startOnFreedPort(t, []string{ipv4Loopback, ipv6Loopback}, func(port int) services {
+				return telnetAt(0).withSSH(0).withTelnets(port)
+			}, files.options(hostKeyOption, key)...)
 			telnet, ssh, telnets := threeKinds(t, listeners)
 			expectAddresses(t, telnets, net.JoinHostPort(ipv4Loopback, port), net.JoinHostPort(ipv6Loopback, port))
 			loopbackPorts(t, telnet)
@@ -390,17 +389,17 @@ func TestTLSProgram(t *testing.T) {
 				expectSSHServed(t, address)
 			}
 		})
-		t.Run("with -tls-port 0, it names and serves a port the system picked at each address", func(t *testing.T) {
-			t.Parallel()
-			_, telnets := startTLS(t, goodTLSFiles(t, tlsP256))
-			for _, address := range telnets {
-				expectTLSServed(t, address)
-			}
-		})
 	})
 
 	t.Run("If either file is missing, unreadable or not PEM, or the key is protected by a passphrase, does not match the certificate, or is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("the certificate file missing with Telnet over TLS off: still read and refused, one start_failed line, and a non-zero exit", func(t *testing.T) {
+			t.Parallel()
+			files := goodTLSFiles(t, tlsP256)
+			files.certificate = absentPath(t)
+			startProgram(t, telnetAt(0), files.options()...).expectRefusal(t)
+			expectTLSStarts(t)
+		})
 		type refusedFiles struct {
 			name  string
 			files func(t *testing.T) tlsFiles
@@ -468,7 +467,7 @@ func TestTLSProgram(t *testing.T) {
 			for _, refused := range distinct {
 				files := refused.files(t)
 				group.Go(func() {
-					reason := startProgram(t, files.options()...).expectRefusal(t)
+					reason := startProgram(t, telnetsOn(), files.options()...).expectRefusal(t)
 					mutex.Lock()
 					reasons[refused.name] = reason
 					mutex.Unlock()
@@ -976,7 +975,7 @@ func TestTLSProgram(t *testing.T) {
 		withAllKinds := func(t *testing.T) (telnet, ssh, telnets []string) {
 			t.Helper()
 			files := goodTLSFiles(t, tlsP256)
-			program := startProgram(t, files.options(hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")...)
+			program := startProgram(t, telnetsOn().withSSH(0), files.options(hostKeyOption, makeKey(t, "ed25519", ""))...)
 			return threeKinds(t, program.listeners(t))
 		}
 		t.Run("34 Telnet, 33 SSH and 33 TLS callers: the next of each kind closed at once, the TLS one with no byte written", func(t *testing.T) {
@@ -1085,7 +1084,7 @@ func TestTLSProgram(t *testing.T) {
 			t.Run(row.name+", refused: the log holds no 8 characters in a row of the key", func(t *testing.T) {
 				t.Parallel()
 				files := row.files(t)
-				program := startProgram(t, files.options()...)
+				program := startProgram(t, telnetsOn(), files.options()...)
 				expectFileRefused(t, program)
 				expectNoKeyInLog(t, program.text(), files.key)
 			})
@@ -1093,7 +1092,7 @@ func TestTLSProgram(t *testing.T) {
 		t.Run("a key in the certificate file, refused: the log holds no 8 characters in a row of it", func(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
-			program := startProgram(t, tlsFiles{certificate: joinTLSFiles(t, files.certificate, files.key), key: files.key}.options()...)
+			program := startProgram(t, telnetsOn(), tlsFiles{certificate: joinTLSFiles(t, files.certificate, files.key), key: files.key}.options()...)
 			expectFileRefused(t, program)
 			expectNoKeyInLog(t, program.text(), files.key)
 		})
@@ -1135,12 +1134,11 @@ func TestTLSProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If a command-line option is malformed, or the engine fails to listen at both addresses for a kind its server's settings turn on, then the engine shall write one `start_failed` line to the local log saying why, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		withFiles := func(t *testing.T, options ...string) []string {
 			t.Helper()
-			files := goodTLSFiles(t, tlsP256)
-			return append([]string{portOption, "0", tlsCertificateOption, files.certificate, tlsKeyOption, files.key}, options...)
+			return goodTLSFiles(t, tlsP256).options(options...)
 		}
 		rows := []struct {
 			name    string
@@ -1148,39 +1146,53 @@ func TestTLSProgram(t *testing.T) {
 		}{
 			{"-tls-cert without -tls-key", func(t *testing.T) []string {
 				t.Helper()
-				return []string{portOption, "0", tlsCertificateOption, goodTLSFiles(t, tlsP256).certificate}
+				return []string{tlsCertificateOption, goodTLSFiles(t, tlsP256).certificate}
 			}},
 			{"-tls-key without -tls-cert", func(t *testing.T) []string {
 				t.Helper()
-				return []string{portOption, "0", tlsKeyOption, goodTLSFiles(t, tlsP256).key}
+				return []string{tlsKeyOption, goodTLSFiles(t, tlsP256).key}
 			}},
-			{"-tls-port without either file", func(*testing.T) []string { return []string{portOption, "0", tlsPortOption, "0"} }},
+			{"-tls-port without either file", func(*testing.T) []string { return []string{tlsPortOption, "0"} }},
 			{"-tls-port abc with both files", func(t *testing.T) []string { t.Helper(); return withFiles(t, tlsPortOption, "abc") }},
 			{"-tls-port 65536 with both files", func(t *testing.T) []string { t.Helper(); return withFiles(t, tlsPortOption, "65536") }},
 			{"-tls-port -1 with both files", func(t *testing.T) []string { t.Helper(); return withFiles(t, tlsPortOption, "-1") }},
 			{"-tls-port with no value", func(t *testing.T) []string { t.Helper(); return withFiles(t, tlsPortOption) }},
 			{"-tls-cert with no value", func(t *testing.T) []string {
 				t.Helper()
-				return []string{portOption, "0", tlsKeyOption, goodTLSFiles(t, tlsP256).key, tlsCertificateOption}
+				return []string{tlsKeyOption, goodTLSFiles(t, tlsP256).key, tlsCertificateOption}
 			}},
 			{"-tls-key with no value", func(t *testing.T) []string {
 				t.Helper()
-				return []string{portOption, "0", tlsCertificateOption, goodTLSFiles(t, tlsP256).certificate, tlsKeyOption}
+				return []string{tlsCertificateOption, goodTLSFiles(t, tlsP256).certificate, tlsKeyOption}
 			}},
 		}
 		for _, row := range rows {
 			t.Run(row.name+": one start_failed line and a non-zero exit, where good options start", func(t *testing.T) {
 				t.Parallel()
-				startProgram(t, row.options(t)...).expectRefusal(t)
+				startProgram(t, telnetAt(0), row.options(t)...).expectRefusal(t)
 				expectTLSStarts(t)
 			})
 		}
-		t.Run("the Telnet over TLS port taken at both addresses while Telnet's is free: one start_failed line and a non-zero exit, where a free port starts", func(t *testing.T) {
+		t.Run("-tls-port 0 with both files, the option gone: one start_failed line and a non-zero exit, where the same settings without it, Telnet over TLS at a port freed for it, are named at that port", func(t *testing.T) {
+			t.Parallel()
+			files := goodTLSFiles(t, tlsP256)
+			startProgram(t, telnetsOn(), files.options(tlsPortOption, "0")...).expectRefusal(t)
+			expectServedAtColumn(t, schemeTelnets, func(port int) services { return telnetAt(0).withTelnets(port) }, files.options()...)
+		})
+		t.Run("telnets_port taken by the test at both addresses while Telnet's is free: one start_failed line and a non-zero exit, where the same settings at a port freed for it are named at that port", func(t *testing.T) {
 			t.Parallel()
 			port, _, _ := heldPort(t)
 			files := goodTLSFiles(t, tlsP256)
-			startProgram(t, portOption, "0", tlsCertificateOption, files.certificate, tlsKeyOption, files.key, tlsPortOption, port).expectRefusal(t)
-			expectTLSStarts(t)
+			startProgram(t, telnetAt(0).withTelnets(portNumber(t, port)), files.options()...).expectRefusal(t)
+			expectServedAtColumn(t, schemeTelnets, func(port int) services { return telnetAt(0).withTelnets(port) }, files.options()...)
+		})
+		t.Run("Telnet over TLS off, telnets_port taken by the test at both addresses, the files given: it starts, Telnet's alone", func(t *testing.T) {
+			t.Parallel()
+			port, _, _ := heldPort(t)
+			settings := telnetAt(0)
+			settings.telnetsPort = portNumber(t, port)
+			// listeners fails a started line that names Telnet over TLS, which is off.
+			loopbackPorts(t, startProgram(t, settings, goodTLSFiles(t, tlsP256).options()...).listening(t))
 		})
 	})
 
@@ -1189,9 +1201,9 @@ func TestTLSProgram(t *testing.T) {
 		t.Run("the Telnet over TLS port taken at 127.0.0.1: it names and serves Telnet over TLS at ::1 alone", func(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
-			port, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port string) []string {
-				return []string{portOption, "0", tlsCertificateOption, files.certificate, tlsKeyOption, files.key, tlsPortOption, port}
-			})
+			port, listeners := startOnFreedPort(t, []string{ipv6Loopback}, func(port int) services {
+				return telnetAt(0).withTelnets(port)
+			}, files.options()...)
 			_, _, telnets := threeKinds(t, listeners)
 			expectAddresses(t, telnets, net.JoinHostPort(ipv6Loopback, port))
 			expectTLSServed(t, telnets[0])
@@ -1224,7 +1236,7 @@ func TestTLSProgram(t *testing.T) {
 		t.Run("with SSH and Telnet over TLS on: one started line naming each listener as a URL, telnets:// at both addresses, each served by its kind", func(t *testing.T) {
 			t.Parallel()
 			files := goodTLSFiles(t, tlsP256)
-			program := startProgram(t, files.options(hostKeyOption, makeKey(t, "ed25519", ""), sshPortOption, "0")...)
+			program := startProgram(t, telnetsOn().withSSH(0), files.options(hostKeyOption, makeKey(t, "ed25519", ""))...)
 			telnet, ssh, telnets := threeKinds(t, program.listeners(t))
 			for _, kind := range [][]string{telnet, ssh, telnets} {
 				loopbackPorts(t, kind)
@@ -1255,9 +1267,9 @@ func TestTLSProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the database does not answer, or answers that it is starting up, shutting down or recovering, that it has no connection free, or that it is read-only, then the engine shall write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.", func(t *testing.T) {
+	t.Run("If the database does not answer, or answers that it is starting up, shutting down or recovering, that it has no connection free, that it is read-only, that it cancelled the statement, that a lock was not available, that a clash with another transaction stopped it, or that its disk or memory ran out, then the engine shall write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.", func(t *testing.T) {
 		t.Parallel()
-		t.Run("with Telnet over TLS on, a database that closes each connection: one waiting line, and the program listens nowhere", func(t *testing.T) {
+		t.Run("with both TLS files given, a database that closes each connection: one waiting line, and the program listens nowhere", func(t *testing.T) {
 			t.Parallel()
 			database := startAcceptor(t)
 			sharedServer(t)
@@ -1273,7 +1285,7 @@ func TestTLSProgram(t *testing.T) {
 		t.Parallel()
 		t.Run("with Telnet over TLS on, another run's holder written: lease_lost, the TLS caller's connection and the TLS listeners closed", func(t *testing.T) {
 			t.Parallel()
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetsOn())
 			program := startWithFile(t, created.file().write(t), nil, goodTLSFiles(t, tlsP256).options()...)
 			_, _, telnets := threeKinds(t, program.listeners(t))
 			call := expectTLSServed(t, telnets[0])

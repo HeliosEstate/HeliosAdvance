@@ -2,7 +2,7 @@
 # a test of the tests for QA to read (a report, not a gate: the developer, 2026-10-22). It runs
 # where its report is read, outside the required check (the CI recommendation's item 4, approved
 # 2026-10-30):
-# - a loop's build pull request (feature/issue-*), on each push that changes engine code, over
+# - a loop's build pull request (feature/issue-*) that changes engine code, on each push, over
 #   the pull request's changed lines, so the report is there when QA reads the build;
 # - a QA pull request (qa/*) that changes or removes existing tests, over the whole packages whose
 #   tests changed, so a weakened row is seen before it merges;
@@ -22,8 +22,10 @@ permissions:
   contents: read
 
 # A new push to the same pull request supersedes the run in flight, whose report would be stale.
+# The event is in the name too: a milestone's whole-engine run and a manual run both run on
+# development, and one must not cancel the other's report.
 concurrency:
-  group: mutation-${{ github.ref }}
+  group: mutation-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,15 +36,18 @@ jobs:
     # A bound on a hang only: a mutation run's length is not limited.
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'development' }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # What to mutate, or nothing. A push to a build branch that changes only tests or a
+      # What to mutate, or nothing. A build is judged whole, from where it left development, never
+      # by its last push alone. Judged by its last push alone, a push of tests, or a merge of
+      # development bringing no engine code, mutated nothing, so a report that push cancelled, or
+      # one an earlier push failed to make, never came. A build whose changes are only tests or a
       # contract's declarations starts nothing; nor does a QA change that only adds rows. The
       # engine's code is internal/, but for the test support; cmd/'s tests run the built program,
       # which mutation testing cannot see into. A QA change counts a renamed test, or a changed file
@@ -53,7 +58,6 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
-          BEFORE: ${{ github.event.before }}
         run: |
           engine() { grep -E '^internal/' | grep -vE '^internal/testrun(/|$)' || true; }
           if [ "$EVENT" != pull_request ]; then
@@ -65,9 +69,7 @@ jobs:
           echo "base=$base" >> "$GITHUB_OUTPUT"
           case "$HEAD_REF" in
             feature/issue-*)
-              from=$base
-              if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then from=$BEFORE; fi
-              if git diff --name-only "$from" HEAD -- '*.go' ':!*_test.go' ':!*/contract.go' | engine | grep -q .; then
+              if git diff --name-only "$base" HEAD -- '*.go' ':!*_test.go' ':!*/contract.go' | engine | grep -q .; then
                 echo "diff=1" >> "$GITHUB_OUTPUT"
               fi ;;
             qa/*)
@@ -93,6 +95,20 @@ jobs:
           compgen -G '/usr/lib/postgresql/*/bin/initdb' > /dev/null || { echo "::error::no PostgreSQL on this runner"; exit 1; }
           echo "bin=$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")" >> "$GITHUB_OUTPUT"
       # The gates are the required check's, so they are skipped here.
+      # The run is held in one control group of at most 12 GiB of memory, out of the runner's 16.
+      # A mutant can make its tests grow memory without bound, and several run at once: unheld,
+      # they took the whole runner down, and no report came. When the group is full, the kernel
+      # stops one process in it, by its own score, which favors the one using the most memory.
+      # Which process it stops is the kernel's choice and is not pinned here. In a trial run the
+      # limit stopped one process and the run finished; the log does not say which. If it stops
+      # the runaway test, that test fails and its mutant counts as caught. If it stops gremlins or
+      # check.sh, the run goes red with no report; if it stops a server another test uses, that
+      # test fails and its mutant counts as caught when it may not be. OOMPolicy=continue keeps
+      # systemd from stopping the rest of the run at the first stop. The limit is on real memory,
+      # not reserved address space, which a test binary holds far more of than it uses. The report
+      # says how many processes the limit stopped, of any kind (the developer's decisions,
+      # 2026-11-11). sudo starts from a clean environment: a variable the run needs goes in the
+      # list after "sudo env" below, as well as in env:.
       - name: Mutate
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
         env:
@@ -103,4 +119,16 @@ jobs:
         run: |
           export PATH="$PGDIR:$PATH"
           if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
-          bash check.sh --mutation
+          sudo env "PATH=$PATH" "HOME=$HOME" "MUTATE=$MUTATE" "BASE=$BASE" "GATES=$GATES" \
+            "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" \
+            systemd-run --scope --quiet --collect \
+            -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue \
+            --uid="$(id -u)" --gid="$(id -g)" --same-dir -- bash -c '
+              bash check.sh --mutation
+              status=$?
+              events=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.events
+              stopped=$(awk "\$1 == \"oom_kill\" {print \$2}" "$events" 2>/dev/null)
+              line="Processes the 12 GiB memory limit stopped: ${stopped:-not read}"
+              echo "mutation testing: $line"
+              echo "$line" >> "$GITHUB_STEP_SUMMARY"
+              exit $status'
