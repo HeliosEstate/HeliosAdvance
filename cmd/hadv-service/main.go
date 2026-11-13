@@ -23,6 +23,7 @@ import (
 
 	"github.com/heliosestate/heliosadvance/internal/bootstrap"
 	"github.com/heliosestate/heliosadvance/internal/database"
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/servicemanager"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
@@ -150,7 +151,37 @@ func run(arguments []string, console io.Writer, stopContext context.Context,
 		}
 	}
 
-	return serve(stopContext, ready, log, database.NewServerDatabase(connection), hostKey, certificate)
+	texts, err := loadTexts(options.language, log)
+	if err != nil {
+		log("start_failed", err.Error())
+		return exitFailed
+	}
+
+	return serve(stopContext, ready, log, database.NewServerDatabase(connection), hostKey, certificate, texts)
+}
+
+// loadTexts reads the lang folder beside the executable, as the system names the executable and
+// with no further resolving of links, before anything listens, and writes one text_missing line for
+// each text the board's language lacks. A failure is returned for the caller to log, never logged
+// here: the language package's errors name the file and why and hold nothing of it, so they are
+// safe to log.
+func loadTexts(code string, log func(key, value string)) (*language.Texts, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("the lang folder beside the executable cannot be found: %w", err)
+	}
+	folder := filepath.Join(filepath.Dir(executable), language.Folder)
+	texts, err := language.Load(folder, code)
+	if errors.Is(err, language.ErrNotInstalled) {
+		return nil, fmt.Errorf("-lang %q names no language the lang folder %s holds", code, folder)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range texts.Missing() {
+		log("text_missing", code+" has no "+key+" that can be shown, so it is taken from further along the chain")
+	}
+	return texts, nil
 }
 
 // newLocalLog writes one key=value line per call through log/slog's text form, which quotes and
@@ -173,20 +204,22 @@ func newLocalLog(output io.Writer) func(key, value string) {
 }
 
 // commandLine is what the sysop asked for: the bootstrap folder that holds what the database
-// needs, the host key file for SSH, the certificate and key files for Telnet over TLS, and the log
-// file that takes the local log from standard output. Which services run, and on which ports, is
-// the server's settings in the database, never the command line.
+// needs, the host key file for SSH, the certificate and key files for Telnet over TLS, the log
+// file that takes the local log from standard output, and the code of the board's language. Which
+// services run, and on which ports, is the server's settings in the database, never the command
+// line.
 type commandLine struct {
 	hostKeyPath     string
 	certificatePath string
 	keyPath         string
 	bootstrapFolder string
 	logFilePath     string
+	language        string
 }
 
 // parseCommandLine takes the last of an option given twice.
 func parseCommandLine(arguments []string) (commandLine, error) {
-	var options commandLine
+	options := commandLine{language: language.Fallback}
 	flags := flag.NewFlagSet("hadv-service", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Func("bootstrap", "bootstrap folder, which holds what the database needs", func(value string) error {
@@ -219,6 +252,11 @@ func parseCommandLine(arguments []string) (commandLine, error) {
 			return errors.New("the log file's path is empty")
 		}
 		options.logFilePath = value
+		return nil
+	})
+	// An empty code is not refused here: it must reach Load and be refused as naming no language.
+	flags.Func("lang", "language code of the board's texts", func(value string) error {
+		options.language = value
 		return nil
 	})
 	if err := flags.Parse(arguments); err != nil {
@@ -294,7 +332,7 @@ type target struct{ network, address string }
 // closing the sockets only when New refuses: once it has them they are the Listener's. The
 // Listener wants a nil KindConnection on an error, never one holding a nil connection.
 func newKindListener[K listener.KindConnection](ctx context.Context, targets []target, port string,
-	accept func(context.Context, *net.TCPConn) (K, error), count *listener.ConnectionCount,
+	accept func(context.Context, *net.TCPConn) (K, error), count *listener.ConnectionCount, texts *language.Texts,
 ) (*listener.Listener, []string, error) {
 	sockets, addresses, err := listen(ctx, targets, port)
 	if err != nil {
@@ -307,9 +345,21 @@ func newKindListener[K listener.KindConnection](ctx context.Context, targets []t
 		}
 		return kindConnection, nil
 	}
-	kindListener, err := listener.New(sockets, open, count)
+	kindListener, err := listener.New(sockets, open, count, texts)
 	if err != nil {
 		return nil, nil, errors.Join(err, closeAll(sockets))
 	}
 	return kindListener, addresses, nil
+}
+
+// newCredentialListener is newKindListener for a kind whose Accept needs what was read at start,
+// the SSH host key or the Telnet over TLS certificate, so that each kind states only its Accept.
+func newCredentialListener[C any, K listener.KindConnection](ctx context.Context, targets []target,
+	port string, credential C, accept func(context.Context, *net.TCPConn, C) (K, error),
+	count *listener.ConnectionCount, texts *language.Texts,
+) (*listener.Listener, []string, error) {
+	bound := func(ctx context.Context, connection *net.TCPConn) (K, error) {
+		return accept(ctx, connection, credential)
+	}
+	return newKindListener(ctx, targets, port, bound, count, texts)
 }

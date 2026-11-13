@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/heliosestate/heliosadvance/internal/database"
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/servicemanager"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
@@ -26,6 +27,7 @@ const retryEvery = 10 * time.Second
 // until a stop. It returns the exit code.
 func serve(stopContext context.Context, ready servicemanager.Ready, log func(key, value string),
 	server *database.ServerDatabase, hostKey *ssh.HostKey, certificate *telnets.Certificate,
+	texts *language.Texts,
 ) int {
 	count := listener.NewCount()
 	// waitingFor is the reason the last waiting line gave, so a try that fails for the same reason
@@ -55,7 +57,7 @@ func serve(stopContext context.Context, ready servicemanager.Ready, log func(key
 			continue
 		}
 
-		listeners, addresses, err := newListeners(stopContext, lease.Settings(), hostKey, certificate, count)
+		listeners, addresses, err := newListeners(stopContext, lease.Settings(), hostKey, certificate, count, texts)
 		if err != nil {
 			lease.EndLease()
 			log("start_failed", err.Error())
@@ -103,7 +105,7 @@ func fixesItself(err error) bool {
 // newListeners makes the listener of each kind the settings turn on, sharing the one count. A
 // service turned on without its files opens nothing. On a failure it stops those it made.
 func newListeners(ctx context.Context, settings database.Settings, hostKey *ssh.HostKey,
-	certificate *telnets.Certificate, count *listener.ConnectionCount,
+	certificate *telnets.Certificate, count *listener.ConnectionCount, texts *language.Texts,
 ) ([]*listener.Listener, []string, error) {
 	var missing []error
 	if settings.SSHOn && hostKey == nil {
@@ -119,7 +121,7 @@ func newListeners(ctx context.Context, settings database.Settings, hostKey *ssh.
 	var listeners []*listener.Listener
 	var addresses []string
 	if settings.TelnetOn {
-		telnetListener, telnetAddresses, err := newTelnetListener(ctx, port(settings.TelnetPort), count)
+		telnetListener, telnetAddresses, err := newTelnetListener(ctx, port(settings.TelnetPort), count, texts)
 		if err != nil {
 			return nil, nil, errors.New("telnet listeners: " + err.Error())
 		}
@@ -127,7 +129,7 @@ func newListeners(ctx context.Context, settings database.Settings, hostKey *ssh.
 		addresses = append(addresses, urls("telnet", telnetAddresses)...)
 	}
 	if settings.SSHOn {
-		sshListener, sshAddresses, err := newSSHListener(ctx, port(settings.SSHPort), hostKey, count)
+		sshListener, sshAddresses, err := newSSHListener(ctx, port(settings.SSHPort), hostKey, count, texts)
 		if err != nil {
 			stopAll(listeners)
 			return nil, nil, errors.New("ssh listeners: " + err.Error())
@@ -137,7 +139,7 @@ func newListeners(ctx context.Context, settings database.Settings, hostKey *ssh.
 	}
 	if settings.TelnetsOn {
 		telnetsListener, telnetsAddresses, err := newTelnetsListener(
-			ctx, port(settings.TelnetsPort), certificate, count)
+			ctx, port(settings.TelnetsPort), certificate, count, texts)
 		if err != nil {
 			stopAll(listeners)
 			return nil, nil, errors.New("telnets listeners: " + err.Error())

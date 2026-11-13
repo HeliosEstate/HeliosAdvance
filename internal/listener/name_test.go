@@ -123,7 +123,7 @@ func runNameRow(t *testing.T, row nameRow) {
 
 func TestName(t *testing.T) {
 	t.Parallel()
-	t.Run("When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write `Hello Helios Advance BBS!` and CR LF, then `What is your name? `.", func(t *testing.T) {
+	t.Run("When a Telnet caller has answered all eight opening requests, or 3 seconds after the engine sent them, whichever comes first, the engine shall write the greeting and CR LF, then the name prompt.", func(t *testing.T) {
 		t.Parallel()
 		rows := []struct {
 			name   string
@@ -205,7 +205,7 @@ func TestName(t *testing.T) {
 				windowEnd(t, lastSent.done, call.dialed.Add(negotiationLimit)))
 		})
 	})
-	t.Run("When the caller ends the name with CR or LF, the engine shall write `Hello `, the name and CR LF.", func(t *testing.T) {
+	t.Run("When the caller ends the name with CR or LF, the engine shall write the name reply and CR LF.", func(t *testing.T) {
 		t.Parallel()
 		rows := []nameRow{
 			{name: "refused ECHO, alice CR: Hello alice, no echo", answer: refused, typed: []byte("alice\r"), after: helloTo("alice")},
@@ -271,7 +271,7 @@ func TestName(t *testing.T) {
 			call.send(t, make([]byte, 1024))
 		})
 	})
-	t.Run("When `Hello <name>` is written to a Telnet caller, the engine shall shut down its sending side of the connection.", func(t *testing.T) {
+	t.Run("When the name reply is written to a Telnet caller, the engine shall shut down its sending side of the connection.", func(t *testing.T) {
 		t.Parallel()
 		for name, typed := range map[string]string{"CR": "bob\r", "LF": "bob\n"} {
 			t.Run("a name ended by "+name+": end of stream at once after Hello, and the engine still takes what the caller sends", func(t *testing.T) {
@@ -288,7 +288,7 @@ func TestName(t *testing.T) {
 			})
 		}
 	})
-	t.Run("If the caller has not ended the name 60 seconds after the engine wrote `What is your name? `, then the engine shall close the connection without writing more.", func(t *testing.T) {
+	t.Run("If the caller has not ended the name 60 seconds after the engine wrote the name prompt, then the engine shall close the connection without writing more.", func(t *testing.T) {
 		t.Parallel()
 		rows := []struct {
 			name   string

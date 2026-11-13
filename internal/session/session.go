@@ -10,31 +10,35 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/heliosestate/heliosadvance/internal/language"
 )
 
 // The contract's operations hand their work to the unexported functions below, so the contract
 // builds before the package is built and the build never needs to change the contract.
 
-func run(ctx context.Context, connection Connection) (Ending, error) {
-	if connection == nil {
+func run(ctx context.Context, connection Connection, texts *language.Texts) (Ending, error) {
+	if connection == nil || texts == nil {
 		return 0, ErrConnectionFailed
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrCallEnded, err)
 	}
 	// One SendString, so that the greeting and the prompt leave in one write.
-	if err := connection.SendString(ctx, Greeting+Prompt); err != nil {
+	opening := texts.Text(language.KeyGreeting) + "\r\n" + texts.Text(language.KeyNamePrompt)
+	if err := connection.SendString(ctx, opening); err != nil {
 		return 0, ending(err)
 	}
 	deadline := time.Now().Add(NameSeconds * time.Second)
 	name, err := connection.RecvString(ctx, deadline, NameMostCharacters)
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
+		if errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
 			return NoName, nil
 		}
 		return 0, ending(err)
 	}
-	if err := connection.SendString(ctx, Reply+name+"\r\n"); err != nil {
+	reply := texts.Text(language.KeyNameReply, language.Value{Name: language.PlaceholderName, Text: name})
+	if err := connection.SendString(ctx, reply+"\r\n"); err != nil {
 		return 0, ending(err)
 	}
 	return Answered, nil

@@ -8,4 +8,5 @@ internal/session/*
 internal/textio/*
 internal/ssh/*
 internal/database/*
+internal/language/*
 internal/bootstrap/*

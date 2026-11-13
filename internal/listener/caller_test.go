@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/telnet"
 
@@ -144,6 +145,47 @@ func startKind(t *testing.T, sockets int, open listener.Open) []string {
 // Each Listener it makes has a count of its own.
 func startListener(t *testing.T, sockets int, open listener.Open) (*listener.Listener, []string) {
 	t.Helper()
+	return startListenerWith(t, sockets, open, enUSTexts(t))
+}
+
+// The Listener's line on the texts New was given, its [read] tag left off. Its rows make a
+// Listener with the test language's texts, and the caller receives that language's greeting,
+// name prompt and name reply, in UTF-8.
+func TestListenerTexts(t *testing.T) {
+	t.Parallel()
+	t.Run("When Open returns a KindConnection and no error, the listener package shall call session.Run once, with textio.New over it and the Texts New was given, under the connection's context, from the connection's own goroutine.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("a Listener made with xx-test's texts, ann CR, ECHO refused: xx-test's greeting, name prompt and name reply, in UTF-8", func(t *testing.T) {
+			t.Parallel()
+			_, addresses := startListenerWith(t, 1, openTelnet, loadTexts(t, testCode, map[string]string{testCode: testFile}))
+			call := dial(t, addresses[0])
+			stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
+			call.send(t, join(refused, []byte("ann\r")))
+			stream.expectStream(t, join(opening, []byte(testGreeting+"\r\n"+testNamePrompt), []byte(testReply+"ann!\r\n")))
+		})
+		t.Run("two Listeners at once, one with en-us's texts and one with xx-test's: each caller in its own Listener's", func(t *testing.T) {
+			t.Parallel()
+			_, english := startListenerWith(t, 1, openTelnet, enUSTexts(t))
+			_, test := startListenerWith(t, 1, openTelnet, loadTexts(t, testCode, map[string]string{testCode: testFile}))
+			for _, each := range []struct {
+				address string
+				want    []byte
+			}{
+				{english[0], join(asked, helloTo("bob"))},
+				{test[0], []byte(testGreeting + "\r\n" + testNamePrompt + testReply + "bob!\r\n")},
+			} {
+				call := dial(t, each.address)
+				stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
+				call.send(t, join(refused, []byte("bob\r")))
+				stream.expectStream(t, join(opening, each.want))
+			}
+		})
+	})
+}
+
+// startListenerWith is startListener with the board's texts given.
+func startListenerWith(t *testing.T, sockets int, open listener.Open, texts *language.Texts) (*listener.Listener, []string) {
+	t.Helper()
 	var listening []*net.TCPListener
 	var addresses []string
 	for range sockets {
@@ -158,7 +200,7 @@ func startListener(t *testing.T, sockets int, open listener.Open) (*listener.Lis
 		listening = append(listening, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.New(listening, open, listener.NewCount())
+	engine, err := listener.New(listening, open, listener.NewCount(), texts)
 	if err != nil {
 		for _, socket := range listening {
 			_ = socket.Close()

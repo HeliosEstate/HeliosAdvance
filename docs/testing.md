@@ -11,6 +11,10 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   outside, such as the byte-level reading of a caller's input.
 - A wrapper around a real connection is used only to make two things meet at a chosen moment,
   such as a context ending as a read fails, which no outside caller can time.
+- A row that needs the built program beside files of its own, such as a `lang` folder, links the
+  program into a folder of its own: a hard link is the program under a second name, and the
+  program finds the folder it was started from, with no copy of its bytes per row. Both are under
+  the run's own folder, on one file system.
 
 ## The oracle
 
@@ -26,6 +30,20 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - Every row asserts an exact outcome: the exact bytes to end of stream, the exact error, a time
   inside its window. A row that rightly expects no reply ends with a probe that must be answered,
   so it is red against code that does nothing.
+- A check that a message names a file or folder is never met by the row's own temporary folder.
+  Go names that folder after the first 64 bytes of the row's full name, keeping `_` and `-`, so a
+  row named for its line carries the line's words in every path it makes: a check that a refusal
+  names the `lang` folder, which took `lang` after any character not a letter, passed a refusal
+  naming only the folder the program sits in, since that path held `_lang_`. A name is matched as
+  a word of its own, `_` and `-` counting as word characters, and not followed by a path
+  separator. Where a line says only that a message says something, the row compares the message
+  with a sibling case's, such as an unknown code's refusal with that code taken out, rather than
+  reading its words.
+- A row that proves something is left alone gives it a form the fault it guards against would
+  refuse. A plain file named `notes.txt` is left alone for its name whatever the code does with
+  plain files, so the row that proves an unreadable plain file is left alone names it as a
+  language tag; and a left-alone name that only holds characters a tag never holds says nothing
+  about a name of letters alone, so one row uses a single letter.
 - A time limit is proved with a window: it opens at a moment provably before the engine's own
   clock started, such as before the dial or the call, and closes at the limit plus the margin
   measured on every runner. Each timed row logs how far into its window the event came.
@@ -134,6 +152,13 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
   run through cmd, such as `mklink /J`, is given names relative to its working folder.
+- A socket for a row on Linux is made with mknod, `S_IFSOCK`, bound by nothing: a socket's
+  address holds about 108 bytes, which a row's own folder can pass, and opening one bound by
+  nothing fails as opening a bound one does (ENXIO). Windows has the same limit on a socket's
+  address and no such call.
+- A row that copies the program into a folder of its own places the shipped `lang` folder
+  beside the copy, as the service rows do; without it the program refuses to start before the
+  row's case is reached.
 - A bound on what the engine reads is a bound on the bytes read from that one file (the
   developer, 2026-11-10), never the process's count of bytes read (`rchar` in /proc/self/io on
   Linux, ReadTransferCount on Windows). That count also holds what the Go runtime reads for
@@ -148,6 +173,12 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   files the row reads; the runtime's own threads have reads of their pipes restarted
   (`= ? ERESTARTSYS`) at moments their scheduler picks, and those name the pipe. strace is on
   CI's Linux images.
+- A bound on how many entries the engine lists of a folder is judged the same way, under strace
+  with `-v`, which prints every entry each listing call handed back. The system hands entries back
+  in batches the library's buffer sizes (Go's holds 8 KiB), so no row can count exactly the
+  entries the engine took. A sound engine stops calling once it holds what it needs, so every call
+  but its last handed back no more than the bound, whatever its buffer: the row checks the calls
+  but the largest. Long names keep a batch small, so the row tells the bound to within one batch.
 - On Windows the rows of a read-bound line prove its refusal alone (the developer, 2026-11-10),
   so the bound is a `TestLinux…` row's: nothing there tells what the engine read of one file. A
   byte-range lock from the byte past the limit fails a sound reader that asks for more than it
@@ -192,7 +223,9 @@ test that can run on Linux alone is named `TestLinux…`, one that needs root th
 `TestLinuxRoot…`, one that needs a Linux container oracle `TestOracle…`, and one that needs an
 elevated Windows process `TestWindowsElevated…`. Windows CI skips `TestOracle…` and `TestLinux…`;
 a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSKIP`. Green is
-`bash check.sh`, never `go test` alone.
+`bash check.sh`, never `go test` alone. A merge of `development` into a build branch that changes
+how the program starts meets CI's elevated Windows runner before it merges, since the elevated
+rows run nowhere else and a run here skips them.
 
 ## Service managers
 
@@ -231,12 +264,14 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
 
 - A test binary that starts servers or programs calls `testrun.Enter` first in its TestMain and
   `testrun.Leave` last: everything it makes lands in its own folder, and nothing outlives the run.
-  One binary needs none: the Listener's, whose only child, on Linux alone, is the test binary run
-  again under a descriptor limit, which makes nothing on disk but, under `-cover`, the coverage
-  counters written where the parent's go, and ends when its input closes. The bootstrap unit's
-  read-bound rows run a child under strace on Linux, marked by an argument after the test flags;
-  its TestMain skips the run's folder and the oracle's build for it, since the child only opens
-  the folder its parent made, and the child's account goes into the row's own temporary folder.
+  Two binaries need none, since their only child, on Linux alone, is the test binary run again
+  and makes nothing on disk but, under `-cover`, the coverage counters written where the
+  parent's go: the Listener's, run under a descriptor limit and ended when its input closes, and
+  the language unit's, run under strace, which writes its account into the row's own temporary
+  folder, and ended by its own test timeout. The bootstrap unit's read-bound rows run a child
+  under strace on Linux, marked by an argument after the test flags; its TestMain skips the run's
+  folder and the oracle's build for it, since the child only opens the folder its parent made,
+  and the child's account goes into the row's own temporary folder.
   A run killed or timed out leaves its folder, servers and programs, and the next run takes them.
 - A failure to make the folder stops the run; what a dead run left that cannot be taken, and a
   removal that fails, are written to standard error and do not fail it, since whether Windows has

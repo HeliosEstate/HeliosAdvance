@@ -56,9 +56,10 @@
 //
 // # What it needs from its callers
 //
-// One ConnectionCount per engine, from NewCount, handed to every New of that engine. One New per
-// kind of connection, given every listening socket of that kind and that kind's one Open, so that
-// each Listener is one kind's, as the glossary has it, and its Stop stops that kind alone.
+// One ConnectionCount per engine, from NewCount, handed to every New of that engine, and the
+// board's Texts, from language.Load, handed to every New the same way. One New per kind of
+// connection, given every listening socket of that kind and that kind's one Open, so that each
+// Listener is one kind's, as the glossary has it, and its Stop stops that kind alone.
 // Listening TCP sockets, already open, each handed to one New only and not used by the caller
 // after a New that returned a Listener; after a refused New, the caller closes them. For each
 // kind, an Open that makes an accepted connection its kind's object under the context it is
@@ -84,8 +85,8 @@
 //   - The listener package shall call the kind's Open once, under the connection's context, from
 //     the connection's own goroutine. [read]
 //   - When Open returns a KindConnection and no error, the listener package shall call
-//     session.Run once, with textio.New over it, under the connection's context, from the
-//     connection's own goroutine. [read]
+//     session.Run once, with textio.New over it and the Texts New was given, under the
+//     connection's context, from the connection's own goroutine. [read]
 //   - When Run returns session.Answered, the listener package shall call the KindConnection's
 //     Close once, under the connection's context, and then close the connection.
 //   - When Open returns an error or a nil KindConnection, or Run returns anything but
@@ -100,8 +101,8 @@
 //   - The listener package's code shall treat every kind of connection alike, and name none.
 //     [read]
 //   - The listener package shall write nothing to standard output or standard error. [read]
-//   - The listener package shall import nothing outside the Go standard library and the textio
-//     and session packages. [read]
+//   - The listener package shall import nothing outside the Go standard library and the textio,
+//     session and language packages. [read]
 package listener
 
 import (
@@ -109,6 +110,7 @@ import (
 	"errors"
 	"net"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/textio"
 )
 
@@ -128,9 +130,9 @@ const (
 	AcceptPauseMostMilliseconds = 1000
 )
 
-// ErrNoListeners means New was given no listening socket or a nil one, no Open, or a nil
-// ConnectionCount.
-var ErrNoListeners = errors.New("listener: no sockets, no Open or no count")
+// ErrNoListeners means New was given no listening socket or a nil one, no Open, a nil
+// ConnectionCount or nil Texts.
+var ErrNoListeners = errors.New("listener: no sockets, no Open, no count or no texts")
 
 // KindConnection is a connection as its kind's object: the class of the developer's design, whose
 // identical primitives the shared execution path uses. Declared here, where it is used.
@@ -174,18 +176,21 @@ type Listener struct {
 
 // New makes one kind's Listener from the listening TCP sockets the program opened for that kind,
 // so that each accepted connection is a *net.TCPConn, to make each connection it accepts the
-// kind's object with open and count it in count. It serves no caller until Start, so the program
-// can make every kind's Listener before any serves, and a start that fails serves no caller. A
-// caller who connects before Start waits in the operating system's queue for the socket, which
-// this package does not decide and these lines do not pin; once accepted, it is served as any
-// other, its ceiling counted from that accept. It refuses before it touches any socket, leaves
-// nothing running, and returns a nil Listener with ErrNoListeners, its only error. When it
-// refuses, it closes none of the sockets it was given: they stay the caller's to close.
+// kind's object with open, count it in count, and serve its call in the board's language from
+// texts, which the program loads once and hands to every New, as it does count. It serves no
+// caller until Start, so the program can make every kind's Listener before any serves, and a start
+// that fails serves no caller. A caller who connects before Start waits in the operating system's
+// queue for the socket, which this package does not decide and these lines do not pin; once
+// accepted, it is served as any other, its ceiling counted from that accept. It refuses before it
+// touches any socket, leaves nothing running, and returns a nil Listener with ErrNoListeners, its
+// only error. When it refuses, it closes none of the sockets it was given: they stay the caller's
+// to close.
 //
 //   - New shall serve no caller, at any of the sockets it was given, before Start: no Open runs
 //     and nothing is written.
-func New(sockets []*net.TCPListener, open Open, count *ConnectionCount) (*Listener, error) {
-	return newListener(sockets, open, count)
+func New(sockets []*net.TCPListener, open Open, count *ConnectionCount,
+	texts *language.Texts) (*Listener, error) {
+	return newListener(sockets, open, count, texts)
 }
 
 // Start starts this Listener accepting: one accept loop per listening socket, each running until
