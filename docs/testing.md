@@ -30,6 +30,15 @@ built, and locked by the QA commit: a build changes code until they pass, never 
 - Every row asserts an exact outcome: the exact bytes to end of stream, the exact error, a time
   inside its window. A row that rightly expects no reply ends with a probe that must be answered,
   so it is red against code that does nothing.
+- A check that a message names a file or folder is never met by the row's own temporary folder.
+  Go names that folder after the first 64 bytes of the row's full name, keeping `_` and `-`, so a
+  row named for its line carries the line's words in every path it makes: a check that a refusal
+  names the `lang` folder, which took `lang` after any character not a letter, passed a refusal
+  naming only the folder the program sits in, since that path held `_lang_`. A name is matched as
+  a word of its own, `_` and `-` counting as word characters, and not followed by a path
+  separator. Where a line says only that a message says something, the row compares the message
+  with a sibling case's, such as an unknown code's refusal with that code taken out, rather than
+  reading its words.
 - A time limit is proved with a window: it opens at a moment provably before the engine's own
   clock started, such as before the dial or the call, and closes at the limit plus the margin
   measured on every runner. Each timed row logs how far into its window the event came.
