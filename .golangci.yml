@@ -411,6 +411,13 @@ linters:
       - path: ^internal/bootstrap/keystore_windows\.go$
         linters: [gosec]
         text: G103
+      # systemd's credential and the Swarm secret are named, not held, in the contract (bootstrap
+      # Part 3): the two constants say where the key is found, and gosec reads a name holding
+      # "Credential" or "Secret" as a password written into the code.
+      - path: ^internal/bootstrap/contract\.go$
+        linters: [gosec]
+        text: G101
+        source: '^\s*(CredentialName|SecretName) = "hadv-bootstrap-key"$'
 
 formatters:
   enable:
