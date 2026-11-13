@@ -11,7 +11,6 @@
 package database_test
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -22,7 +21,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -697,12 +695,12 @@ type board struct {
 	serverID int64
 }
 
-// schemaText is schema.sql, beside the package, read as hadv-setup will read it.
+// schemaText is schema/schema.sql, in the package's schema folder, read as hadv-setup will read it.
 func schemaText(t *testing.T) string {
 	t.Helper()
-	text, err := os.ReadFile("schema.sql")
+	text, err := os.ReadFile(filepath.Join("schema", "schema.sql"))
 	if err != nil {
-		t.Fatalf("reading schema.sql: %v", err)
+		t.Fatalf("reading schema/schema.sql: %v", err)
 	}
 	return string(text)
 }
@@ -987,11 +985,6 @@ func expectEngineWithin(t *testing.T, what string, moment, notBefore, notAfter t
 	}
 	expectWithin(t, what, moment, notBefore, notAfter)
 }
-
-var errNotUsed = errors.New("")
-
-var _ = bytes.Equal
-var _ = errNotUsed
 
 // fill puts the board's names into a statement in place of {login}, {database} and {owner}.
 func (created *board) fill(statement string) string {

@@ -323,7 +323,7 @@ func (server *postgres) makeBoard() (*board, error) {
 	}
 	created := &board{server: server, database: uniqueName("board"), owner: uniqueName("owner"),
 		login: uniqueName("server"), password: "password-" + suffix}
-	schema, err := os.ReadFile(filepath.Join("..", "database", "schema.sql"))
+	schema, err := os.ReadFile(filepath.Join("..", "database", "schema", "schema.sql"))
 	if err != nil {
 		return nil, err
 	}
@@ -341,16 +341,17 @@ func (server *postgres) makeBoard() (*board, error) {
 	return created, nil
 }
 
-// sharedRowFile adds a row to the board for one run of the program, its lease ended an hour ago
-// and never held, and returns the path of a bootstrap folder naming it, whose key file only its
-// owner may reach.
+// sharedRowFile adds a row to the board for one run of the program, Telnet and SSH on at ports the
+// system picks, its lease ended an hour ago and never held, and returns the path of a bootstrap
+// folder naming it, whose key file only its owner may reach.
 func sharedRowFile(t *testing.T) string {
 	t.Helper()
 	if oracleFailure != nil {
 		t.Fatalf("the program's database could not be prepared: %v", oracleFailure)
 	}
 	output, err := shared.trySQL(sharedBoard.database,
-		"SET ROLE "+sharedBoard.owner+"; INSERT INTO hadv.servers (lease_until) VALUES (now() - interval '1 hour') RETURNING id")
+		"SET ROLE "+sharedBoard.owner+"; INSERT INTO hadv.servers (lease_until, telnet_on, telnet_port, ssh_on, ssh_port)"+
+			" VALUES (now() - interval '1 hour', true, 0, true, 0) RETURNING id")
 	if err != nil {
 		t.Fatalf("adding a row to the board: %v: %s", err, output)
 	}

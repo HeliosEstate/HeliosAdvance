@@ -32,7 +32,7 @@ jobs:
     outputs:
       skip: ${{ steps.changes.outputs.skip }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Change set
@@ -109,10 +109,10 @@ jobs:
     steps:
       # Windows checks out CRLF by default, and gofmt reads CRLF as unformatted.
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # The gate tools are not installed here: check.sh installs each at the version pinned in
@@ -221,7 +221,7 @@ jobs:
       # Each timed row's place in its window, kept with the run, so a margin is read from ordinary
       # runs, never from a probe branch; and each line where a row cannot tell and sets its check
       # aside, since such a pass proves nothing.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success() || failure()
         with:
           name: timed-${{ matrix.os }}-${{ matrix.mode }}-${{ matrix.group }}
@@ -258,7 +258,7 @@ jobs:
             awk 'NR>1{split($1,a,":"); d=a[1]; sub(/\/[^\/]*$/,"",d); sub(/^github.com\/heliosestate\/heliosadvance\//,"",d); t[d]+=$2; if($3>0) c[d]+=$2} END{for(k in t) printf "| %s | %.1f%% (%d of %d) |\n", k, (t[k] ? 100*c[k]/t[k] : 0), c[k], t[k]}' coverage.out | sort
           } > coverage.md
           cat coverage.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && runner.os == 'Linux' && matrix.mode == 'norace'
         with:
           name: coverage-${{ matrix.os }}-${{ matrix.group }}
@@ -282,7 +282,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-*
       - name: Post the coverage comment

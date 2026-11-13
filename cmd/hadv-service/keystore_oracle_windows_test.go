@@ -290,16 +290,23 @@ func goodList(t *testing.T) string {
 	return "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;" + runnerSID(t) + ")"
 }
 
-// storeBootstrapFolder makes a bootstrap folder for a row of its own on the shared board, whose
-// bootstrap file, sealed under the key in keyText, names the key store key name under holder with
-// wrapped as its wrapped key, broken further as edits says. It holds no key file.
+// storeBootstrapFolder makes a bootstrap folder for a row of its own on the shared board, Telnet
+// alone on at a port the system picks, whose bootstrap file, sealed under the key in keyText, names
+// the key store key name under holder with wrapped as its wrapped key, broken further as edits
+// says. It holds no key file.
 func storeBootstrapFolder(t *testing.T, holder int, name string, wrapped, key []byte, keyText, edits string) *bootstrapFolder {
+	t.Helper()
+	return storeBootstrapFolderOn(t, sharedRowSettings(t, telnetAt(0)), holder, name, wrapped, key, keyText, edits)
+}
+
+// storeBootstrapFolderOn is storeBootstrapFolder sealing the connection settings given.
+func storeBootstrapFolderOn(t *testing.T, settings connectionFile, holder int, name string, wrapped, key []byte, keyText, edits string) *bootstrapFolder {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "bootstrap")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatalf("making the bootstrap folder: %v", err)
 	}
-	plaintext := []byte(sharedRowSettings(t).text(t))
+	plaintext := []byte(settings.text(t))
 	made := &bootstrapFolder{path: path, file: filepath.Join(path, bootstrapFileName), keyFile: filepath.Join(path, keyFileName),
 		key: key, keyText: keyText, plaintext: plaintext}
 	if holder == holderOf[tpmStore] {

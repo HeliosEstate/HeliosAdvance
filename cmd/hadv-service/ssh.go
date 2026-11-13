@@ -11,8 +11,6 @@ import (
 	"github.com/heliosestate/heliosadvance/internal/ssh"
 )
 
-const defaultSSHPort = "22"
-
 // sshTargets are SSH's own list, so that its addresses can change without Telnet's.
 var sshTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}}
 
