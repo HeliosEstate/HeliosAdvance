@@ -401,6 +401,16 @@ linters:
       - path: ^internal/bootstrap/keyfile_windows\.go$
         linters: [gosec]
         text: G103
+      # The Windows key store (bootstrap Part 2): golang.org/x/sys/windows has no key store
+      # functions, so this one file calls ncrypt.dll, loaded from System32 alone, passing pointers
+      # to Windows and converting them here and nowhere else. The developer's decision,
+      # 2026-11-10, for this one file.
+      - path: ^internal/bootstrap/keystore_windows\.go$
+        linters: [depguard]
+        text: "'unsafe'"
+      - path: ^internal/bootstrap/keystore_windows\.go$
+        linters: [gosec]
+        text: G103
 
 formatters:
   enable:

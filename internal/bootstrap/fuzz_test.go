@@ -19,7 +19,15 @@ func FuzzHeader(fuzzing *testing.F) {
 		fuzzing.Fatalf("making a key: %v", err)
 	}
 	plaintext := paddedPlaintext(64)
-	for _, edits := range append([]string{""}, editsOf(headerEdits)...) {
+	// Seeds under key holders 2 and 3 with a sealed key of its length, its name in its form and out
+	// of it, so the fuzzer starts from headers that reach a key store on Windows.
+	storeSeeds := []string{
+		"holder 2\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256",
+		"holder 3\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256",
+		"holder 3\nsealed \"HADV-0123456789ABCDEF0123456789ABCDEF\" random:256",
+		"holder 2\nsealed \"hadv_0123456789abcdef0123456789abcdeg\" random:256",
+	}
+	for _, edits := range append(append([]string{""}, editsOf(headerEdits)...), storeSeeds...) {
 		sealed, err := sealIn(fuzzing.TempDir(), keyText, plaintext, edits)
 		if err != nil {
 			fuzzing.Fatalf("%v", err)

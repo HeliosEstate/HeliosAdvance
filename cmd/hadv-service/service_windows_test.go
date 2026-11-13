@@ -58,9 +58,11 @@ var (
 )
 
 // serviceSetup is how a row installs the service: the connection settings its bootstrap folder
-// seals, and what the row leaves out or breaks.
+// seals, whether its key is a software key store machine key under key holder 3 in place of a key
+// file, and what the row leaves out or breaks.
 type serviceSetup struct {
 	settings         connectionFile
+	softwareKeyStore bool
 	withoutBootstrap bool
 	withoutLogFile   bool
 	logFileIsFolder  bool
@@ -78,7 +80,9 @@ type windowsService struct {
 // log folder in a folder of the row's own with no space or comma in its path, so the command line
 // is plain; the account given read and run on the program, read on the bootstrap folder, and modify
 // on the log folder; the key file owned by Administrators, its inherited entries removed, and
-// readable by Administrators and the account alone. The row's end stops and removes the service.
+// readable by Administrators and the account alone, or the software key store's machine key owned
+// by Administrators and reachable by SYSTEM, Administrators and the account alone. The row's end
+// stops and removes the service.
 func installService(t *testing.T, setup serviceSetup) *windowsService {
 	t.Helper()
 	if buildFailure != nil {
@@ -95,12 +99,14 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 	bootstrap := filepath.Join(folder, "bootstrap")
 	keyFile := filepath.Join(bootstrap, keyFileName)
 	if !setup.withoutBootstrap {
-		made := setup.settings.seal(t)
 		if err := os.Mkdir(bootstrap, 0o700); err != nil {
 			t.Fatalf("making the bootstrap folder: %v", err)
 		}
-		copyFile(t, made.file, filepath.Join(bootstrap, bootstrapFileName))
-		copyFile(t, made.keyFile, keyFile)
+		if !setup.softwareKeyStore {
+			made := setup.settings.seal(t)
+			copyFile(t, made.file, filepath.Join(bootstrap, bootstrapFileName))
+			copyFile(t, made.keyFile, keyFile)
+		}
 	}
 	logFolder := filepath.Join(folder, "log")
 	if err := os.Mkdir(logFolder, 0o700); err != nil {
@@ -123,9 +129,6 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 	// The account exists only once the service does, so it is granted its rights after.
 	icacls(t, program, "/grant", serviceAccount+":(RX)")
 	if !setup.withoutBootstrap {
-		icacls(t, keyFile, "/setowner", "*"+administratorsSID)
-		// Written whole: on CI's runner icacls /inheritance:r with /grant:r kept the inherited
-		// entries as the file's own, the runner's account among them, which the engine refuses.
 		account, _, _, err := syscall.LookupSID("", serviceAccount)
 		if err != nil {
 			t.Fatalf("looking up %s: %v", serviceAccount, err)
@@ -134,7 +137,18 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 		if err != nil {
 			t.Fatalf("reading %s's SID: %v", serviceAccount, err)
 		}
-		setAccessList(t, keyFile, "D:P(A;;FA;;;"+administratorsSID+")(A;;FR;;;"+accountSID+")")
+		if setup.softwareKeyStore {
+			// Made only now, since its access list names the account.
+			key, keyText := newBootstrapKey(t)
+			storeKey := makeStoreKey(t, softwareStore, false, "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+accountSID+")", "", oaep(key))
+			made := storeBootstrapFolderOn(t, setup.settings, holderOf[softwareStore], storeKey.name, storeKey.wraps[0], key, keyText, "")
+			copyFile(t, made.file, filepath.Join(bootstrap, bootstrapFileName))
+		} else {
+			icacls(t, keyFile, "/setowner", "*"+administratorsSID)
+			// Written whole: on CI's runner icacls /inheritance:r with /grant:r kept the inherited
+			// entries as the file's own, the runner's account among them, which the engine refuses.
+			setAccessList(t, keyFile, "D:P(A;;FA;;;"+administratorsSID+")(A;;FR;;;"+accountSID+")")
+		}
 		icacls(t, bootstrap, "/grant", serviceAccount+":(OI)(CI)(RX)")
 	}
 	icacls(t, logFolder, "/grant", serviceAccount+":(OI)(CI)(M)")
@@ -540,6 +554,15 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 			service := installService(t, serviceSetup{settings: created.file()})
 			service.awaitRunningOnWaiting(t)
 			expectLogText(t, service.logText(t), "waiting")
+		})
+		t.Run("key holder 3, a machine key of the software key store whose access list names SYSTEM, Administrators and the service's own account: running, then 127.0.0.1:23 and [::1]:23 served and the log file's line started", func(t *testing.T) { //nolint:paralleltest // it must run alone
+			expectPort23Free(t)
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, telnetAt(23)), softwareKeyStore: true})
+			service.startRunning(t)
+			service.awaitState(t, "RUNNING", serviceStartBound)
+			expectServed(t, defaultIPv4Telnet)
+			expectServed(t, defaultIPv6Telnet)
+			expectStartedAtPort23(t, service.awaitLogLines(t, 1))
 		})
 		t.Run("every service off: running, its one started line naming no listener, and the service's process listening nowhere", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			service := installService(t, serviceSetup{settings: sharedRowSettings(t, allOff())})

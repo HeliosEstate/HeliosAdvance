@@ -306,7 +306,7 @@ func TestDatabaseProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall not write the bootstrap file's password, or the key in the key file, to the local log.", func(t *testing.T) {
+	t.Run("The engine shall not write the bootstrap file's password, or its key from the key file or a Windows key store, to the local log.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a run that starts, loses its lease to another run, waits and starts again, then stops: neither the password nor the key anywhere in its log", func(t *testing.T) {
 			t.Parallel()

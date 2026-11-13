@@ -1,7 +1,8 @@
 # The bootstrap file oracle: a second reader and writer of the bootstrap file format, written
 # from the format's description alone, never from the engine's code (see README.md). Built from
-# the Pascal source beside this file; the build stage runs the published AES and GCM vectors, so
-# an image that builds is one whose cipher matches the standard.
+# the Pascal source beside this file; the build stage runs the self-test, the published AES and
+# GCM vectors and the header's cases under every key holder, so an image that builds is one whose
+# cipher matches the standard and whose header is read as the README gives it.
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 RUN apt-get update && apt-get install -y --no-install-recommends fp-compiler \
     && rm -rf /var/lib/apt/lists/*

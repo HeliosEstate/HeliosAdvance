@@ -21,16 +21,22 @@ import (
 // headerEdits are the oracle's broken headers, each one Open refuses with ErrHeader: the README's
 // list of the files the page's lines need, status 3.
 var headerEdits = map[string]string{
-	"a wrong magic":                                `magic "HADVBOOX"`,
-	"format version 0":                             "version 0",
-	"format version 2":                             "version 2",
-	"key holder 0":                                 "holder 0",
-	"key holder 2":                                 "holder 2",
-	"key holder 2 with a sealed key":               "holder 2\nsealed random:100",
-	"a sealed key under the key file":              "sealed hex:00",
-	"a sealed-key length of 1 that lies":           "sealed-length 1",
-	"10 bytes, shorter than the header's start":    "truncate 10",
-	"40 bytes, one short of header, nonce and tag": "truncate 40",
+	"a wrong magic":                                             `magic "HADVBOOX"`,
+	"format version 0":                                          "version 0",
+	"format version 2":                                          "version 2",
+	"key holder 0":                                              "holder 0",
+	"key holder 2":                                              "holder 2",
+	"key holder 2 with a sealed key":                            "holder 2\nsealed random:100",
+	"a sealed key under the key file":                           "sealed hex:00",
+	"a sealed-key length of 1 that lies":                        "sealed-length 1",
+	"10 bytes, shorter than the header's start":                 "truncate 10",
+	"40 bytes, one short of header, nonce and tag":              "truncate 40",
+	"key holder 4, no sealed key":                               "holder 4",
+	"key holder 5, no sealed key":                               "holder 5",
+	"key holder 2, a sealed key a byte short, its name in form": "holder 2\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:255",
+	"key holder 2, a sealed key a byte long, its name in form":  "holder 2\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:257",
+	"key holder 3, a sealed key a byte short, its name in form": "holder 3\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:255",
+	"key holder 3, a sealed key a byte long, its name in form":  "holder 3\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:257",
 }
 
 // keyText is a key file's text built from base, the 44 characters of a good one.
@@ -164,7 +170,7 @@ func TestOpen(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, KeyHolderKeyFile and a sealed-key length of 0, then Open shall return ErrHeader before it opens the key file.", func(t *testing.T) {
+	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0 or, on Windows, KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file or asks a key store.", func(t *testing.T) {
 		t.Parallel()
 		for name, edits := range headerEdits {
 			t.Run(name+": ErrHeader", func(t *testing.T) {

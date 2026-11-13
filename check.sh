@@ -580,12 +580,28 @@ if [ -n "$pkgs" ]; then
   # for a right they lack rather than for a fault. Windows is asked whether this
   # process's token holds the Administrators group, which only an elevated token does; anything but
   # "True" counts as not elevated. A skip is always said, never silent.
-  if [ "$(go env GOOS)" = windows ] && [ -z "${TESTSKIP+set}" ]; then
+  elevated=
+  if [ "$(go env GOOS)" = windows ]; then
     elevated=$(powershell.exe -NoProfile -Command '([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)' 2>/dev/null | tr -d '\r')
+  fi
+  if [ "$(go env GOOS)" = windows ] && [ -z "${TESTSKIP+set}" ]; then
     if [ "$elevated" = True ]; then TESTSKIP='^(TestOracle|TestLinux)'
     else
       TESTSKIP='^(TestOracle|TestLinux|TestWindowsElevated)'
       echo "check: this process is not elevated, so the TestWindowsElevated rows are skipped; CI runs them"
+    fi
+  fi
+  # The rows on the TPM's key store (TestWindowsElevatedTPM…) need a TPM as well as an elevated
+  # process, and CI's elevated Windows runner has no TPM: so on an elevated Windows they are
+  # skipped wherever no TPM is ready, whether or not TESTSKIP was given, since CI gives it, and the
+  # name is added to its pattern, never put in its place. QA runs them on a machine with a TPM.
+  # Get-Tpm answers only an elevated process; an unelevated one skips them already by their name's
+  # start. Anything but a TPM both present and ready, an error included, counts as none.
+  if [ "$elevated" = True ]; then
+    tpm=$(powershell.exe -NoProfile -Command '$tpm = Get-Tpm -ErrorAction Stop; "$($tpm.TpmPresent) $($tpm.TpmReady)"' 2>/dev/null | tr -d '\r')
+    if [ "$tpm" != "True True" ]; then
+      TESTSKIP="${TESTSKIP:+$TESTSKIP|}^TestWindowsElevatedTPM"
+      echo "check: this machine has no TPM ready, so the TestWindowsElevatedTPM rows are skipped; QA runs them on a machine with one"
     fi
   fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and

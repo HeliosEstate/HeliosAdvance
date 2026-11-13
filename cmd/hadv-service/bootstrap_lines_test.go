@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -75,8 +76,9 @@ func (made *bootstrapFolder) keyBase() string {
 // a non-zero exit, and neither a password nor the key in its log, and returns the reason.
 func (made *bootstrapFolder) refused(t *testing.T) string {
 	t.Helper()
-	program := startWithFile(t, made.path, nil)
+	program, release := made.start(t)
 	reason := program.expectRefusal(t)
+	release()
 	expectNoPassword(t, program)
 	made.expectKeyNotIn(t, program.text())
 	return reason
@@ -86,10 +88,26 @@ func (made *bootstrapFolder) refused(t *testing.T) string {
 // password nor the key in its log.
 func (made *bootstrapFolder) starts(t *testing.T) {
 	t.Helper()
-	program := startWithFile(t, made.path, nil)
+	program, release := made.start(t)
 	program.listening(t)
+	release()
 	expectNoPassword(t, program)
 	made.expectKeyNotIn(t, program.text())
+}
+
+// start starts the program with the folder, in the folder's turn when it has one, and returns
+// what gives the turn back once the program has started or refused; a row that fails first
+// gives it back when it ends.
+func (made *bootstrapFolder) start(t *testing.T) (*run, func()) {
+	t.Helper()
+	release := func() {}
+	if made.turn != nil {
+		made.turn.Lock()
+		var once sync.Once
+		release = func() { once.Do(made.turn.Unlock) }
+		t.Cleanup(release)
+	}
+	return startWithFile(t, made.path, nil), release
 }
 
 // keyMissingReason is the reason for another check than most rows': a good bootstrap file whose
@@ -223,7 +241,7 @@ func folderCases() map[string]func(t *testing.T) *bootstrapFolder {
 func TestBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If the bootstrap folder is missing or unreadable, or the bootstrap file or the key file in it is missing, unreadable or a link leading out of the bootstrap folder, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap folder is missing or unreadable, the bootstrap file in it is missing, unreadable or a link leading out of the bootstrap folder, or, when the bootstrap file's key holder is the key file, the key file is, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, build := range folderCases() {
 			t.Run(name+": one start_failed line, and a non-zero exit", func(t *testing.T) {
@@ -262,7 +280,7 @@ func TestBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the key file is not in the key file's form, or holds a key of 32 zero bytes, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and the key file is not in the key file's form, or holds a key of 32 zero bytes, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, build := range malformedKeys {
 			t.Run(name+": one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
@@ -291,7 +309,7 @@ func TestBootstrapProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("If the bootstrap file's header is not format version 1's for the key file, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's header is not format version 1's for the key file or, on Windows, for the TPM or the software key store, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file or asking a key store, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, edits := range headerEdits {
 			t.Run(name+", alone, with the key file missing, unreadable and open to others: the same reason each time, not a missing key file's", func(t *testing.T) {
@@ -324,7 +342,7 @@ func TestBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap file does not unseal under the key in the key file, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file does not unseal under the key its key holder gives, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a good file under another key: one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
 			t.Parallel()

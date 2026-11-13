@@ -26,7 +26,7 @@ func modeName(mode os.FileMode) string {
 func TestLinuxBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Linux, the key file's mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and, on Linux, the key file's mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, mode := range []os.FileMode{0o640, 0o620, 0o610, 0o604, 0o602, 0o601} {
 			t.Run(modeName(mode)+": one start_failed line, a reason of its own, and a non-zero exit", func(t *testing.T) {
@@ -59,7 +59,7 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("If the bootstrap folder is missing or unreadable, or the bootstrap file or the key file in it is missing, unreadable or a link leading out of the bootstrap folder, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap folder is missing or unreadable, the bootstrap file in it is missing, unreadable or a link leading out of the bootstrap folder, or, when the bootstrap file's key holder is the key file, the key file is, then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("the bootstrap file a symbolic link to a good one inside the folder: it starts", func(t *testing.T) {
 			t.Parallel()
@@ -74,6 +74,26 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 			made.starts(t)
 		})
 	})
+
+	t.Run("If the bootstrap file's header is not format version 1's for the key file or, on Windows, for the TPM or the software key store, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file or asking a key store, and exit with a non-zero code.", func(t *testing.T) {
+		t.Parallel()
+		// Linux has neither of Windows' key stores, so a header naming either is one it does not
+		// read, however well formed its sealed key is. Each folder also holds a good key file the
+		// file is sealed under, which a program that ignored the holder would start with.
+		for _, holder := range []string{"2", "3"} {
+			t.Run("key holder "+holder+", 293 sealed bytes, a name in its form: one start_failed line, and a non-zero exit, with a good key file and with it missing the same reason, not a missing key file's", func(t *testing.T) {
+				t.Parallel()
+				edits := "holder " + holder + "\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256"
+				reason := brokenFolder(t, edits).refused(t)
+				without := brokenFolder(t, edits)
+				removeFile(t, without.keyFile)
+				if got := without.refused(t); got != reason {
+					t.Fatalf("with the key file missing the reason was %q, not the header's %q: the key file was read", got, reason)
+				}
+				expectOwnReason(t, reason, keyMissingReason(t), "a missing key file")
+			})
+		}
+	})
 }
 
 // TestLinuxRootBootstrapProgram needs sudo, which CI's runner has: each row first asks the system
@@ -82,7 +102,7 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 func TestLinuxRootBootstrapProgram(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If, on Linux, the key file's mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's key holder is the key file and, on Linux, the key file's mode gives its group or others any access, then the engine shall write one `start_failed` line saying so, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for _, row := range nobodyRows() {
 			t.Run(row.name, func(t *testing.T) {

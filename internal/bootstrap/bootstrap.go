@@ -58,31 +58,43 @@ func unseal(root *os.Root) ([]byte, error) {
 	if !headerIsOurs(sealed) {
 		return nil, ErrHeader
 	}
+	// One byte more than the key, so that a result longer than the key shows as a full buffer.
+	buffer := make([]byte, KeyBytes+1)
+	defer clear(buffer)
+	key, err := takeKey(root, sealed, buffer)
+	if err != nil {
+		return nil, err
+	}
+	return unsealWith(key, sealed)
+}
+
+// headerIsOurs is checked before the key file is opened or a key store is asked, so a file this
+// engine cannot read never makes the engine touch a key.
+func headerIsOurs(sealed []byte) bool {
+	if len(sealed) < HeaderBytes+NonceBytes+TagBytes {
+		return false
+	}
+	if string(sealed[:len(Magic)]) != Magic || binary.BigEndian.Uint16(sealed[8:10]) != FormatVersion {
+		return false
+	}
+	if sealed[10] == KeyHolderKeyFile {
+		return binary.BigEndian.Uint16(sealed[11:13]) == 0
+	}
+	return storeHeaderIsOurs(sealed)
+}
+
+// readKeyFile takes the key from the key file into buffer, which the caller clears.
+func readKeyFile(root *os.Root, buffer []byte) ([]byte, error) {
 	keyText, err := readFrom(root, KeyFileName, KeyFileMostBytes, keyFileRefusals, checkKeyFile)
 	if err != nil {
 		return nil, err
 	}
 	defer clear(keyText)
-	// One byte more than the key, so that a text decoding to more shows as a full buffer.
-	decoded := make([]byte, KeyBytes+1)
-	defer clear(decoded)
-	key, ok := decodeKey(keyText, decoded)
+	key, ok := decodeKey(keyText, buffer)
 	if !ok {
 		return nil, ErrKeyFileForm
 	}
-	return unsealWith(key, sealed)
-}
-
-// headerIsOurs is checked before the key file is opened, so a file this engine cannot read never
-// makes the engine touch the key.
-func headerIsOurs(sealed []byte) bool {
-	if len(sealed) < HeaderBytes+NonceBytes+TagBytes {
-		return false
-	}
-	return string(sealed[:len(Magic)]) == Magic &&
-		binary.BigEndian.Uint16(sealed[8:10]) == FormatVersion &&
-		sealed[10] == KeyHolderKeyFile &&
-		binary.BigEndian.Uint16(sealed[11:13]) == 0
+	return key, nil
 }
 
 // readFrom reads a file of the folder into a buffer one byte longer than the most allowed, so a
@@ -155,8 +167,9 @@ func decodeKey(text, decoded []byte) ([]byte, bool) {
 	return decoded[:count], true
 }
 
-// unsealWith authenticates every byte before the JSON, the header and the nonce, so a changed
-// header fails the tag; the JSON is a new slice, so wiping the file's buffer leaves it whole.
+// unsealWith authenticates every byte before the JSON, the header, the sealed key and the nonce,
+// so a changed header or sealed key fails the tag; the JSON is a new slice, so wiping the file's
+// buffer leaves it whole.
 func unsealWith(key, sealed []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -166,8 +179,9 @@ func unsealWith(key, sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, ErrUnseal
 	}
-	start := HeaderBytes + NonceBytes
-	plaintext, err := gcm.Open(nil, sealed[HeaderBytes:start], sealed[start:], sealed[:start])
+	nonceStart := HeaderBytes + int(binary.BigEndian.Uint16(sealed[11:13]))
+	start := nonceStart + NonceBytes
+	plaintext, err := gcm.Open(nil, sealed[nonceStart:start], sealed[start:], sealed[:start])
 	if err != nil {
 		return nil, ErrUnseal
 	}

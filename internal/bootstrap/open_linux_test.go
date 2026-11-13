@@ -91,7 +91,21 @@ func TestLinuxOpen(t *testing.T) {
 		})
 	})
 
-	t.Run("When it returns, Open shall have closed the bootstrap folder and both files.", func(t *testing.T) {
+	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0 or, on Windows, KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file or asks a key store.", func(t *testing.T) {
+		t.Parallel()
+		// Linux has neither of Windows' key stores, so a header naming either is one it does not
+		// read, however well formed its sealed key is.
+		for _, holder := range []string{"2", "3"} {
+			t.Run("key holder "+holder+", 293 sealed bytes, a name in its form: ErrHeader", func(t *testing.T) {
+				t.Parallel()
+				made := makeFolderWith(t, plaintextOf(t, 64), "holder "+holder+"\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256")
+				expectSize(t, made, 64+sealedOverhead+293)
+				made.expectRefused(t, bootstrap.ErrHeader)
+			})
+		}
+	})
+
+	t.Run("When it returns, Open shall have closed the bootstrap folder and the files it opened, and freed every key store handle it opened.", func(t *testing.T) {
 		t.Parallel()
 		for name, way := range closingOutcomes() {
 			t.Run(name+": no descriptor of this process leads into the folder", func(t *testing.T) {
