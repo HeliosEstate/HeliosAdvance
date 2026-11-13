@@ -15,15 +15,17 @@ The engine's first layer accepts a Telnet caller, answers the caller's option re
 greeting and hangs up. Part 2 replaces how it ends a call, and Part 4 what it sends at accept and
 which options it takes. The database's Part 1 makes it take its server's lease before it listens,
 and adds two lines to the local log. The bootstrap's Part 1 names the bootstrap folder in place of
-the connection file.
+the connection file. The database's Part 2 reads which services it runs, and on which ports, from
+its server's settings in place of the port option.
 
 #### Greeting a caller
 
 What the engine sends at accept, and which option requests it takes or refuses, are Part 4's
 lines.
 
-- When it starts with a bootstrap folder and no other command-line option, the engine shall
-  listen for Telnet callers on port 23, and for no SSH or Telnet over TLS caller.
+- When it takes its server's lease, the engine shall listen for Telnet callers only if its
+  server's `telnet_on` is true, for SSH callers only if its `ssh_on` is true, and for Telnet over
+  TLS callers only if its `telnets_on` is true.
 - The engine shall send at most one reply to each option request.
 - If, during negotiation, the caller sends anything that is not an option request, AYT, AO or IP,
   then the engine shall discard it without reply.
@@ -51,9 +53,8 @@ What the engine writes after negotiation, and when it gives up on a call, are Pa
 - The engine shall listen for callers at 127.0.0.1 and at ::1, and at no other address.
 - If the engine fails to listen at one of 127.0.0.1 and ::1, then the engine shall listen at the
   other alone.
-- When the sysop passes a Telnet port on the command line, the engine shall listen on that port
-  in place of port 23.
-- When the sysop passes port 0, the engine shall listen at each address on a free port the
+- The engine shall listen for Telnet callers on its server's `telnet_port`.
+- When a port setting is 0, the engine shall listen at each address on a free port the
   operating system picks.
 
 #### Starting and stopping
@@ -66,9 +67,9 @@ What the engine writes after negotiation, and when it gives up on a call, are Pa
 
 - When it has started listening, the engine shall write one `started` line to the local log
   naming the kind, address and port of everywhere it listens.
-- If a command-line option is malformed, or the engine fails to listen at both addresses for
-  Telnet or, when SSH or Telnet over TLS is on, for that kind, then the engine shall write one
-  `start_failed` line to the local log saying why, and exit with a non-zero code.
+- If a command-line option is malformed, or the engine fails to listen at both addresses for a
+  kind its server's settings turn on, then the engine shall write one `start_failed` line to the
+  local log saying why, and exit with a non-zero code.
 - The engine shall write no line to the local log other than `started`, `start_failed`,
   `waiting` and `lease_lost`.
 - The engine shall write each line of the local log as one key and its value, `key=value`.
@@ -125,14 +126,12 @@ then hangs up. The layer that asks and answers is the one SSH shares, from Part 
 The engine also takes SSH callers, when the sysop gives it a host key, and serves them the same
 call as Telnet callers: the greeting, the name and the answer. Part 3 narrows the earlier lines
 that only a Telnet caller meets to a Telnet caller. Part 8 changes its line on the host key file's
-mode.
+mode. The database's Part 2 turns SSH on, and sets its port, from its server's settings.
 
 #### Turning SSH on
 
-- When the sysop passes an SSH host key file on the command line, the engine shall listen for SSH
-  callers at 127.0.0.1 and ::1 on port 22, beside its Telnet listener.
-- When the sysop passes an SSH port on the command line as well, the engine shall listen for SSH
-  callers on that port in place of port 22.
+- The engine shall listen for SSH callers at 127.0.0.1 and ::1 on its server's `ssh_port`,
+  beside its other listeners.
 - If the host key file is missing, unreadable, not in OpenSSH's format, protected by a passphrase
   or not an Ed25519 key, then the engine shall write one `start_failed` line saying which, and
   exit with a non-zero code.
@@ -227,7 +226,9 @@ Synch, for a caller over TLS.
 
 The engine runs as a Windows service and as a Linux daemon under systemd, and tells each service
 manager when it is ready. Its local log goes to standard output, or to a log file the sysop names
-on the command line. Every earlier line holds when a service manager runs the engine.
+on the command line. Every earlier line holds when a service manager runs the engine. The
+database's Part 2 makes its two lines on port 23 hold when its server's settings turn Telnet on
+there.
 
 #### Under Windows' service manager
 
@@ -240,8 +241,8 @@ on the command line. Every earlier line holds when a service manager runs the en
   report stopped with a non-zero exit code.
 - If Windows' service manager starts it with no log file on the command line, then the engine
   shall report stopped with a non-zero exit code, listening nowhere.
-- When Windows' service manager starts it as `NT SERVICE\hadv-service`, the engine shall listen
-  for Telnet callers on port 23.
+- When Windows' service manager starts it as `NT SERVICE\hadv-service` and its server's
+  settings turn Telnet on at port 23, the engine shall listen for Telnet callers on port 23.
 
 #### Under systemd
 
@@ -249,7 +250,8 @@ on the command line. Every earlier line holds when a service manager runs the en
   send `READY=1` there once every listener it was asked for is listening, or once it first writes
   a `waiting` line, and not before.
 - When systemd starts it as an ordinary user holding no capability but the right to bind ports
-  below 1024, the engine shall listen for Telnet callers on port 23.
+  below 1024, and its server's settings turn Telnet on at port 23, the engine shall listen for
+  Telnet callers on port 23.
 
 #### The local log
 
@@ -279,15 +281,13 @@ The engine also takes Telnet callers over TLS, on a listener of its own, when th
 certificate and its key, and serves them inside the encrypted channel as it serves a Telnet
 caller. Every earlier line that names a Telnet caller stands for a Telnet over TLS caller, inside
 the channel. Part 8 changes one of Part 4's lines, on the Synch, and one of Part 3's, on the host
-key file's mode.
+key file's mode. The database's Part 2 turns Telnet over TLS on, and sets its port, from its
+server's settings.
 
 #### Turning Telnet over TLS on
 
-- When the sysop passes a TLS certificate file and its key file on the command line, the engine
-  shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on port 992, beside its other
-  listeners.
-- When the sysop passes a Telnet over TLS port on the command line as well, the engine shall
-  listen for Telnet over TLS callers on that port in place of port 992.
+- The engine shall listen for Telnet over TLS callers at 127.0.0.1 and ::1 on its server's
+  `telnets_port`, beside its other listeners.
 - If either file is missing, unreadable or not PEM, or the key is protected by a passphrase, does
   not match the certificate, or is not RSA of 2048 bits or more, ECDSA P-256 or P-384, or Ed25519,
   then the engine shall write one `start_failed` line saying which, and exit with a non-zero code.
@@ -348,7 +348,8 @@ servers meet.
 The engine connects to its database, signs in, checks the schema version and its server's row,
 and holds its server's lease while it listens. Where the database is and how to sign in come from
 the bootstrap file, in the bootstrap folder named on the command line (the bootstrap's Part 1).
-Part 1 changes two of hadv-service Part 1's lines, on starting and on the local log.
+Part 1 changes two of hadv-service Part 1's lines, on starting and on the local log. Part 2
+changes two of its lines, on the schema version and on waiting.
 
 #### The connection settings
 
@@ -378,16 +379,18 @@ Part 1 changes two of hadv-service Part 1's lines, on starting and on the local 
 
 #### The schema version and the server's row
 
-- If `hadv.schema_version` is missing or holds a version other than 1 or 2, then the engine shall
-  write one `start_failed` line naming the version it found, and exit with a non-zero code.
+- If `hadv.schema_version` is missing or holds a version other than 2 or 3, then the engine
+  shall write one `start_failed` line naming the version it found, and exit with a non-zero code.
 - If `hadv.servers` holds no row for the bootstrap file's server ID, then the engine shall write
   one `start_failed` line saying so, and exit with a non-zero code.
 
 #### Waiting for the database
 
 - If the database does not answer, or answers that it is starting up, shutting down or
-  recovering, that it has no connection free, or that it is read-only, then the engine shall
-  write one `waiting` line saying which, listen nowhere, and try again every 10 seconds.
+  recovering, that it has no connection free, that it is read-only, that it cancelled the
+  statement, that a lock was not available, that a clash with another transaction stopped it, or
+  that its disk or memory ran out, then the engine shall write one `waiting` line saying which,
+  listen nowhere, and try again every 10 seconds.
 - If its server's lease has not ended and its lease holder is not this run's own, then the engine
   shall write one `waiting` line saying so, listen nowhere, and try again every 10 seconds.
 - The engine shall listen for callers only while it holds its server's lease.
@@ -404,6 +407,38 @@ Part 1 changes two of hadv-service Part 1's lines, on starting and on the local 
   listener, write one `lease_lost` line, and try to take the lease again every 10 seconds.
 - When it receives a stop signal while it holds its server's lease, the engine shall set the
   lease end to the database's current time before it exits, unless the database does not answer.
+
+### Part 2: Per-server settings
+
+Each server's settings, which of Telnet, SSH and Telnet over TLS it runs and on which ports, are
+stored in its row of `hadv.servers` and read each time it takes its lease, in place of the port
+options on the command line. A new row takes the defaults: every service off, each on its usual
+port. Part 2 also ends the lease at a stop after the database ended the lease's connection, and at
+a refusal to start after the lease is taken. It changes lines of hadv-service Parts 1, 3, 6 and 8
+and of the database's Part 1, and removes Part 3's line on an SSH port option and Part 8's on a
+Telnet over TLS port option.
+
+#### Which services run
+
+- When it takes its server's lease, the engine shall listen as its server's settings stand at that
+  moment, until it next takes the lease.
+- If a setting it reads is empty, not of its kind, or a port outside 0 to 65535, then the engine
+  shall write one `start_failed` line naming the setting, and exit with a non-zero code.
+- If its server's `ssh_on` is true and the command line names no SSH host key file, or its
+  `telnets_on` is true and the command line does not name both a TLS certificate file and its key
+  file, then the engine shall write one `start_failed` line saying which, and exit with a non-zero
+  code.
+- When it takes its server's lease and its server's settings turn no service on, the engine shall
+  write one `started` line saying it listens nowhere.
+
+#### Ending the lease
+
+- When it receives a stop signal while it holds its server's lease, after the database has ended
+  the connection the lease was taken or last renewed over, the engine shall still set the lease end
+  to the database's current time before it exits, unless the database does not answer.
+- If it writes a `start_failed` line after it has taken its server's lease, then the engine shall
+  set the lease end to the database's current time before it exits, unless the database does not
+  answer.
 
 ## bootstrap
 

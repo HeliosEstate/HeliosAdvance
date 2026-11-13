@@ -62,7 +62,13 @@ func startFake(t *testing.T, closeAtOnce bool, script fakeScript) *fake {
 	if err != nil {
 		t.Fatalf("the fake's listen: %v", err)
 	}
-	signer := newAuthority(t)
+	return startFakeOn(t, listener, newAuthority(t), closeAtOnce, script)
+}
+
+// startFakeOn serves each connection the listener accepts with script, with a certificate from
+// the authority, until the row ends: a fake in a real server's place.
+func startFakeOn(t *testing.T, listener net.Listener, signer *authority, closeAtOnce bool, script fakeScript) *fake {
+	t.Helper()
 	certificatePEM, keyPEM, err := signer.issue(serverCertificate{})
 	if err != nil {
 		t.Fatalf("the fake's certificate: %v", err)

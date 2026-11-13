@@ -58,8 +58,8 @@ var (
 )
 
 // serviceSetup is how a row installs the service: the connection settings its bootstrap folder
-// seals, or a key of the software key store under key holder 3 on the shared board's settings in
-// place of a key file, and what the row leaves out or breaks.
+// seals, whether its key is a software key store machine key under key holder 3 in place of a key
+// file, and what the row leaves out or breaks.
 type serviceSetup struct {
 	settings         connectionFile
 	softwareKeyStore bool
@@ -139,7 +139,9 @@ func installService(t *testing.T, setup serviceSetup) *windowsService {
 		}
 		if setup.softwareKeyStore {
 			// Made only now, since its access list names the account.
-			_, made := keyStoreFolder(t, softwareStore, "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+accountSID+")", "")
+			key, keyText := newBootstrapKey(t)
+			storeKey := makeStoreKey(t, softwareStore, false, "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;"+accountSID+")", "", oaep(key))
+			made := storeBootstrapFolderOn(t, setup.settings, holderOf[softwareStore], storeKey.name, storeKey.wraps[0], key, keyText, "")
 			copyFile(t, made.file, filepath.Join(bootstrap, bootstrapFileName))
 		} else {
 			icacls(t, keyFile, "/setowner", "*"+administratorsSID)
@@ -530,7 +532,7 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 		t.Run("the row locked from before the start: start pending for 2 s from the engine's first try; the row released: running, then 127.0.0.1:23 and [::1]:23 served and the log file's line started", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			expectPort23Free(t)
 			server := sharedServer(t)
-			created := server.newBoard(t)
+			created := server.newBoard(t, telnetAt(23))
 			lock := created.lockRow(t)
 			service := installService(t, serviceSetup{settings: created.file()})
 			since := time.Now()
@@ -547,7 +549,7 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 			expectStartedAtPort23(t, service.awaitLogLines(t, 1))
 		})
 		t.Run("the row locked throughout: start pending until the log file holds a waiting line, then running, and no started line", func(t *testing.T) { //nolint:paralleltest // it must run alone
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(23))
 			created.lockRow(t)
 			service := installService(t, serviceSetup{settings: created.file()})
 			service.awaitRunningOnWaiting(t)
@@ -555,12 +557,46 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 		})
 		t.Run("key holder 3, a machine key of the software key store whose access list names SYSTEM, Administrators and the service's own account: running, then 127.0.0.1:23 and [::1]:23 served and the log file's line started", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			expectPort23Free(t)
-			service := installService(t, serviceSetup{softwareKeyStore: true})
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, telnetAt(23)), softwareKeyStore: true})
 			service.startRunning(t)
 			service.awaitState(t, "RUNNING", serviceStartBound)
 			expectServed(t, defaultIPv4Telnet)
 			expectServed(t, defaultIPv6Telnet)
 			expectStartedAtPort23(t, service.awaitLogLines(t, 1))
+		})
+		t.Run("every service off: running, its one started line naming no listener, and the service's process listening nowhere", func(t *testing.T) { //nolint:paralleltest // it must run alone
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, allOff())})
+			service.startRunning(t)
+			// No line orders running against the started line with every service off, so the row
+			// waits for the line once the service runs. Running before the take is the waiting
+			// row's to catch: no build knows every service is off before it takes the lease.
+			giveUp := time.Now().Add(testrun.Patient(serviceStartBound))
+			for {
+				read := service.query(t)
+				if read.state == "RUNNING" {
+					text := service.logText(t)
+					lineBy := time.Now().Add(testrun.Patient(testrun.HangBound))
+					for !strings.Contains(text, "\n") && time.Now().Before(lineBy) {
+						pause(t, statePoll)
+						text = service.logText(t)
+					}
+					values := expectLogText(t, text, "started")
+					expectListensNowhere(t, values[0])
+					if sockets := listeningSockets(t, read.processID); len(sockets) != 0 {
+						t.Fatalf("the service's process listens at %q, with every service off", sockets)
+					}
+					return
+				}
+				text := service.logText(t)
+				if read.state != "START_PENDING" {
+					t.Fatalf("the service is %s, codes %d and %d, where it was to report running; the log file holds %q",
+						read.state, read.windowsCode, read.serviceCode, text)
+				}
+				if time.Now().After(giveUp) {
+					t.Fatalf("the service was still start pending by %v; the log file holds %q", giveUp.Format(time.RFC3339Nano), text)
+				}
+				pause(t, statePoll)
+			}
 		})
 	})
 
@@ -568,7 +604,7 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 		// Only Windows itself sends shutdown, as it shuts down, so no row can send it.
 		t.Run("sc.exe stop, a caller waiting at the name prompt, shutdown accepted while running: the caller's connection closed at once, then stopped as the engine reported it, and the service's process ended", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			expectPort23Free(t)
-			service := installService(t, serviceSetup{settings: sharedRowSettings(t)})
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, telnetAt(23))})
 			service.startRunning(t)
 			running := service.awaitState(t, "RUNNING", serviceStartBound)
 			// Shutdown cannot be sent from a test, only accepted: a service that does not accept it
@@ -611,7 +647,7 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 				}
 				t.Cleanup(func() { _ = held.Close() })
 			}
-			created := sharedServer(t).newBoard(t)
+			created := sharedServer(t).newBoard(t, telnetAt(23))
 			lock := created.lockRow(t)
 			service := installService(t, serviceSetup{settings: created.file()})
 			service.awaitRunningOnWaiting(t)
@@ -620,15 +656,15 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 			expectLogText(t, service.logText(t), "waiting", startFailedKey)
 		})
 		t.Run("the log file's path naming a folder, so its start_failed line goes to standard output: stopped with a non-zero code", func(t *testing.T) { //nolint:paralleltest // it must run alone
-			service := installService(t, serviceSetup{settings: sharedRowSettings(t), logFileIsFolder: true})
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, telnetAt(23)), logFileIsFolder: true})
 			service.start(t)
 			service.expectStoppedFailed(t)
 		})
 	})
 
 	t.Run("If Windows' service manager starts it with no log file on the command line, then the engine shall report stopped with a non-zero exit code, listening nowhere.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("a good bootstrap folder, no log file and no port: stopped with a non-zero code, its process holding no listening socket at any read before", func(t *testing.T) { //nolint:paralleltest // it must run alone
-			service := installService(t, serviceSetup{settings: sharedRowSettings(t), withoutLogFile: true})
+		t.Run("a good bootstrap folder, no log file, Telnet on at 23: stopped with a non-zero code, its process holding no listening socket at any read before", func(t *testing.T) { //nolint:paralleltest // it must run alone
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, telnetAt(23)), withoutLogFile: true})
 			service.start(t)
 			giveUp := time.Now().Add(testrun.Patient(serviceStartBound))
 			for {
@@ -653,10 +689,10 @@ func TestWindowsElevatedService(t *testing.T) { //nolint:paralleltest // it must
 		})
 	})
 
-	t.Run("When Windows' service manager starts it as `NT SERVICE\\hadv-service`, the engine shall listen for Telnet callers on port 23.", func(t *testing.T) { //nolint:paralleltest // it must run alone
-		t.Run("installed under NT SERVICE\\hadv-service, as sc.exe qc reads back, with no port: running, 127.0.0.1:23 and [::1]:23 served, and the started line names both", func(t *testing.T) { //nolint:paralleltest // it must run alone
+	t.Run("When Windows' service manager starts it as `NT SERVICE\\hadv-service` and its server's settings turn Telnet on at port 23, the engine shall listen for Telnet callers on port 23.", func(t *testing.T) { //nolint:paralleltest // it must run alone
+		t.Run("installed under NT SERVICE\\hadv-service, as sc.exe qc reads back, Telnet on at 23: running, 127.0.0.1:23 and [::1]:23 served, and the started line names both", func(t *testing.T) { //nolint:paralleltest // it must run alone
 			expectPort23Free(t)
-			service := installService(t, serviceSetup{settings: sharedRowSettings(t)})
+			service := installService(t, serviceSetup{settings: sharedRowSettings(t, telnetAt(23))})
 			code, output := serviceControl(t, "qc", serviceName)
 			if found := startNameLine.FindStringSubmatch(output); code != 0 || found == nil || found[1] != serviceAccount {
 				t.Fatalf("sc.exe qc ended %d and names the account %q; want %s: %s", code, found, serviceAccount, output)

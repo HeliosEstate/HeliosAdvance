@@ -141,7 +141,7 @@ func TestWindowsElevatedBootstrapKeyStoreProgram(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(folder, "ncrypt.dll"), []byte("not a DLL, planted beside the program"), 0o600); err != nil {
 				t.Fatalf("planting ncrypt.dll: %v", err)
 			}
-			command := exec.CommandContext(t.Context(), program, databaseOption, made.path, portOption, "0")
+			command := exec.CommandContext(t.Context(), program, databaseOption, made.path)
 			command.Env = cleanEnvironment()
 			started := startCommand(t, command)
 			started.listening(t)
@@ -277,7 +277,7 @@ func TestWindowsElevatedBootstrapKeyStoreProgram(t *testing.T) {
 			t.Parallel()
 			send := stopSignals()[0].prepare(t)
 			made, folder := keyStoreFolder(t, softwareStore, goodList(t), "")
-			program := startWithFile(t, folder.path, nil, portOption, "0")
+			program := startWithFile(t, folder.path, nil)
 			program.listening(t)
 			_, sentBy := send(t, program)
 			program.exit(t, sentBy.Add(endLeaseWait+testrun.Patient(margin)))
@@ -291,7 +291,7 @@ func TestWindowsElevatedBootstrapKeyStoreProgram(t *testing.T) {
 			result := randomBytes(t, 33)
 			made := makeStoreKey(t, softwareStore, false, goodList(t), "", oaep(result))
 			folder := storeBootstrapFolder(t, 3, made.name, made.wraps[0], key, keyText, "")
-			program := startWithFile(t, folder.path, nil, portOption, "0")
+			program := startWithFile(t, folder.path, nil)
 			expectOwnReason(t, program.expectRefusal(t), headerReason(t), "a header the engine does not read")
 			expectNotInLog(t, program, map[string][]byte{"what the key store unwrapped": result, "its first 32 bytes": result[:32]})
 		})

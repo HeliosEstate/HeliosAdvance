@@ -3,13 +3,13 @@
 # the Pascal source beside this file; the build stage runs the self-test, the published AES and
 # GCM vectors and the header's cases under every key holder, so an image that builds is one whose
 # cipher matches the standard and whose header is read as the README gives it.
-FROM debian:bookworm-slim AS build
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS build
 RUN apt-get update && apt-get install -y --no-install-recommends fp-compiler \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY *.pas ./
 RUN fpc -O2 -Sew -obootstrap-file bootstrapfile.pas && ./bootstrap-file selftest
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 COPY --from=build /src/bootstrap-file /usr/local/bin/bootstrap-file
 WORKDIR /data
