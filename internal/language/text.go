@@ -12,7 +12,7 @@ import (
 // isSpace is the standard's space, without its tab, CR and LF, which are controls and fail a text
 // before they are asked.
 func isSpace(character rune) bool {
-	return character == ' ' || character == '　'
+	return character == ' ' || character == '\u3000'
 }
 
 // readText reads a text in one pass, with no recursion, so a text cannot nest the reader deeper.

@@ -26,6 +26,12 @@ type keySpec struct {
 	given []string
 }
 
+// place is the table a key is in and its name there, as the contract gives a key.
+func (spec keySpec) place() (table, name string) {
+	table, name, _ = strings.Cut(spec.key, ".")
+	return table, name
+}
+
 var keySpecs = []keySpec{
 	{KeyGreeting, nil},
 	{KeyNamePrompt, nil},
@@ -65,7 +71,8 @@ type language struct {
 	tooLarge bool
 	name     any
 	parent   any
-	session  map[string]any
+	// tables holds each table the engine reads, by its name.
+	tables map[string]map[string]any
 	// parentOf is the language parent names, once resolved.
 	parentOf *language
 }
@@ -131,10 +138,7 @@ func find(root *os.Root, folder string) ([]*language, error) {
 	if err != nil {
 		return nil, refusal(folder, "the language folder cannot be listed", err)
 	}
-	entries, err := listed.ReadDir(MostEntries + 1)
-	if closeErr := listed.Close(); err == nil || errors.Is(err, io.EOF) {
-		err = closeErr
-	}
+	entries, err := listClosing(listed)
 	if err != nil {
 		return nil, refusal(folder, "the language folder cannot be listed", err)
 	}
@@ -163,8 +167,8 @@ func find(root *os.Root, folder string) ([]*language, error) {
 	return languages, nil
 }
 
-// tooManyEntries refuses a folder holding more than MostEntries entries. Load lists one more than
-// that and no further, so a folder of any size costs the same.
+// tooManyEntries refuses a folder holding more than MostEntries entries. Load keeps and decides on
+// at most one more than that, so a folder of any size costs the same.
 func tooManyEntries(folder string) error {
 	return refusal(folder, fmt.Sprintf("it holds more than %d entries", MostEntries), nil)
 }
@@ -173,37 +177,43 @@ func tooManyEntries(folder string) error {
 // is the language's own fault, refused in its turn.
 var errTooManyEntries = errors.New("too many entries")
 
-// hasOwnFile judges the entry on its opened handle, so a link cannot change what was judged
-// between the check and the use.
+// hasOwnFile judges the entry on its opened handle. Every open is inside the root, so nothing
+// outside the folder is ever read, whatever a link is changed to; the file is opened again by name
+// when it is read, so what was judged here can change before then.
 func hasOwnFile(root *os.Root, name string) (bool, error) {
 	opened, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return false, err
 	}
-	isFolder, names, err := listOpened(opened)
-	if closeErr := opened.Close(); err == nil {
-		err = closeErr
+	info, err := opened.Stat()
+	if err != nil || !info.IsDir() {
+		if closeErr := opened.Close(); err == nil {
+			err = closeErr
+		}
+		return false, err
 	}
-	if len(names) > MostEntries {
+	entries, err := listClosing(opened)
+	if len(entries) > MostEntries {
 		return false, errTooManyEntries
 	}
 	if err != nil {
 		return false, err
 	}
-	return isFolder && slices.Contains(names, name+".toml"), nil
+	return slices.ContainsFunc(entries, func(entry fs.DirEntry) bool { return entry.Name() == name+".toml" }), nil
 }
 
-// listOpened lists one more than MostEntries names at most, enough to know a folder holds too many.
-func listOpened(opened *os.File) (bool, []string, error) {
-	info, err := opened.Stat()
-	if err != nil || !info.IsDir() {
-		return false, nil, err
-	}
-	names, err := opened.Readdirnames(MostEntries + 1)
+// listClosing is the one way a folder is listed: MostEntries and one entries at most, the end of
+// the listing not an error, and the folder closed, a failed close reported only when the listing
+// succeeded.
+func listClosing(opened *os.File) ([]fs.DirEntry, error) {
+	entries, err := opened.ReadDir(MostEntries + 1)
 	if errors.Is(err, io.EOF) {
 		err = nil
 	}
-	return true, names, err
+	if closeErr := opened.Close(); err == nil {
+		err = closeErr
+	}
+	return entries, err
 }
 
 func checkNames(languages []*language) error {
@@ -264,8 +274,9 @@ func readOpened(opened *os.File, buffer []byte) (int, error) {
 }
 
 // decodeFiles checks the size of every file, then decodes each and drops its bytes, keeping only
-// the name, the parent and the session table. UTF-8 is checked here and not by the library, which
-// skips a UTF-16 byte-order mark and reads on, and the bound is the engine's own read.
+// the name, the parent and the tables the engine reads. UTF-8 is checked here and not by the
+// library, which skips a UTF-16 byte-order mark and reads on, and the bound is the engine's own
+// read.
 func decodeFiles(languages []*language) error {
 	for _, each := range languages {
 		if each.tooLarge {
@@ -292,8 +303,12 @@ func decodeFiles(languages []*language) error {
 		}
 		each.name = decoded["name"]
 		each.parent = decoded["parent"]
-		if session, isTable := decoded["session"].(map[string]any); isTable {
-			each.session = session
+		each.tables = make(map[string]map[string]any, len(keySpecs))
+		for _, spec := range keySpecs {
+			table, _ := spec.place()
+			if values, isTable := decoded[table].(map[string]any); isTable {
+				each.tables[table] = values
+			}
 		}
 	}
 	for _, each := range languages {
@@ -375,8 +390,8 @@ func findTexts(board, fallback *language, most int) (*Texts, error) {
 }
 
 func (each *language) textFor(spec keySpec) ([]part, bool) {
-	_, name, _ := strings.Cut(spec.key, ".")
-	text, isString := each.session[name].(string)
+	table, name := spec.place()
+	text, isString := each.tables[table][name].(string)
 	if !isString {
 		return nil, false
 	}
