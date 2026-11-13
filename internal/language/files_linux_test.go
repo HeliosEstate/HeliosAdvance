@@ -130,6 +130,14 @@ func TestLinuxLoad(t *testing.T) {
 			}
 			expectRefused(t, folder, fallbackCode, fileName("Fr-FR"))
 		})
+		t.Run("e, a name of one letter that is no tag, a relative symbolic link to nothing, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.Symlink("gone", filepath.Join(folder, "e")); err != nil {
+				t.Fatalf("linking e to nothing: %v", err)
+			}
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
 		t.Run(".#README.txt, an editor's lock file, a symbolic link to nothing, the edge inside: no language, left alone, loads", func(t *testing.T) {
 			t.Parallel()
 			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})

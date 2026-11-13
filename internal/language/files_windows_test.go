@@ -119,6 +119,12 @@ func TestWindowsLoad(t *testing.T) {
 			junctionToNothing(t, folder, "Fr-FR")
 			expectRefused(t, folder, fallbackCode, fileName("Fr-FR"))
 		})
+		t.Run("e, a name of one letter that is no tag, a junction to a folder since removed, the edge inside: no language, left alone, loads", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			junctionToNothing(t, folder, "e")
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
 		t.Run(".#README.txt a junction to a folder since removed, the edge inside: no language, left alone, loads", func(t *testing.T) {
 			t.Parallel()
 			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
