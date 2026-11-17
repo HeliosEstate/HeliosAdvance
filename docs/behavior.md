@@ -537,6 +537,8 @@ on the local log and on the texts a caller is shown.
   executable, `<code>` being the language's tag in lower case, once, when it starts.
 - The engine shall take a language file's `name` as the language's name, and its `parent`, when
   present, as the code of the language that fills in its missing texts.
+- The engine shall read a language file that begins with a UTF-8 byte-order mark, the bytes
+  EF BB BF, as the file after that mark.
 - The engine shall be released with `lang/en-us/en-us.toml` holding every text it shows, in
   English (United States).
 

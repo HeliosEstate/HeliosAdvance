@@ -158,6 +158,74 @@ func TestLoad(t *testing.T) {
 			folder := makeLang(t, map[string]string{fallbackCode: padded(t, enUSFile(), mostFileBytes+1)})
 			expectRefused(t, folder, fallbackCode, fileName(fallbackCode))
 		})
+		// The bound is on the file as saved, its mark included.
+		t.Run("1 MiB and one byte with its byte-order mark: ErrFileRefused naming it", func(t *testing.T) {
+			t.Parallel()
+			file := byteOrderMark + padded(t, frFile(nil), mostFileBytes+1-len(byteOrderMark))
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			expectRefused(t, folder, frFR, fileName(frFR))
+		})
+		t.Run("exactly 1 MiB with its byte-order mark, the edge inside: loads, its texts shown", func(t *testing.T) {
+			t.Parallel()
+			file := byteOrderMark + padded(t, frFile(nil), mostFileBytes-len(byteOrderMark))
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			expectShown(t, expectLoaded(t, folder, frFR), frShown)
+		})
+	})
+
+	t.Run("Load shall read a language's file that begins with a UTF-8 byte-order mark, the bytes EF BB BF, as the file after that mark.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("fr-fr's file, one mark and then its name line: loads, fr-fr's texts shown", func(t *testing.T) {
+			t.Parallel()
+			nameFirst := strings.TrimPrefix(frFile(nil), "# "+marker+"\n")
+			if !strings.HasPrefix(nameFirst, "name = ") {
+				t.Fatalf("the file does not begin with its name line once its comment is gone: a fault in the test")
+			}
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: byteOrderMark + nameFirst})
+			expectShown(t, expectLoaded(t, folder, frFR), frShown)
+		})
+		t.Run("fr-fr's file, one mark and then its comment line: loads, fr-fr's texts shown", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: byteOrderMark + frFile(nil)})
+			expectShown(t, expectLoaded(t, folder, frFR), frShown)
+		})
+		t.Run("en-us's own file with one mark, the board en-us: loads, en-us's texts shown", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: byteOrderMark + enUSFile()})
+			expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+		})
+		t.Run("the board fr-fr, its own file unmarked and lacking the name prompt, en-us's and de-de's with one mark each: loads, the prompt from en-us", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{
+				fallbackCode: byteOrderMark + enUSFile(),
+				frFR:         frFile(map[string]string{shortNamePrompt: ""}),
+				deDE:         byteOrderMark + fileOf([]string{entry("name", "Deutsch")}, frSession(nil)),
+			})
+			expectShown(t, expectLoaded(t, folder, frFR), frShown.from(keyNamePrompt, enUSShown).missingFrom(keyNamePrompt))
+		})
+		t.Run("one mark, and a greeting holding U+FEFF, the same three bytes: loads, the greeting shown with its U+FEFF", func(t *testing.T) {
+			t.Parallel()
+			greeting := strings.Replace(frGreeting, "Bonjour", "Bonjour"+byteOrderMark, 1)
+			file := byteOrderMark + frFile(map[string]string{shortGreeting: entry(shortGreeting, greeting)})
+			if count := strings.Count(file, byteOrderMark); count != 2 {
+				t.Fatalf("the file holds EF BB BF %d times, not twice, at its start and in its greeting: a fault in the test", count)
+			}
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			expectShown(t, expectLoaded(t, folder, frFR), frShown.with(keyGreeting, greeting))
+		})
+		// TOML 1.1's grammar takes only a space or a tab before a key, and a bare key of ASCII
+		// letters, digits, hyphens and underscores, so a second mark is not TOML 1.1.
+		t.Run("two marks at the start, the edge outside: ErrFileRefused naming it", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: byteOrderMark + byteOrderMark + frFile(nil)})
+			expectRefused(t, folder, frFR, fileName(frFR))
+		})
+		t.Run("one mark at the start and one before the greeting's key: ErrFileRefused naming it", func(t *testing.T) {
+			t.Parallel()
+			file := byteOrderMark + frFile(map[string]string{shortGreeting: byteOrderMark + entry(shortGreeting, frGreeting)})
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			expectRefused(t, folder, frFR, fileName(frFR))
+		})
 	})
 
 	t.Run("If a language's file is not UTF-8 and TOML 1.1, then Load shall return ErrFileRefused naming it.", func(t *testing.T) {
@@ -568,6 +636,9 @@ func TestLoad(t *testing.T) {
 		}
 	})
 }
+
+// byteOrderMark is UTF-8's byte-order mark, U+FEFF, as the page gives its bytes.
+const byteOrderMark = "\xEF\xBB\xBF"
 
 // padded is file with a comment of spaces added so it is exactly size bytes.
 func padded(t *testing.T, file string, size int) string {
