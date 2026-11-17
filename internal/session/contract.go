@@ -128,6 +128,10 @@ var (
 //     writing.
 //   - When a call returns the context's error, Run shall return ErrCallEnded wrapping it; io.EOF,
 //     ErrCallerClosed; any other error, ErrConnectionFailed wrapping it.
+//
+// Which of NoName and ErrCallEnded Run returns is not pinned when RecvString's error carries both
+// os.ErrDeadlineExceeded and the context's error, the name's wait and the call's ceiling having
+// run out at once: timing alone decides it.
 func Run(ctx context.Context, connection Connection, texts *language.Texts) (Ending, error) {
 	return run(ctx, connection, texts)
 }
