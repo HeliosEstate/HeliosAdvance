@@ -278,6 +278,10 @@ func readOpened(opened *os.File, buffer []byte) (int, error) {
 	return count, err
 }
 
+// byteOrderMark is the UTF-8 mark an editor may put at a file's start. The engine takes exactly one
+// off itself, so that a second one is still refused whatever the library does with a mark.
+const byteOrderMark = "\xEF\xBB\xBF"
+
 // decodeFiles checks the size of every file, then decodes each and drops its bytes, keeping only
 // the name, the parent and the tables the engine reads. UTF-8 is checked here and not by the
 // library, which skips a UTF-16 byte-order mark and reads on, and the bound is the engine's own
@@ -291,10 +295,11 @@ func decodeFiles(languages []*language) error {
 	for _, each := range languages {
 		var decoded map[string]any
 		var err error
-		if !utf8.ValidString(each.contents) {
+		contents := strings.TrimPrefix(each.contents, byteOrderMark)
+		if !utf8.ValidString(contents) {
 			err = errors.New("not UTF-8")
 		} else {
-			err = toml.Unmarshal([]byte(each.contents), &decoded)
+			err = toml.Unmarshal([]byte(contents), &decoded)
 		}
 		each.contents = ""
 		if err != nil {
