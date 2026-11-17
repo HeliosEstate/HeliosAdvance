@@ -89,5 +89,12 @@ file new work.
 - Names read without knowing abbreviations: `sessionID`, not `sid`; `tools/namecheck` fails the
   rest. A method is a verb; reads follow Go style, no `Get`. Tests are table-driven, on real
   sockets and temp files, no mocks, no sleeps; each row names the line it proves.
+- A fact the code relies on (a grant, a limit, a list of paths) is written once; anything else
+  that needs it reads it there, or a test compares the two.
+- A gate, in `check.sh` or a workflow, judges every form its tool accepts, as the tool's own
+  documentation lists them (each config file name, spelling and case; each way code runs before
+  the tests); trusts only GitHub's verified author or signature, never a name, address, label or
+  text the actor writes; never swallows a failed command whose output it judges; says why it
+  refused; and has a self-test case that makes it refuse.
 
 Everything else that is a rule is a check in `check.sh` or `.golangci.yml`, or it is not a rule.
