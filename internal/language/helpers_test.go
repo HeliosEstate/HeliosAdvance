@@ -61,11 +61,12 @@ const (
 
 // The codes of the languages the rows write, beside en-us.
 const (
-	frFR = "fr-fr"
-	frCA = "fr-ca"
-	deDE = "de-de"
-	esES = "es-es"
-	esMX = "es-mx"
+	frFR    = "fr-fr"
+	frCA    = "fr-ca"
+	deDE    = "de-de"
+	esES    = "es-es"
+	esMX    = "es-mx"
+	esLatin = "es-419"
 )
 
 // The texts' own names inside the table session.
