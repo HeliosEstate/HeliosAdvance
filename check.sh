@@ -242,6 +242,15 @@ $split"
   fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$split"
   printf 'disable=SC2086\n' > .shellcheckrc; git add -A && dev "an rc file"
   expect "an rc file that would excuse a script" "FAIL: a shellcheck rc file" origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "# shellcheck source=/dev/null disable=SC2086
+$split"
+  expect "a finding set aside with no reason, behind another key" "FAIL: a shellcheck directive" \
+    origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$split"
+  SHELLCHECK_OPTS='-e SC2086' expect "a finding the machine's own options would excuse" \
+    "FAIL: shellcheck: a shell script" origin/development push
+  fresh; git checkout -q -b f; shell_script lib/common.bash '# sourced, no first line of its own' "$split"
+  expect "a bash library known by its name alone" "FAIL: shellcheck: a shell script" origin/development push
   fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$sound"
   sed -i -E 's/^(SHELLCHECK_[A-Z0-9_]+=).*/\1'"$(printf '0%.0s' {1..64})"'/' .github/tool-versions
   git add -A && dev "a hash nobody released"
@@ -298,6 +307,7 @@ released() {
   arch=$(uname -m) || fail "uname failed, so no shellcheck archive can be chosen"
   case "$os $arch" in
     "Linux x86_64") archive=shellcheck-$version.linux.x86_64.tar.gz pin=SHELLCHECK_LINUX_X86_64 exe=shellcheck ;;
+    "Linux aarch64") archive=shellcheck-$version.linux.aarch64.tar.gz pin=SHELLCHECK_LINUX_AARCH64 exe=shellcheck ;;
     "MINGW64_NT"*" x86_64" | "MSYS_NT"*" x86_64") archive=shellcheck-$version.zip pin=SHELLCHECK_WINDOWS_X86_64 exe=shellcheck.exe ;;
     *) fail "no shellcheck archive is pinned for $os $arch in .github/tool-versions" ;;
   esac
@@ -684,6 +694,9 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
     [ "$(sed -n 's/^ACTIONLINT=//p' .github/tool-versions | tr -d '\r')" = v1.7.12 ] ||
       fail "actionlint's pin is no longer v1.7.12: try gate 4k without its set-aside for ubuntu-26.04-arm, then keep it for the new pin or remove it"
     actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
+    # The shell checker takes extra options from the environment, which --norc does not turn off;
+    # none may change what the gates decide, here or in gate 4l.
+    unset SHELLCHECK_OPTS
     if [ "$(uname -s)" = Linux ]; then
       shell_pass=-shellcheck=$(released)
     else
@@ -706,14 +719,17 @@ elif [ "$MUTATION" = 0 ]; then
   echo "check: LINT_WORKFLOWS=0, so another job of this run lints the workflows; gate 4k skipped"
 fi
 
-# 4l. Every shell script, a tracked file whose name ends in .sh in any case or whose first line
-# starts a shell (#! naming sh, bash, dash or ksh), is read by shellcheck at its pinned release,
-# on every system the check runs on. What decides its answer is this script alone: no rc file is
-# read (--norc), and one in the repository is refused, since it would seem to count. A finding is
-# fixed, or set aside on its own line by a shellcheck directive that says why after a second hash
-# sign; a directive with no reason fails, in a script or in a workflow, whose scripts gate 4k
+# 4l. Every shell script, a tracked file whose name ends in .sh, .bash, .dash or .ksh in any case
+# or whose first line starts one of those shells (#! naming sh, bash, dash or ksh, through env
+# or env -S as well), is read by shellcheck at its pinned release, on every system the check runs
+# on. What decides its answer is this script alone: no rc file is read (--norc), and one in the
+# repository is refused, since it would seem to count; the options shellcheck takes from the
+# environment are cleared. A finding is fixed, or set aside on its own line by a shellcheck
+# directive that says why after a second hash sign; a directive that disables a check with no
+# reason fails, whatever other keys it holds, in a script or in a workflow, whose scripts gate 4k
 # reads. Run, or skipped, where gate 4k is.
 if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
+  unset SHELLCHECK_OPTS
   rcs=$(git ls-files ':(glob,icase)**/.shellcheckrc' ':(glob,icase)**/shellcheckrc') ||
     fail "git could not list the files"
   [ -z "$rcs" ] || { echo "$rcs"; fail "a shellcheck rc file would change what the shell gate decides: its rules belong in check.sh"; }
@@ -721,7 +737,8 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   # shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
   mapfile -t scripts < <(git ls-files -z | xargs -0 -r awk '
     FNR == 1 {
-      if (tolower(FILENAME) ~ /\.sh$/ || $0 ~ /^#![ \t]*[^ \t]*\/(env[ \t]+)?(ba|da|k)?sh([ \t\r]|$)/)
+      if (tolower(FILENAME) ~ /\.(sh|bash|dash|ksh)$/ ||
+          $0 ~ /^#![ \t]*[^ \t]*\/(env[ \t]+(-S[ \t]*)?)?(ba|da|k)?sh([ \t\r]|$)/)
         print FILENAME
       nextfile
     }')
@@ -729,7 +746,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   if [ "${#scripts[@]}" -gt 0 ]; then
     mapfile -d '' -t directive_files < <(git ls-files -z ':(glob,icase).github/workflows/*.yml' ':(glob,icase).github/workflows/*.yaml')
     wait $! || fail "git could not list the workflows"
-    bare=$(awk '/^[ \t]*#[ \t]*shellcheck[ \t]+disable=/ && !/disable=[^#]*#[ \t]*[^ \t]/ {
+    bare=$(awk '/^[ \t]*#[ \t]*shellcheck[ \t]/ && /[ \t]disable=/ && !/^[ \t]*#[^#]*#[ \t]*[^ \t]/ {
       print FILENAME ":" FNR ": " $0 }' "${scripts[@]}" "${directive_files[@]}") ||
       fail "awk could not read the shell scripts"
     [ -z "$bare" ] || { echo "$bare"; fail "a shellcheck directive sets a finding aside with no reason: say why after a second hash sign"; }
