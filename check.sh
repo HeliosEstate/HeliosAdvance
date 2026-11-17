@@ -23,7 +23,7 @@ need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # from the wrong QA commit, or from the wrong copy of the base, fails it. QA commits are signed
 # with a key made for the run, which the fake base's qa-signers names.
 self_test() {
-  local n=0 failed=0 plain main qa_b qa_c
+  local n=0 failed=0 plain main qa_b qa_c gate="" refused_gates="" heading missing="" hash='#'
   need ssh-keygen "OpenSSH's, which signs the self-test's QA commits"
   need go "Go, which gate 4b asks for the names of operating systems and processors, and which builds actionlint"
   # Not local: the trap that removes it runs after this function has returned.
@@ -76,6 +76,7 @@ self_test() {
   }
   # expect case want base event [flag]: runs this script over the repository as CI would, and fails
   # the self-test unless its last line starts with want and it exits as want says: 0 for green.
+  # A case that refuses as it should counts for the gate named in gate, set before it.
   expect() {
     local out status=0 got refused=0 to_refuse=0
     out=$(GITHUB_EVENT_NAME=$4 BASE=$3 SKIP_GO=1 LINT_WORKFLOWS=1 bash "$script" ${5:+"$5"} 2>&1) || status=$?
@@ -84,6 +85,7 @@ self_test() {
     [ "$2" = green ] || to_refuse=1
     if [[ $got == "$2"* ]] && [ "$refused" = "$to_refuse" ]; then
       echo "self-test: $1: $got"
+      [ "$to_refuse" = 0 ] || refused_gates+=" $gate "
     else
       echo "self-test: $1: wanted \"$2\", got (exit $status): $got" >&2; failed=1
     fi
@@ -92,6 +94,7 @@ self_test() {
   fresh; git checkout -q -b f; test_file c/c_test.go; dev c
   expect "a branch with no QA commit adds a test" green origin/development push
 
+  gate=4
   fresh; change b/b_test.go; qa b; qa_b=$(git rev-parse HEAD); sync development
   git checkout -q -b f; change a/a_test.go; dev a
   expect "a branch with no QA commit of its own edits a test the base approved" \
@@ -102,10 +105,12 @@ self_test() {
   expect "a branch's own QA commit, then a non-QA edit to the test it approved" \
     "FAIL: test files approved at ${qa_c:0:8}" origin/development push
 
+  gate=4a
   fresh; git checkout -q -b f; change a/a_test.go; dev a; test_file c/c_test.go; qa c
   expect "a non-QA edit to a test on the base, before the branch's QA commit" \
     "FAIL: a test file on origin/development was changed or deleted by a non-QA commit" origin/development push
 
+  gate=4b
   fresh; git checkout -q -b f; test_file d/d_test.go "$main"; dev d
   expect "a non-QA test file declares TestMain" "FAIL: a non-QA test file declares TestMain" origin/development push
   fresh; git checkout -q -b f; test_file d/d_test.go "$main"; qa d
@@ -122,6 +127,7 @@ self_test() {
   git checkout -q f
   expect "the loop merges the base in, then the base moves on" green origin/development push
 
+  gate=3
   fresh; git checkout -q -b f; change owned/file; as loop commit -q -m owned
   expect "the loop changes an owned file" \
     "FAIL: a loop-authored or loop-committed commit touched a developer-owned path" origin/development push
@@ -160,6 +166,7 @@ self_test() {
 
   # Only a head development holds whole is a release. One commit more makes it a change like any
   # other into main, judged against main, so development's own edit to a test counts again.
+  gate=4a
   fresh; change a/a_test.go; dev "a, squashed"; sync development
   git checkout -q -b h development; test_file c/c_test.go; dev c
   git checkout -q --detach origin/main; as dev merge -q --no-ff --no-edit h
@@ -169,6 +176,7 @@ self_test() {
   fresh; git checkout -q -b f; test_file c/c_test.go; qa c
   expect "a mutation run" green origin/development push --mutation
 
+  gate=3
   fresh; git checkout -q -b f; test_file c/c_test.go; qa c; qa_c=$(git rev-parse HEAD)
   rm -f ".git/objects/${qa_c:0:2}/${qa_c:2}"
   expect "a commit git cannot read" "FAIL: git could not" origin/development push
@@ -184,6 +192,7 @@ self_test() {
       printf '    steps:\n      - run: echo a\n'; } > ".github/workflows/${3:-a.yaml}"
     git add -A && dev workflow
   }
+  gate=4k
   fresh; git checkout -q -b f; workflow ubuntu-latest none
   expect "a workflow job with no runner" "FAIL: actionlint: a workflow" origin/development push
   fresh; git checkout -q -b f; workflow ubuntu-latest none A.YML
@@ -222,6 +231,7 @@ self_test() {
     printf '%s\n%s\n' "$2" "$3" > "$1"
     git add -A && dev "script $1"
   }
+  gate=4l
   fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$sound"
   expect "a sound shell script" green origin/development push
   fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$split"
@@ -248,6 +258,7 @@ $split"
   expect "a shellcheck archive that does not match its pinned hash" "FAIL: shellcheck's" \
     origin/development push
 
+  gate=4m
   fresh; git checkout -q -b f; workflow ubuntu-latest
   sed -i '/^permissions:/d' .github/workflows/a.yaml; git add -A && dev "a token granted everything"
   expect "a workflow whose token keeps GitHub's broad default" "FAIL: zizmor: a file above" \
@@ -267,6 +278,7 @@ $split"
   expect "Dependabot's settings with no wait for a new release" "FAIL: zizmor: a file above" \
     origin/development push
 
+  gate=4n
   fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' 'false || true'
   expect "a failure swallowed with no reason" "FAIL: a failure is swallowed" origin/development push
   fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' 'false || true # nothing reads the answer'
@@ -276,9 +288,64 @@ $split"
   expect "a workflow step's failure swallowed with no reason" "FAIL: a failure is swallowed" \
     origin/development push
   # A gate that reads through awk fails, saying so, when a file it must read is gone.
+  gate=4c
   fresh; git checkout -q -b f; printf 'package x\n' > x.go; git add -A && dev "a Go file"; rm x.go
   expect "a tracked Go file the gates cannot read" "FAIL: git or awk could not read the Go files" \
     origin/development push
+
+  # go_file file comment-or-code: a Go file holding the line given, committed.
+  go_file() {
+    mkdir -p "$(dirname "$1")" || fail "self-test: no folder for $1"
+    printf 'package x\n\n%s\n' "$2" > "$1"
+    git add -A && dev "Go file $1"
+  }
+  gate=1
+  fresh; git checkout -q -b f; seq 101 > CLAUDE.md; git add -A && dev "long rules"
+  expect "a rules file past its cap" "FAIL: CLAUDE.md is 101 lines" origin/development push
+  gate=2
+  fresh; git checkout -q -b f; mkdir -p docs/spec; echo 'Written in golang.' > docs/spec/a.md
+  git add -A && dev "a spec"
+  expect "a spec that names the implementation" "FAIL: docs/spec names the implementation" origin/development push
+  gate=4c
+  fresh; git checkout -q -b f; go_file x.go '// As said at line 12 above.'
+  expect "a comment naming a line number" "FAIL: a comment carries a line or step number" origin/development push
+  gate=4d
+  fresh; mkdir -p .github; echo a > .github/a; git add -A && dev "development's copy"; sync development
+  git checkout -q main
+  expect "main without development's .github" "FAIL: .github/ differs from development" origin/main push
+  gate=4e
+  fresh; git checkout -q -b f; go_file x.go 'var a = 1 //nolint:gosec'
+  expect "a security linter silenced" "FAIL: a security linter is silenced" origin/development push
+  gate=4f
+  fresh; git checkout -q -b f; go_file x/contracts.go '// Rules.'
+  expect "a second contract file" "FAIL: a second contract file beside contract.go" origin/development push
+  fresh; git checkout -q -b f; go_file x/x.go '// The unit shall answer.'
+  expect "a unit line outside contract.go" "FAIL: a unit line outside contract.go" origin/development push
+  gate=4g
+  fresh; git checkout -q -b f; go_file x.go "// $(printf 'a%.0s' {1..100})"
+  expect "a comment line past 100 columns" "FAIL: a comment line runs past 100 columns" origin/development push
+  gate=4h
+  fresh; git checkout -q -b f
+  printf '            - github.com/heliosestate/heliosadvance/internal/x\n' >> .golangci.yml
+  git add -A && dev "an import rule without its end"
+  expect "an import rule that names a path without a closing dollar sign" "FAIL: an import rule names" \
+    origin/development push
+  gate=4i
+  fresh; git checkout -q -b f; go_file x.go 'import _ "github.com/heliosestate/heliosadvance/internal/testrun"'
+  expect "the test support imported outside a test" "FAIL: a file that is not a test imports the test support" \
+    origin/development push
+  gate=4j
+  fresh; git checkout -q -b f; go_file x.go "// As the issue ${hash}12 says."
+  expect "a comment naming an issue by number" "FAIL: a comment names an issue or pull request by number" \
+    origin/development push
+
+  # Every gate above the Go gates has a case that makes it refuse. The Go gates (5) are the
+  # tools' own: the linter, the vulnerability and licence checks and the tests, which a fake
+  # repository cannot hold.
+  while read -r heading; do
+    [ "$heading" = 5 ] || [[ $refused_gates == *" $heading "* ]] || missing="$missing $heading"
+  done < <(sed -n -E 's/^# ([0-9]+[a-z]?)\. .*/\1/p' "$script")
+  [ -z "$missing" ] || { echo "self-test: no case makes these gates refuse:$missing" >&2; failed=1; }
 
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
