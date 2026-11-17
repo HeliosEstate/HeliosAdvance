@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  # One Linux runner reads the change set and runs the cheap gates, which need no Go. A
+  # One Linux runner reads the change set and runs the cheap gates, which run no Go tests. A
   # docs-only change set stops here: only Markdown, files under docs/, the three list files
   # (developer-owned-paths, security-paths, loop-identities, which the cheap gates read), and
   # files under .github/ other than this one and .github/tool-versions. Anything else, a file
@@ -209,6 +209,8 @@ jobs:
           COVER: ${{ runner.os == 'Linux' && matrix.mode == 'norace' && '-coverprofile=coverage.out' || '' }}
           TESTSKIP: ${{ runner.os == 'Windows' && '^(TestOracle|TestLinux)' || '' }}
           GATES: ${{ matrix.gates && '1' || '0' }}
+          # The changes job above lints the workflows, once a run.
+          LINT_WORKFLOWS: "0"
           ONLY: ${{ matrix.pkgs }}
           EXCEPT: ${{ matrix.except }}
           PGDIR: ${{ steps.postgres.outputs.bin }}

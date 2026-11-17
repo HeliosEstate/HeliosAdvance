@@ -4,7 +4,8 @@
 # Usage: bash check.sh [--mutation | --self-test]
 #   env: BASE (default origin/development), RACE, COVER, SKIP_GO=1 (CI, a change set with no Go
 #   in it), TESTSKIP (CI, a -skip pattern for go test), PKGS (CI, the packages one job tests;
-#   default all), GATES=0 (CI, a job whose Go gates another job of the same run checks), TIMED
+#   default all), GATES=0 (CI, a job whose Go gates another job of the same run checks),
+#   LINT_WORKFLOWS=0 (CI, a job whose workflows another job of the same run lints), TIMED
 #   (CI, a file for the timed rows' place-in-window lines), MUTATE (CI, with --mutation: whole
 #   packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
@@ -16,9 +17,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # --self-test: the gates that lock the developer's files and the approved tests (3, 4, 4a and 4b),
 # and the workflows' gate (4k), judged over small histories built in a temporary folder, each the
-# shape a real one takes. This whole script runs over each, as CI's cheap gates run it. A green case is built so that judging
-# from the wrong QA commit, or from the wrong copy of the base, fails it. QA commits are signed
-# with a key made for the run, which the fake base's qa-signers names.
+# shape a real one takes. This whole script runs over each, as CI's cheap gates run it. A green
+# case is built so that judging from the wrong QA commit, or from the wrong copy of the base,
+# fails it. QA commits are signed with a key made for the run, which the fake base's qa-signers
+# names.
 self_test() {
   local n=0 failed=0 plain main qa_b qa_c
   need ssh-keygen "OpenSSH's, which signs the self-test's QA commits"
@@ -556,17 +558,20 @@ numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Do
   }')
 [ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
 
-# 4k. Every workflow GitHub would run, a .yml or .yaml file straight in .github/workflows in any
-# case, is read as GitHub reads it before it runs, by actionlint at its pin: a workflow GitHub
-# would refuse, or one whose expressions or job references name something that does not exist,
-# fails here and not on a runner. A cheap gate, since a change set of workflows alone runs no Go
-# gates; not run again by the jobs that only test, nor by a mutation run, which is a report.
+# 4k. Every workflow GitHub would run, a .yml or .yaml file straight in .github/workflows, is read
+# as GitHub reads it before it runs, by actionlint at its pin: a workflow GitHub would refuse, or
+# one whose expressions or job references name something that does not exist, fails here and not
+# on a runner. The folder and the extension match in any case, wider than GitHub's documentation
+# spells them, since it does not say whether case counts: a file GitHub might run is never left
+# unread, at the cost of reading one it would not. A cheap gate, since a change set of workflows
+# alone runs no Go gates; in CI the cheap job alone runs it, so it is built once a run, and a
+# mutation run, which is a report, skips it.
 # What decides its answer is this script alone: its shellcheck and pyflakes passes are turned
 # off by name, since it turns each on when it finds the tool on the machine, and the config file
 # it would read by itself from .github is refused. One message is set aside, anchored, for this
 # pin only: v1.7.12 does not know ubuntu-26.04-arm, a runner GitHub provides and the engine's
 # checks run on. A new pin fails until the set-aside is tried without and kept or removed.
-if [ "${GATES:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
+if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   for config in .github/actionlint.yaml .github/actionlint.yml; do
     [ ! -e "$config" ] || fail "actionlint's config file $config would change what the workflows' gate decides: its rules belong in check.sh"
   done
@@ -575,9 +580,9 @@ if [ "${GATES:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
     { rm -f "$listed"; fail "git could not list the workflows"; }
   mapfile -d '' -t workflow_files < "$listed"; rm -f "$listed"
   if [ "${#workflow_files[@]}" -gt 0 ]; then
-    actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
     [ "$(sed -n 's/^ACTIONLINT=//p' .github/tool-versions | tr -d '\r')" = v1.7.12 ] ||
       fail "actionlint's pin is no longer v1.7.12: try gate 4k without its set-aside for ubuntu-26.04-arm, then keep it for the new pin or remove it"
+    actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
     # actionlint answers 1 for a workflow it finds wrong, and more when it could not judge.
     linted=0
     "$actionlint" -no-color -shellcheck= -pyflakes= -ignore '^label "ubuntu-26\.04-arm" is unknown\.' \
