@@ -6,6 +6,8 @@
 // the host's network, granted the secret with the engine's own user ID and mode 0400 as the page's
 // stack file would. The bootstrap folder is bound into the container read-only at its own path and
 // holds no key file, so an engine that took the key from anywhere but the secret would not start.
+// An image from scratch has no temporary folder, which the engine writes to as it prepares its
+// database settings, so the service is given one in memory.
 // A swarm found active is taken only when it runs nothing but test runs' services; otherwise the
 // row cannot run there.
 package main_test
@@ -159,6 +161,7 @@ func TestOracleSwarm(t *testing.T) { //nolint:paralleltest // a swarm is one for
 			docker(t, "service", "create", "--detach", "--name", name, "--no-resolve-image", "--network", "host",
 				"--restart-condition", "none", "--user", uid+":"+gid,
 				"--mount", "type=bind,"+csvField("source="+made.path)+","+csvField("target="+made.path)+",readonly",
+				"--mount", "type=tmpfs,target=/tmp",
 				"--secret", "source="+name+",target="+heldKeyName+",uid="+uid+",gid="+gid+",mode=0400",
 				image, databaseOption, made.path)
 			t.Cleanup(func() { removeService(t, name) })
