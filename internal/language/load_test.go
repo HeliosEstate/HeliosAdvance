@@ -158,6 +158,13 @@ func TestLoad(t *testing.T) {
 			folder := makeLang(t, map[string]string{fallbackCode: padded(t, enUSFile(), mostFileBytes+1)})
 			expectRefused(t, folder, fallbackCode, fileName(fallbackCode))
 		})
+		// The bound is on the file as saved, its mark included.
+		t.Run("1 MiB and one byte with its byte-order mark: ErrFileRefused naming it", func(t *testing.T) {
+			t.Parallel()
+			file := byteOrderMark + padded(t, frFile(nil), mostFileBytes+1-len(byteOrderMark))
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			expectRefused(t, folder, frFR, fileName(frFR))
+		})
 		t.Run("exactly 1 MiB with its byte-order mark, the edge inside: loads, its texts shown", func(t *testing.T) {
 			t.Parallel()
 			file := byteOrderMark + padded(t, frFile(nil), mostFileBytes-len(byteOrderMark))
