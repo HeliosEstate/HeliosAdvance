@@ -362,6 +362,17 @@ func unquoted(value string) string {
 	return value
 }
 
+// reasonAfter is what a start_failed line says after the file it names, so that two rows' lines
+// are compared without the folders each row made, which differ.
+func reasonAfter(t *testing.T, reason, named string) string {
+	t.Helper()
+	index := strings.LastIndex(reason, named)
+	if index < 0 {
+		t.Fatalf("the start_failed line %q does not name %q", reason, named)
+	}
+	return reason[index+len(named):]
+}
+
 // expectRefusalNaming waits for a program that must refuse to start and checks its one
 // start_failed line names what is given, such as a file's name or a code.
 func expectRefusalNaming(t *testing.T, program *run, named string) {
@@ -824,6 +835,22 @@ func TestLanguageLines(t *testing.T) {
 				t.Fatalf("making lang/en-us: %v", err)
 			}
 			expectRefusalNaming(t, startPlaced(t, programFile), fallbackCode+".toml")
+		})
+		// An entry of the file's name counts whatever kind it is, so a folder there is a file that
+		// cannot be read: the reason says so, and is not the one for a file that is not there.
+		t.Run("en-us's file a folder: start_failed naming en-us.toml, its reason not the one for en-us holding no file", func(t *testing.T) {
+			t.Parallel()
+			fileFolder, fileFolderProgram := placeProgram(t)
+			if err := os.MkdirAll(filepath.Join(fileFolder, langFolder, fallbackCode, fallbackCode+".toml"), 0o700); err != nil {
+				t.Fatalf("making lang/en-us/en-us.toml a folder: %v", err)
+			}
+			noFile, noFileProgram := placeProgram(t)
+			if err := os.MkdirAll(filepath.Join(noFile, langFolder, fallbackCode), 0o700); err != nil {
+				t.Fatalf("making lang/en-us: %v", err)
+			}
+			reason := reasonAfter(t, unquoted(startPlaced(t, fileFolderProgram).expectRefusal(t)), fallbackCode+".toml")
+			other := reasonAfter(t, unquoted(startPlaced(t, noFileProgram).expectRefusal(t)), fallbackCode+".toml")
+			expectOwnReason(t, reason, other, "en-us holding no file")
 		})
 		for _, short := range []string{shortGreeting, shortNamePrompt, shortNameReply} {
 			t.Run("en-us lacking "+keyOf(short)+": start_failed naming en-us.toml", func(t *testing.T) {
