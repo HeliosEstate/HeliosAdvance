@@ -318,7 +318,7 @@ func TestProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall write no line to the local log other than `started`, `start_failed`, `waiting` and `lease_lost`.", func(t *testing.T) {
+	t.Run("The engine shall write no line to the local log other than `started`, `start_failed`, `waiting`, `lease_lost` and `text_missing`.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a whole call, a silent caller and a stop leave the started line alone", func(t *testing.T) {
 			t.Parallel()

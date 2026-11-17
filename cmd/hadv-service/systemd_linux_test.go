@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,9 +57,9 @@ type systemdUnit struct {
 	bootstrap string
 }
 
-// newUnit names a unit of the row's own and makes its folders: the program's, root's, and the
-// bootstrap folder sealing settings, hadv's alone. The row's end stops and removes the unit and
-// its folders.
+// newUnit names a unit of the row's own and makes its folders: the program's and its lang
+// folder, root's, and the bootstrap folder sealing settings, hadv's alone. The row's end stops and
+// removes the unit and its folders.
 func newUnit(t *testing.T, settings connectionFile) *systemdUnit {
 	t.Helper()
 	if buildFailure != nil {
@@ -70,6 +71,26 @@ func newUnit(t *testing.T, settings connectionFile) *systemdUnit {
 	t.Cleanup(func() { removeUnit(t, unit.name) })
 	sudo(t, "install", "-d", "-m", "0755", "-o", "root", "-g", "root", unit.library)
 	sudo(t, "install", "-m", "0755", "-o", "root", "-g", "root", programPath, unit.program())
+	// The shipped lang folder beside the program, root's and readable by everyone, as the program.
+	err := filepath.WalkDir(shippedLang, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(shippedLang, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(unit.library, langFolder, relative)
+		if entry.IsDir() {
+			sudo(t, "install", "-d", "-m", "0755", "-o", "root", "-g", "root", target)
+		} else {
+			sudo(t, "install", "-m", "0644", "-o", "root", "-g", "root", path, target)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("installing the shipped lang folder beside the program: %v", err)
+	}
 	made := settings.seal(t)
 	sudo(t, "install", "-d", "-m", "0700", "-o", daemonUser, "-g", daemonUser, unit.bootstrap)
 	unit.installFile(t, made.file, bootstrapFileName)
