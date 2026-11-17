@@ -32,7 +32,10 @@ func run(ctx context.Context, connection Connection, texts *language.Texts) (End
 	deadline := time.Now().Add(NameSeconds * time.Second)
 	name, err := connection.RecvString(ctx, deadline, NameMostCharacters)
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
+		// A stopped engine, or a call past its ceiling, has ended the call even when the name's
+		// wait ran out at the same moment.
+		if errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) &&
+			!errors.Is(err, context.Canceled) {
 			return NoName, nil
 		}
 		return 0, ending(err)

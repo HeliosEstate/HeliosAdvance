@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"syscall"
-	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -69,10 +68,12 @@ type language struct {
 	// contents is the file's bytes, held only until every file has been read and sized.
 	contents string
 	tooLarge bool
-	name     any
-	parent   any
-	// tables holds each table the engine reads, by its name.
-	tables map[string]map[string]any
+	// name and parent are the file's own value when it is a string, nil when absent, and a
+	// placeholder when it is anything else, which is all the checks need to tell.
+	name   any
+	parent any
+	// texts holds each key's text by the key, for the keys the file holds as a string.
+	texts map[string]string
 	// parentOf is the language parent names, once resolved.
 	parentOf *language
 }
@@ -278,14 +279,13 @@ func readOpened(opened *os.File, buffer []byte) (int, error) {
 	return count, err
 }
 
-// byteOrderMark is the UTF-8 mark an editor may put at a file's start. The engine takes exactly one
-// off itself, so that a second one is still refused whatever the library does with a mark.
+// byteOrderMark is the UTF-8 mark an editor may put at a file's start. The library refuses it, so
+// the engine takes exactly one off itself, and a second one is still refused as not TOML.
 const byteOrderMark = "\xEF\xBB\xBF"
 
 // decodeFiles checks the size of every file, then decodes each and drops its bytes, keeping only
-// the name, the parent and the tables the engine reads. UTF-8 is checked here and not by the
-// library, which skips a UTF-16 byte-order mark and reads on, and the bound is the engine's own
-// read.
+// what the engine goes on to use, each as a string, so that Load holds one file's decoding at a
+// time whatever the number of languages. The bound is the engine's own read, not the library's.
 func decodeFiles(languages []*language) error {
 	for _, each := range languages {
 		if each.tooLarge {
@@ -294,13 +294,7 @@ func decodeFiles(languages []*language) error {
 	}
 	for _, each := range languages {
 		var decoded map[string]any
-		var err error
-		contents := strings.TrimPrefix(each.contents, byteOrderMark)
-		if !utf8.ValidString(contents) {
-			err = errors.New("not UTF-8")
-		} else {
-			err = toml.Unmarshal([]byte(contents), &decoded)
-		}
+		err := toml.Unmarshal([]byte(strings.TrimPrefix(each.contents, byteOrderMark)), &decoded)
 		each.contents = ""
 		if err != nil {
 			why := "not UTF-8 and TOML 1.1"
@@ -311,13 +305,13 @@ func decodeFiles(languages []*language) error {
 			}
 			return refusal(each.path, why, nil)
 		}
-		each.name = decoded["name"]
-		each.parent = decoded["parent"]
-		each.tables = make(map[string]map[string]any, len(keySpecs))
+		each.name = keepString(decoded["name"])
+		each.parent = keepString(decoded["parent"])
+		each.texts = make(map[string]string, len(keySpecs))
 		for _, spec := range keySpecs {
-			table, _ := spec.place()
-			if values, isTable := decoded[table].(map[string]any); isTable {
-				each.tables[table] = values
+			table, name := spec.place()
+			if text, isString := decoded[table].(map[string]any)[name].(string); isString {
+				each.texts[spec.key] = text
 			}
 		}
 	}
@@ -328,6 +322,15 @@ func decodeFiles(languages []*language) error {
 		}
 	}
 	return nil
+}
+
+// keepString drops a value that is not a string, which may be a large decoded table, keeping only
+// that there was one.
+func keepString(value any) any {
+	if _, isString := value.(string); isString || value == nil {
+		return value
+	}
+	return struct{}{}
 }
 
 // checkParents resolves every parent first, so a walk meets only resolved ones, then judges each
@@ -400,8 +403,7 @@ func findTexts(board, fallback *language, most int) (*Texts, error) {
 }
 
 func (each *language) textFor(spec keySpec) ([]part, bool) {
-	table, name := spec.place()
-	text, isString := each.tables[table][name].(string)
+	text, isString := each.texts[spec.key]
 	if !isString {
 		return nil, false
 	}
