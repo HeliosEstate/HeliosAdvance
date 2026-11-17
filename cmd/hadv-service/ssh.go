@@ -5,8 +5,8 @@ package main
 
 import (
 	"context"
-	"net"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 	"github.com/heliosestate/heliosadvance/internal/ssh"
 )
@@ -16,10 +16,7 @@ var sshTargets = []target{{ipv4Network, ipv4Address}, {ipv6Network, ipv6Address}
 
 // newSSHListener serves with the host key read at start.
 func newSSHListener(ctx context.Context, port string, key *ssh.HostKey,
-	count *listener.ConnectionCount,
+	count *listener.ConnectionCount, texts *language.Texts,
 ) (*listener.Listener, []string, error) {
-	accept := func(ctx context.Context, connection *net.TCPConn) (*ssh.Channel, error) {
-		return ssh.Accept(ctx, connection, key)
-	}
-	return newKindListener(ctx, sshTargets, port, accept, count)
+	return newCredentialListener(ctx, sshTargets, port, key, ssh.Accept, count, texts)
 }
