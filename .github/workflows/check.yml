@@ -21,8 +21,8 @@ permissions:
   contents: read
 
 jobs:
-  # One Linux runner reads the change set and runs the cheap gates, which need no Go. A
-  # docs-only change set stops here: only Markdown, files under docs/, the three list files
+  # One Linux runner reads the change set and runs the cheap gates, which build none of the
+  # engine; Go is there only to install actionlint. A docs-only change set stops here: only Markdown, files under docs/, the three list files
   # (developer-owned-paths, security-paths, loop-identities, which the cheap gates read), and
   # files under .github/ other than this one and .github/tool-versions. Anything else, a file
   # nobody listed included, starts the full matrix below. A change to this file or to the tool
@@ -51,6 +51,11 @@ jobs:
           rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
           full=$(printf '%s\n' "$files" | grep -xE '\.github/workflows/check\.yml|\.github/tool-versions' || true)
           if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
+      # Go installs the one cheap gate that is a tool, actionlint, at its pin, as check.sh installs
+      # every gate tool.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
       - name: Cheap gates
         env:
           SKIP_GO: "1"
