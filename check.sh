@@ -17,11 +17,11 @@ MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # --self-test: the gates that lock the developer's files and the approved tests (3, 4, 4a and 4b),
-# the workflows' gate (4k) and the shell gate (4l), judged over small histories built in a
-# temporary folder, each the shape a real one takes. This whole script runs over each, as CI's
-# cheap gates run it. A green case is built so that judging from the wrong QA commit, or from the
-# wrong copy of the base, fails it. QA commits are signed with a key made for the run, which the
-# fake base's qa-signers names.
+# the workflows' gate (4k), the shell gate (4l) and zizmor's (4m), judged over small histories
+# built in a temporary folder, each the shape a real one takes. This whole script runs over each,
+# as CI's cheap gates run it. A green case is built so that judging from the wrong QA commit, or
+# from the wrong copy of the base, fails it. QA commits are signed with a key made for the run,
+# which the fake base's qa-signers names.
 self_test() {
   local n=0 failed=0 plain main qa_b qa_c
   need ssh-keygen "OpenSSH's, which signs the self-test's QA commits"
@@ -173,13 +173,13 @@ self_test() {
   rm -f ".git/objects/${qa_c:0:2}/${qa_c:2}"
   expect "a commit git cannot read" "FAIL: git could not" origin/development push
 
-  # workflow runner [none] [file]: a workflow of one job on runner, written to file (a.yaml
-  # unless given), its runs-on line left out when the second argument is "none", committed with
-  # the real pin of actionlint beside it.
+  # workflow runner [none] [file]: a workflow of one job on runner, its token granted nothing,
+  # written to file (a.yaml unless given), its runs-on line left out when the second argument is
+  # "none", committed with the real pins beside it.
   workflow() {
     mkdir -p .github/workflows || fail "self-test: no workflows folder"
     cp "${script%/*}/.github/tool-versions" .github/tool-versions || fail "self-test: no tool pins"
-    { printf 'on: push\njobs:\n  a:\n'
+    { printf 'on: push\npermissions: {}\njobs:\n  a:\n'
       [ "${2:-}" = none ] || printf '    runs-on: %s\n' "$1"
       printf '    steps:\n      - run: echo a\n'; } > ".github/workflows/${3:-a.yaml}"
     git add -A && dev workflow
@@ -248,6 +248,25 @@ $split"
   expect "a shellcheck archive that does not match its pinned hash" "FAIL: shellcheck's" \
     origin/development push
 
+  fresh; git checkout -q -b f; workflow ubuntu-latest
+  sed -i '/^permissions:/d' .github/workflows/a.yaml; git add -A && dev "a token granted everything"
+  expect "a workflow whose token keeps GitHub's broad default" "FAIL: zizmor: a file above" \
+    origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-latest
+  sed -i -e '/^permissions:/d' -e 's/^  a:$/  a: # zizmor: ignore[excessive-permissions]/' .github/workflows/a.yaml
+  git add -A && dev "a finding silenced"
+  expect "a zizmor finding silenced by its own comment" "FAIL: zizmor: a file above" origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-latest
+  printf 'rules:\n  excessive-permissions:\n    disable: true\n' > zizmor.yml; git add -A && dev "a config"
+  expect "a zizmor config file" "FAIL: zizmor's config file" origin/development push
+  fresh; git checkout -q -b f; mkdir -p .github
+  cp "${script%/*}/.github/tool-versions" .github/tool-versions || fail "self-test: no tool pins"
+  printf 'version: 2\nupdates:\n  - package-ecosystem: gomod\n    directory: /\n    schedule:\n      interval: weekly\n' \
+    > .github/dependabot.yml
+  git add -A && dev "Dependabot with no cooldown"
+  expect "Dependabot's settings with no wait for a new release" "FAIL: zizmor: a file above" \
+    origin/development push
+
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
 }
@@ -283,50 +302,62 @@ pinned() {
   echo "check: $1 $version, built by $goversion" >&2
   echo "$dir/$1"
 }
-# released: prints the path of shellcheck at the release .github/tool-versions pins as SHELLCHECK,
-# downloaded from its GitHub releases when missing. It is the one gate tool that is no Go module,
-# so no checksum database stands behind it: what is trusted is the SHA-256 pinned beside it for
-# this system's archive (the developer, 2026-11-17), checked before the archive is unpacked. Its
-# folder is named for the version and the hash, so a moved pin or hash downloads again, and it is
-# renamed into place, as pinned's is. A system with no archive pinned fails, naming itself. It runs
-# inside $(...), where set -e does not hold, so every step fails by itself.
+# released tool: prints the path of shellcheck or zizmor at the release .github/tool-versions pins
+# under the tool's name in capitals, downloaded from its GitHub releases when missing. Neither is a
+# Go module, so no checksum database stands behind them: what is trusted is the SHA-256 pinned
+# beside the release for this system's archive (the developer, 2026-11-17), checked before the
+# archive is unpacked. The folder is named for the version and the hash, so a moved pin or hash
+# downloads again, and it is renamed into place, as pinned's is. A system with no archive pinned
+# fails, naming itself. It runs inside $(...), where set -e does not hold, so every step fails by
+# itself.
 released() {
-  local version os arch archive pin hash exe goenv gopath hostos sep dir tmp got
-  version=$(sed -n 's/^SHELLCHECK=//p' .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
-  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "SHELLCHECK in .github/tool-versions is not a release like v1.2.3, so shellcheck cannot be run at its pin"
-  os=$(uname -s) || fail "uname failed, so no shellcheck archive can be chosen"
-  arch=$(uname -m) || fail "uname failed, so no shellcheck archive can be chosen"
+  local tool=$1 name version os arch system repository archive member exe pin hash goenv gopath hostos sep dir tmp got
+  name=${tool^^}
+  version=$(sed -n "s/^$name=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$name in .github/tool-versions is not a release like v1.2.3, so $tool cannot be run at its pin"
+  os=$(uname -s) || fail "uname failed, so no $tool archive can be chosen"
+  arch=$(uname -m) || fail "uname failed, so no $tool archive can be chosen"
   case "$os $arch" in
-    "Linux x86_64") archive=shellcheck-$version.linux.x86_64.tar.gz pin=SHELLCHECK_LINUX_X86_64 exe=shellcheck ;;
-    "MINGW64_NT"*" x86_64" | "MSYS_NT"*" x86_64") archive=shellcheck-$version.zip pin=SHELLCHECK_WINDOWS_X86_64 exe=shellcheck.exe ;;
-    *) fail "no shellcheck archive is pinned for $os $arch in .github/tool-versions" ;;
+    "Linux x86_64") system=LINUX_X86_64 ;;
+    "MINGW64_NT"*" x86_64" | "MSYS_NT"*" x86_64") system=WINDOWS_X86_64 ;;
+    *) fail "no $tool archive is pinned for $os $arch in .github/tool-versions" ;;
   esac
+  # Each release's own names: its repository, and for each system the archive and the program in it.
+  case "$tool $system" in
+    "shellcheck LINUX_X86_64") repository=koalaman/shellcheck archive=shellcheck-$version.linux.x86_64.tar.gz member=shellcheck-$version/shellcheck ;;
+    "shellcheck WINDOWS_X86_64") repository=koalaman/shellcheck archive=shellcheck-$version.zip member=shellcheck.exe ;;
+    "zizmor LINUX_X86_64") repository=zizmorcore/zizmor archive=zizmor-x86_64-unknown-linux-gnu.tar.gz member=zizmor ;;
+    "zizmor WINDOWS_X86_64") repository=zizmorcore/zizmor archive=zizmor-x86_64-pc-windows-msvc.zip member=zizmor.exe ;;
+    *) fail "check.sh names no release of $tool" ;;
+  esac
+  exe=${member##*/}
+  pin=${name}_$system
   hash=$(sed -n "s/^$pin=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
-  [[ $hash =~ ^[0-9a-f]{64}$ ]] || fail "$pin in .github/tool-versions is not a SHA-256, so shellcheck's archive cannot be checked"
-  goenv=$(go env GOPATH GOHOSTOS | tr -d '\r') || fail "go env failed, so shellcheck has no folder"
+  [[ $hash =~ ^[0-9a-f]{64}$ ]] || fail "$pin in .github/tool-versions is not a SHA-256, so $tool's archive cannot be checked"
+  goenv=$(go env GOPATH GOHOSTOS | tr -d '\r') || fail "go env failed, so $tool has no folder"
   { read -r gopath; read -r hostos; } <<< "$goenv"
   sep=:; [ "$hostos" = windows ] && sep=';'
   gopath=${gopath%%"$sep"*}
-  [ -n "$gopath" ] || fail "go env gave no GOPATH, so shellcheck has no folder"
-  dir="$gopath/hadv-tools/shellcheck/$version-${hash:0:16}"
+  [ -n "$gopath" ] || fail "go env gave no GOPATH, so $tool has no folder"
+  dir="$gopath/hadv-tools/$tool/$version-${hash:0:16}"
   if [ ! -x "$dir/$exe" ]; then
-    need curl "curl, to fetch shellcheck's release"
+    need curl "curl, to fetch $tool's release"
     need sha256sum "sha256sum, from the system's core utilities"
     mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
-    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install shellcheck into"
-    curl -fsSL --retry 3 -o "$tmp/$archive" "https://github.com/koalaman/shellcheck/releases/download/$version/$archive" ||
-      { rm -rf "$tmp"; fail "fetching shellcheck's $archive failed"; }
-    got=$(sha256sum < "$tmp/$archive" | cut -d' ' -f1) || { rm -rf "$tmp"; fail "sha256sum could not read shellcheck's $archive"; }
-    [ "$got" = "$hash" ] || { rm -rf "$tmp"; fail "shellcheck's $archive has SHA-256 $got, not the $hash .github/tool-versions pins as $pin"; }
+    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install $tool into"
+    curl -fsSL --retry 3 -o "$tmp/$archive" "https://github.com/$repository/releases/download/$version/$archive" ||
+      { rm -rf "$tmp"; fail "fetching $tool's $archive failed"; }
+    got=$(sha256sum < "$tmp/$archive" | cut -d' ' -f1) || { rm -rf "$tmp"; fail "sha256sum could not read $tool's $archive"; }
+    [ "$got" = "$hash" ] || { rm -rf "$tmp"; fail "$tool's $archive has SHA-256 $got, not the $hash .github/tool-versions pins as $pin"; }
     case $archive in
-      *.zip) need unzip "unzip, to unpack shellcheck's release"; unzip -q -o "$tmp/$archive" "$exe" -d "$tmp" ;;
-      *) tar -xzf "$tmp/$archive" -C "$tmp" --strip-components=1 "shellcheck-$version/$exe" ;;
-    esac || { rm -rf "$tmp"; fail "could not unpack $exe from shellcheck's $archive"; }
+      *.zip) need unzip "unzip, to unpack $tool's release"; unzip -q -o "$tmp/$archive" "$member" -d "$tmp" ;;
+      *) tar -xzf "$tmp/$archive" -C "$tmp" --strip-components="$(tr -cd / <<< "$member" | wc -c)" "$member" ;;
+    esac || { rm -rf "$tmp"; fail "could not unpack $exe from $tool's $archive"; }
     rm -f "$tmp/$archive"
     mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
   fi
-  [ -x "$dir/$exe" ] || fail "shellcheck $version is not in $dir: remove that folder and run the check again"
-  echo "check: shellcheck $version, its archive matching the SHA-256 pinned as $pin" >&2
+  [ -x "$dir/$exe" ] || fail "$tool $version is not in $dir: remove that folder and run the check again"
+  echo "check: $tool $version, its archive matching the SHA-256 pinned as $pin" >&2
   echo "$dir/$exe"
 }
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
@@ -685,7 +716,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
       fail "actionlint's pin is no longer v1.7.12: try gate 4k without its set-aside for ubuntu-26.04-arm, then keep it for the new pin or remove it"
     actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
     if [ "$(uname -s)" = Linux ]; then
-      shell_pass=-shellcheck=$(released)
+      shell_pass=-shellcheck=$(released shellcheck)
     else
       shell_pass=-shellcheck=
       echo "check: on $(uname -s) actionlint's shellcheck pass waits forever on a script over 4 KiB, so the workflows' scripts are read on Linux, in CI's cheap job"
@@ -733,7 +764,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
       print FILENAME ":" FNR ": " $0 }' "${scripts[@]}" "${directive_files[@]}") ||
       fail "awk could not read the shell scripts"
     [ -z "$bare" ] || { echo "$bare"; fail "a shellcheck directive sets a finding aside with no reason: say why after a second hash sign"; }
-    shellcheck=$(released)
+    shellcheck=$(released shellcheck)
     # The tool answers 1 for a script it finds wrong, and more when it could not judge.
     checked=0
     "$shellcheck" --norc -f gcc -- "${scripts[@]}" < /dev/null || checked=$?
@@ -747,6 +778,41 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   fi
 elif [ "$MUTATION" = 0 ]; then
   echo "check: LINT_WORKFLOWS=0, so another job of this run reads the shell scripts; gate 4l skipped"
+fi
+
+# 4m. Every file zizmor audits for how GitHub runs code, as git tracks it, is read by zizmor at
+# its pinned release: the workflows, Dependabot's settings and any action's own action.yml, each
+# in any case. A finding, such as a pull request's text put straight into a shell line or a
+# checkout that keeps its token, fails. It is a security linter, so a finding is fixed or brought
+# to the developer, never silenced: its ignore comments are not read (--no-ignores), and neither
+# is a config file (--no-config), one in the repository being refused, since it would seem to
+# count. It runs offline, judging only what is in the repository; the actions-watch workflow
+# reads the advisories. Run, or skipped, where gate 4k is.
+if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
+  configs=$(git ls-files ':(glob,icase)zizmor.yml' ':(glob,icase)zizmor.yaml' \
+    ':(glob,icase).github/zizmor.yml' ':(glob,icase).github/zizmor.yaml') || fail "git could not list the files"
+  [ -z "$configs" ] || { echo "$configs"; fail "zizmor's config file would change what its gate decides: its rules belong in check.sh"; }
+  mapfile -d '' -t audited < <(git ls-files -z ':(glob,icase).github/workflows/*.yml' \
+    ':(glob,icase).github/workflows/*.yaml' ':(glob,icase).github/dependabot.yml' \
+    ':(glob,icase).github/dependabot.yaml' ':(glob,icase)**/action.yml' ':(glob,icase)**/action.yaml')
+  wait $! || fail "git could not list the files zizmor audits"
+  if [ "${#audited[@]}" -gt 0 ]; then
+    zizmor=$(released zizmor)
+    # zizmor answers from 10 up for a finding, by its worst severity, and otherwise when it could
+    # not judge.
+    audit=0
+    "$zizmor" --offline --no-config --no-ignores --no-progress --color=never --format plain \
+      -- "${audited[@]}" < /dev/null || audit=$?
+    case $audit in
+      0) ;;
+      1[0-4]) fail "zizmor: a file above lets code run as it should not, or keeps a token it should not: fix it, or bring it to the developer" ;;
+      *) fail "zizmor could not judge the files (it answered $audit): see its message above" ;;
+    esac
+  else
+    echo "check: no workflows, Dependabot settings or actions tracked; gate 4m has nothing to read"
+  fi
+elif [ "$MUTATION" = 0 ]; then
+  echo "check: LINT_WORKFLOWS=0, so another job of this run audits the workflows; gate 4m skipped"
 fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.

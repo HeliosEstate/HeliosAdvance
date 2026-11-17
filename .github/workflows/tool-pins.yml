@@ -3,8 +3,9 @@
 # workflows read, and it moves by his hand in a pull request (developer, 2026-10-14). Dependabot
 # cannot see these pins, since they are version strings inside shell steps, not a package
 # manifest; it keeps the Actions versions and the Go module current instead. Versions come from
-# the Go module proxy, the same source `go install` reads, and for shellcheck, which is no Go
-# module, from its GitHub releases, the same source check.sh downloads; pre-releases do not count.
+# the Go module proxy, the same source `go install` reads, and for shellcheck and zizmor, which
+# are no Go modules, from their GitHub releases, the same source check.sh downloads; pre-releases
+# do not count.
 # One issue per tool at a time: an open issue carrying the tool's marker is not opened twice.
 name: tool-pins
 
@@ -21,7 +22,10 @@ jobs:
   compare:
     runs-on: ubuntu-latest
     steps:
+      # gh carries the token itself; the clone does not keep it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -64,3 +68,4 @@ jobs:
           check go-licenses "$GO_LICENSES" github.com/google/go-licenses/v2
           check actionlint "$ACTIONLINT" github.com/rhysd/actionlint
           check shellcheck "$SHELLCHECK" github:koalaman/shellcheck
+          check zizmor "$ZIZMOR" github:zizmorcore/zizmor

@@ -32,18 +32,23 @@ jobs:
     outputs:
       skip: ${{ steps.changes.outputs.skip }}
     steps:
+      # No step here pushes or fetches with the token, so the clone does not keep it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Change set
         id: changes
         # On a push the change set is everything the push brought, from the commit before it, not
         # only the last commit; a new branch or an unreachable one runs everything (the codebase
-        # review, 2026-10-24).
+        # review, 2026-10-24). The base branch's name reaches the shell as data in the environment,
+        # never inside the script.
         env:
           BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"
+          if [ "$EVENT" = pull_request ]; then base="origin/$BASE_REF"
           elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base="$BEFORE"
           else echo "skip=0" >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
@@ -119,6 +124,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -336,10 +342,14 @@ jobs:
         run: |
           echo "::error::a pull request into main comes from this repository's development alone, not $HEAD_REF"
           exit 1
-      - run: |
-          test "${{ needs.changes.result }}" = success
-          if [ "${{ needs.changes.outputs.skip }}" = 1 ]; then
-            test "${{ needs.run.result }}" = skipped
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          SKIP: ${{ needs.changes.outputs.skip }}
+          RUN: ${{ needs.run.result }}
+        run: |
+          test "$CHANGES" = success
+          if [ "$SKIP" = 1 ]; then
+            test "$RUN" = skipped
           else
-            test "${{ needs.run.result }}" = success
+            test "$RUN" = success
           fi

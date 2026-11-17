@@ -4,9 +4,10 @@
 # comment, so a moved tag cannot change an action's own code (the developer, 2026-11-12). One,
 # ossf/scorecard-action, starts a container image that its own repository names by tag, which a
 # pin of ours cannot fix. Dependabot updates the hash and the comment together. It cannot reach
-# the four tool pins inside the workflows' shell steps; the weekly tool-pins workflow watches
-# those. New releases wait out Dependabot's default three-day cooldown before a pull request
-# (developer, 2026-10-14). The bootstrap file oracle's Dockerfile pins its base image by digest
+# the gate tools' pins in .github/tool-versions; the weekly tool-pins workflow watches those. A new
+# release waits seven days before a pull request, so a release hijacked and caught in that time
+# never reaches the engine (the developer, 2026-11-17, in place of Dependabot's default three days
+# of 2026-10-14); security updates never wait. The bootstrap file oracle's Dockerfile pins its base image by digest
 # and is not watched: no workflow builds that image, so a bump would merge unproven, and a base
 # image built by hand gains little from being newer (the developer, 2026-11-12). The Actions'
 # version updates come as one weekly pull request, one run and one signoff. Security fixes are
@@ -19,6 +20,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         applies-to: version-updates
@@ -28,3 +31,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

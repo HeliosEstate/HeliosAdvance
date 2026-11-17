@@ -1,10 +1,10 @@
 # The versions of the gate tools, in one place: check.sh installs each at its pin and runs it, on
 # every machine and in CI, reading NAME=value lines with nothing else on the line. A Go tool's
-# value is a module version, such as v1.2.3, which check.sh builds with go install. shellcheck is
-# no Go module: SHELLCHECK is its release, and the lines after it the SHA-256 of that release's
-# archive for each system the gate runs on, which check.sh downloads and checks before unpacking.
-# The weekly tool-pins workflow compares each pin with the newest release (the Go module proxy's,
-# or shellcheck's GitHub releases), opening an issue when one is behind. A pin
+# value is a module version, such as v1.2.3, which check.sh builds with go install. shellcheck and
+# zizmor are no Go modules: each one's line is its release, and the lines after it the SHA-256 of
+# that release's archive for each system the gate runs on, which check.sh downloads and checks
+# before unpacking. The weekly tool-pins workflow compares each pin with the newest release (the
+# Go module proxy's, or the tool's GitHub releases), opening an issue when one is behind. A pin
 # moves here, by the developer's hand, in a pull request he reads: a gate's tools change only when
 # we change something (developer, 2026-10-14). A change to this file runs the full check matrix.
 GOLANGCI_LINT=v2.15.0
@@ -15,3 +15,6 @@ ACTIONLINT=v1.7.12
 SHELLCHECK=v0.11.0
 SHELLCHECK_LINUX_X86_64=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
 SHELLCHECK_WINDOWS_X86_64=8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e
+ZIZMOR=v1.32.0
+ZIZMOR_LINUX_X86_64=bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
+ZIZMOR_WINDOWS_X86_64=d284a16e09d9df4ce2c000357e7b59bd531be093bea5718a1ce225b449b59d49
