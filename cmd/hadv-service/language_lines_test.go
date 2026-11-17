@@ -137,6 +137,9 @@ func fileWith(name, parent string, each texts) string {
 	return languageFile(top, each.lines())
 }
 
+// byteOrderMark is UTF-8's byte-order mark, U+FEFF, as the page gives its bytes.
+const byteOrderMark = "\xEF\xBB\xBF"
+
 // deFile is a valid language file for de-de, holding the French texts, for an entry the rows
 // make that must not be read.
 func deFile() string { return fileWith("Deutsch", "", frTexts) }
@@ -501,6 +504,32 @@ func TestLanguageLines(t *testing.T) {
 			t.Parallel()
 			_, _, address := startAt(t, map[string]string{fallbackCode: enUSFile(), frFR: frFile()}, langOption, "FR-FR")
 			expectShown(t, address, languageCaller, frShown(languageCaller))
+		})
+	})
+
+	t.Run("The engine shall read a language file that begins with a UTF-8 byte-order mark, the bytes EF BB BF, as the file after that mark.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("fr-fr's file beginning with one mark, -lang fr-fr: it starts and shows fr-fr's texts", func(t *testing.T) {
+			t.Parallel()
+			_, _, address := startAt(t, map[string]string{fallbackCode: enUSFile(), frFR: byteOrderMark + frFile()}, langOption, frFR)
+			expectShown(t, address, languageCaller, frShown(languageCaller))
+		})
+		t.Run("en-us's file beginning with one mark, no -lang: it starts and shows en-us's texts", func(t *testing.T) {
+			t.Parallel()
+			_, _, address := startAt(t, map[string]string{fallbackCode: byteOrderMark + enUSFile()})
+			expectShown(t, address, languageCaller, enUSShown(languageCaller))
+		})
+		t.Run("-lang fr-fr, its file unmarked and lacking the name prompt, en-us's and de-de's beginning with one mark each: it starts and shows fr-fr's texts, the prompt from en-us", func(t *testing.T) {
+			t.Parallel()
+			_, _, address := startAt(t, map[string]string{
+				fallbackCode: byteOrderMark + enUSFile(), frFR: missingFrom(shortNamePrompt, ""), deDE: byteOrderMark + deFile(),
+			}, langOption, frFR)
+			expectShown(t, address, languageCaller, shownWithEnUS(shortNamePrompt, languageCaller))
+		})
+		t.Run("fr-fr's file beginning with two marks, -lang fr-fr: start_failed naming fr-fr.toml", func(t *testing.T) {
+			t.Parallel()
+			program := startPlaced(t, boardWith(t, map[string]string{fallbackCode: enUSFile(), frFR: byteOrderMark + byteOrderMark + frFile()}), langOption, frFR)
+			expectRefusalNaming(t, program, frFR+".toml")
 		})
 	})
 

@@ -189,9 +189,35 @@ func TestLinuxReadBound(t *testing.T) {
 				}
 			})
 		}
+		// Whether the bound counts the mark is not settled by the lines, so the row allows the mark
+		// and 1 MiB and one byte after it, and bounds only a read of the rest of the file.
+		t.Run("fr-fr beginning with a byte-order mark, padded to 2 MiB: ErrFileRefused, no more than the mark and 1 MiB and one byte of fr-fr read", func(t *testing.T) {
+			t.Parallel()
+			if folder, child := childFolder(t); child {
+				expectRefused(t, folder, fallbackCode, fileName(frFR))
+				return
+			}
+			file := byteOrderMark + padded(t, frFile(nil), 2<<20-len(byteOrderMark))
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			inside := filepath.Join(frFR, fileName(frFR))
+			most := int64(len(byteOrderMark) + mostFileBytes + 1)
+			if read := readsOf(t, folder)[inside]; read > most {
+				t.Fatalf("Load read %d bytes of %s, more than %d", read, inside, most)
+			}
+		})
 	})
 	t.Run("Load shall read each language's file once, and every language's, not only those in the chain.", func(t *testing.T) {
 		t.Parallel()
+		t.Run("fr-fr a valid file of 900 KiB beginning with a byte-order mark, the board en-us: each of the two files read once, whole, the mark included", func(t *testing.T) {
+			t.Parallel()
+			if folder, child := childFolder(t); child {
+				expectShown(t, expectLoaded(t, folder, fallbackCode), enUSShown)
+				return
+			}
+			file := byteOrderMark + padded(t, frFile(nil), 900<<10-len(byteOrderMark))
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile(), frFR: file})
+			expectReadOnce(t, folder, readsOf(t, folder), fallbackCode, frFR)
+		})
 		t.Run("fr-fr a valid file of 900 KiB, the board en-us: each of the two files read once, whole", func(t *testing.T) {
 			t.Parallel()
 			if folder, child := childFolder(t); child {
