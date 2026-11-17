@@ -294,6 +294,14 @@ $split
 fi"
   expect "a directive after code on its line, which the tool honours" "FAIL: a shellcheck directive" \
     origin/development push
+  # A file the branch marks binary is still found and read.
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "# shellcheck disable=all # everything
+$split"
+  echo 'a.sh binary' > .gitattributes; git add -A && dev "marked binary"
+  expect "a refused directive in a script marked binary" "FAIL: a shellcheck directive" origin/development push
+  fresh; git checkout -q -b f; shell_script tools/d '#!/bin/sh' "$split"
+  echo 'tools/d -diff' > .gitattributes; git add -A && dev "marked binary"
+  expect "a script known by its first line, marked binary" "FAIL: shellcheck: a shell script" origin/development push
   fresh; git checkout -q -b f; workflow ubuntu-latest
   printf '      - run: |\n          %s disable=SC2086\n          echo a\n' "$directive" >> .github/workflows/a.yaml
   git add -A && dev "a workflow directive with no reason"
@@ -343,6 +351,9 @@ fi"
   printf '      - run: false || true\n' >> .github/workflows/a.yaml; git add -A && dev "a step swallowed"
   expect "a workflow step's failure swallowed with no reason" "FAIL: a failure is swallowed" \
     origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' 'false || true'
+  echo 'a.sh binary' > .gitattributes; git add -A && dev "marked binary"
+  expect "a failure swallowed in a script marked binary" "FAIL: a failure is swallowed" origin/development push
   # A gate that reads through awk fails, saying so, when a file it must read is gone.
   gate=4c
   fresh; git checkout -q -b f; printf 'package x\n' > x.go; git add -A && dev "a Go file"; rm x.go
@@ -372,6 +383,15 @@ fi"
   gate=4e
   fresh; git checkout -q -b f; go_file x.go 'var a = 1 //nolint:gosec'
   expect "a security linter silenced" "FAIL: a security linter is silenced" origin/development push
+  # A file the branch marks binary, or that holds a NUL byte, is still read line by line.
+  fresh; git checkout -q -b f; go_file x.go 'var a = 1 //nolint:gosec'
+  echo 'x.go binary' > .gitattributes; git add -A && dev "marked binary"
+  expect "a security linter silenced in a file marked binary" "FAIL: a security linter is silenced" \
+    origin/development push
+  fresh; git checkout -q -b f; printf 'package x\n\nvar a = 1 //nolint:gosec\n// \000\n' > x.go
+  git add -A && dev "a NUL byte"
+  expect "a security linter silenced in a file holding a NUL byte" "FAIL: a security linter is silenced" \
+    origin/development push
   gate=4f
   fresh; git checkout -q -b f; go_file x/contracts.go '// Rules.'
   expect "a second contract file" "FAIL: a second contract file beside contract.go" origin/development push
@@ -731,8 +751,11 @@ done < <(git ls-files -z '*_test.go')
 # one measured 66 drifted line numbers and 154 dead citations in its docs. Approved tests
 # are exempt: a row names the behaviour line it proves. The gates that search tracked files use git
 # grep, which answers 1 for no match, the pass, and more when it could not search, which fails the
-# gate rather than reading as nothing found.
-pointers=$(git grep -n -i -E '//.*[^[:alpha:]](line|step) [0-9]+' -- '*.go' ':!*_test.go') ||
+# gate rather than reading as nothing found. Every gate reads a file's lines as text (git grep
+# -a, git diff --text): a branch can mark any file binary in .gitattributes, or put a NUL byte in
+# it, and git would then show no line of it, so the gate would see nothing. git grep is also told
+# --no-column, since a user's own git settings could add that field to its answer.
+pointers=$(git grep -a --no-column -n -i -E '//.*[^[:alpha:]](line|step) [0-9]+' -- '*.go' ':!*_test.go') ||
   [ $? = 1 ] || fail "git grep could not search the Go files"
 [ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
 
@@ -749,7 +772,7 @@ fi
 # every review let through. gosec's own "#nosec" counts too (the lint config also makes gosec
 # ignore it).
 if [ "$MUTATION" = 0 ]; then
-  added=$(git diff -U0 "$BASE...HEAD" -- '*.go') || fail "git could not show what this branch adds"
+  added=$(git diff --text -U0 "$BASE...HEAD" -- '*.go') || fail "git could not show what this branch adds"
   # grep answers 1 when no added line matches, the pass; more is a failure to read.
   silenced=$(grep -E '^\+' <<< "$added" |
     grep -E '//[[:space:]]*nolint([[:space:]]|$)|//[[:space:]]*nolint:[^/]*\b(gosec|forbidigo|depguard|all)\b|#nosec') ||
@@ -765,7 +788,7 @@ go_files=$(git ls-files '*.go') || fail "git could not list the Go files"
 specs=$(grep -v '_test\.go$' <<< "$go_files" | grep -v '/contract\.go$' | grep -i 'contract') ||
   [ $? = 1 ] || fail "grep could not read the list of Go files"
 [ -z "$specs" ] || { echo "$specs"; fail "a second contract file beside contract.go: a package's specification is its contract.go alone"; }
-specs=$(git grep -n -w -E '//.*shall' -- '*.go' ':!*_test.go' ':!*/contract.go') ||
+specs=$(git grep -a --no-column -n -w -E '//.*shall' -- '*.go' ':!*_test.go' ':!*/contract.go') ||
   [ $? = 1 ] || fail "git grep could not search the Go files"
 [ -z "$specs" ] || { echo "$specs"; fail "a unit line outside contract.go: a package's specification is its contract.go alone"; }
 
@@ -805,7 +828,7 @@ wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths") ||
 
 # 4i. The test support (internal/testrun) is for tests: no other file imports it, whatever its
 # build tags, which the linter's import rules do not see (a file built only for the race detector).
-leak=$(git grep -l -F '"github.com/heliosestate/heliosadvance/internal/testrun"' -- '*.go' ':!*_test.go' \
+leak=$(git grep -a -l -F '"github.com/heliosestate/heliosadvance/internal/testrun"' -- '*.go' ':!*_test.go' \
   ':!internal/testrun/*') || [ $? = 1 ] || fail "git grep could not search the Go files"
 [ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
 
@@ -868,9 +891,10 @@ wait $! || fail "git could not list the workflows"
 # a name ending .sh, .bash, .bats, .dash or .ksh, in any case; a first line #! naming one of its
 # shells (sh, bash, bats, dash, ash, ksh, ksh88, ksh93, oksh, or busybox with sh or ash), by path
 # or through env, past env's flags and NAME=value words; or, in a file with no extension, a first
-# line `# shellcheck shell=`, the one other way it picks a dialect. git grep reads first lines,
-# skipping binary files, and
-# gives each name whole whatever it holds.
+# line `# shellcheck shell=`. shellcheck also takes that directive lower in such a file, above
+# its first command; a file naming its shell only there is not found here and is review's. git
+# grep reads every file as text, whatever .gitattributes says of it, and gives each name whole
+# whatever it holds.
 is_shell_shebang() { # the first line, without its "#!"
   local words word program
   read -r -a words <<< "${1%$'\r'}"
@@ -902,7 +926,7 @@ done < <(git ls-files -z ':(glob,icase)**/*.sh' ':(glob,icase)**/*.bash' ':(glob
   ':(glob,icase)**/*.dash' ':(glob,icase)**/*.ksh')
 wait $! || fail "git could not list the shell scripts by name"
 first_lines=$(mktemp) || fail "could not make a file for the tracked files' first lines"
-git grep -I -z -n -E '^#!|^#[[:space:]]*shellcheck[[:space:]]+shell=' > "$first_lines" ||
+git grep -a --no-column -z -n -E '^#!|^#[[:space:]]*shellcheck[[:space:]]+shell=' > "$first_lines" ||
   [ $? = 1 ] || { rm -f "$first_lines"; fail "git grep could not read the tracked files' first lines"; }
 while IFS= read -r -d '' file && IFS= read -r -d '' number && IFS= read -r text; do
   [ "$number" = 1 ] || continue
@@ -983,8 +1007,13 @@ fi
 # on its own line, and refuses every other: a finding set aside by its codes with the reason
 # after a second hash sign, `# shellcheck disable=SC2086 # why`, and a script's first line
 # naming its dialect, `# shellcheck shell=bash`. A hash sign inside a string, after a space, reads
-# the same way here and is refused too; such a line is reworded. shellcheck answers 0 for no
-# finding, 1 for a finding, and 2 to 4 when it could not judge. Run, or skipped, where gate 4k is.
+# the same way here and is refused too; such a line is reworded. This reading is a backstop for
+# the way a directive is written, not the test of the rule (the developer, 2026-11-17): a text
+# search cannot find every spelling the tool honours, such as one in a workflow's script written
+# with YAML's escapes, which shellcheck obeys (probed at the pin). Those stay review's, where
+# every directive is in the diff, as gate 4n leaves its other spellings to review. shellcheck
+# answers 0 for no finding, 1 for a finding, and 2 to 4 when it could not judge. Run, or skipped,
+# where gate 4k is.
 if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   rcs=$(git ls-files ':(glob,icase)**/.shellcheckrc' ':(glob,icase)**/shellcheckrc') ||
     fail "git could not list the files"
@@ -993,7 +1022,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   for file in "${shell_files[@]}" "${workflow_files[@]}"; do directive_paths+=(":(literal)$file"); done
   if [ "${#directive_paths[@]}" -gt 0 ]; then
     directives=$(mktemp) || fail "could not make a file for the shellcheck directives"
-    git grep -I -z -n -E '(^|[[:space:];&|()<>])#[[:space:]]*shellcheck' -- "${directive_paths[@]}" > "$directives" ||
+    git grep -a --no-column -z -n -E '(^|[[:space:];&|()<>])#[[:space:]]*shellcheck' -- "${directive_paths[@]}" > "$directives" ||
       [ $? = 1 ] || { rm -f "$directives"; fail "git grep could not read the shell scripts and workflows"; }
     allowed_disable='^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+disable=SC[0-9]+(,SC[0-9]+)*[[:space:]]+#[[:space:]]*[^[:space:]]'
     allowed_shell='^#[[:space:]]*shellcheck[[:space:]]+shell=(sh|bash|dash|ksh|busybox)[[:space:]]*$'
@@ -1082,7 +1111,7 @@ swallow_paths=()
 for file in "${shell_files[@]}" "${workflow_files[@]}"; do swallow_paths+=(":(literal)$file"); done
 if [ "${#swallow_paths[@]}" -gt 0 ]; then
   swallow_lines=$(mktemp) || fail "could not make a file for the lines that swallow a failure"
-  git grep -I -z -n -E '\|\|[[:space:]]*(true|:)([[:space:];)]|$)' -- "${swallow_paths[@]}" > "$swallow_lines" ||
+  git grep -a --no-column -z -n -E '\|\|[[:space:]]*(true|:)([[:space:];)]|$)' -- "${swallow_paths[@]}" > "$swallow_lines" ||
     [ $? = 1 ] || { rm -f "$swallow_lines"; fail "git grep could not read the shell scripts and workflows"; }
   reasoned='\|\|[[:space:]]*(true|:)[^#]*#[[:space:]]*[^[:space:]]'
   swallowed=""

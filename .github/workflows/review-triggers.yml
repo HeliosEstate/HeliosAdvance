@@ -70,7 +70,9 @@ jobs:
           wait $! || { echo "::error::the security paths could not be read" >&2; exit 1; }
           touched=""
           [ "${#paths[@]}" -gt 0 ] && touched=$(git diff --name-only "$BASE...HEAD" -- "${paths[@]}")
-          imports=$(git diff -U0 "$BASE...HEAD" -- '*.go' ':!*_test.go' |
+          # Every diff here is read as text: a branch can mark a file binary in .gitattributes,
+          # and git would then show none of its lines.
+          imports=$(git diff --text -U0 "$BASE...HEAD" -- '*.go' ':!*_test.go' |
             awk '/^\+[[:space:]]*(import[[:space:]]+)?([[:alnum:]_.]+[[:space:]]+)?"(crypto(\/[^"]*)?|os\/exec|net(\/[^"]*)?|unsafe|syscall|golang\.org\/x\/sys(\/[^"]*)?)"/')
 
           set_label() { # label, wanted
@@ -122,14 +124,14 @@ jobs:
           # A commit carrying the trailer that is not a QA commit adds nothing here and fails nothing.
           qa_lines=$(git log --format=%H --grep='^Helios-Role: qa$' "$BASE..HEAD" |
             while read -r commit; do
-              if is_qa "$commit"; then git show -U0 --format= "$commit" -- '*.go' | added; fi
+              if is_qa "$commit"; then git show --text -U0 --format= "$commit" -- '*.go' | added; fi
             done)
           # Each line as the summary lists it: its file, then the line as added. The file ends at
           # the first tab; the line keeps its own, Go's indentation. The QA commits' lines are read
           # from a file awk opens itself, and one it cannot read stops the run.
           qa_file=$(mktemp)
           printf '%s\n' "$qa_lines" > "$qa_file"
-          flagged=$(git diff -U0 "$BASE...HEAD" -- '*.go' | added | awk -v qa="$qa_file" '
+          flagged=$(git diff --text -U0 "$BASE...HEAD" -- '*.go' | added | awk -v qa="$qa_file" '
             BEGIN { while ((got = (getline kept < qa)) > 0) if (kept != "") skip[kept] = 1; if (got < 0) exit 2 }
             $0 in skip { next }
             { tab = index($0, "\t"); file = substr($0, 1, tab - 1); line = substr($0, tab + 1) }
