@@ -310,7 +310,13 @@ func decodeFiles(languages []*language) error {
 		each.texts = make(map[string]string, len(keySpecs))
 		for _, spec := range keySpecs {
 			table, name := spec.place()
-			if text, isString := decoded[table].(map[string]any)[name].(string); isString {
+			// A file may hold no table, or a plain value under its name: its texts then count as
+			// missing and come from the chain.
+			section, isTable := decoded[table].(map[string]any)
+			if !isTable {
+				continue
+			}
+			if text, isString := section[name].(string); isString {
 				each.texts[spec.key] = text
 			}
 		}
