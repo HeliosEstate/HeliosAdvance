@@ -147,6 +147,8 @@ type Texts struct {
 //
 //   - Load shall read each language's file once, and every language's, not only those in the
 //     chain.
+//   - Load shall read a language's file that begins with a UTF-8 byte-order mark, the bytes
+//     EF BB BF, as the file after that mark.
 //   - For each key above, Load shall take the text from the first language in the chain for code
 //     whose file holds that key as a text that does not count as missing.
 //   - Load shall ignore a key in a language's file that is not name, parent or one of the keys
