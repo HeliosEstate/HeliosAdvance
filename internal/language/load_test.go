@@ -606,6 +606,26 @@ func TestLoad(t *testing.T) {
 			want := shown{esShown(esES).greeting, esShown("es-419").namePrompt, enUSShown.nameReply, nil}.missingFrom(keyGreeting, keyNamePrompt, keyNameReply)
 			expectShown(t, got, want)
 		})
+		// A file with no table session holds none of the keys; one whose session is a plain
+		// value holds a key Load ignores. Either way each text is missing from it and found
+		// further along.
+		for name, after := range map[string]string{
+			"no table session":                     "",
+			`session a plain value, session = "x"`: entry("session", "x") + "\n",
+		} {
+			t.Run("es-mexico's file with "+name+": each from along the chain, Missing all three in the order of the keys", func(t *testing.T) {
+				t.Parallel()
+				mexico := strings.Join([]string{"# " + marker, entry("name", "Español ("+esMX+")"), entry("parent", esLatin)}, "\n") + "\n" + after
+				folder := makeLang(t, map[string]string{
+					fallbackCode: enUSFile(),
+					esMX:         mexico,
+					esLatin:      esFile(esLatin, esES, esTexts(esLatin, shortNameReply, shortGreeting)),
+					esES:         esFile(esES, "", esTexts(esES, shortNameReply)),
+				})
+				want := shown{esShown(esES).greeting, esShown(esLatin).namePrompt, enUSShown.nameReply, nil}.missingFrom(keyGreeting, keyNamePrompt, keyNameReply)
+				expectShown(t, expectLoaded(t, folder, esMX), want)
+			})
+		}
 		t.Run("the board en-us, other languages lacking texts: en-us's, Missing none", func(t *testing.T) {
 			t.Parallel()
 			folder := makeLang(t, map[string]string{
