@@ -158,6 +158,11 @@ func find(root *os.Root, folder string) ([]*language, error) {
 			return nil, tooManyEntries(filepath.Join(folder, name))
 		}
 		if err != nil {
+			// Only a name that is a tag in some case says the entry was meant as a language;
+			// any other name is no more a language than a plain file is.
+			if !tagPattern.MatchString(asciiLower(name)) {
+				continue
+			}
 			found.fault = "cannot be read: " + err.Error()
 		} else if !isLanguage {
 			continue
