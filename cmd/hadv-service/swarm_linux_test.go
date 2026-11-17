@@ -158,7 +158,7 @@ func TestOracleSwarm(t *testing.T) { //nolint:paralleltest // a swarm is one for
 			uid, gid := strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid())
 			docker(t, "service", "create", "--detach", "--name", name, "--no-resolve-image", "--network", "host",
 				"--restart-condition", "none", "--user", uid+":"+gid,
-				"--mount", "type=bind,source="+made.path+",target="+made.path+",readonly",
+				"--mount", "type=bind,"+csvField("source="+made.path)+","+csvField("target="+made.path)+",readonly",
 				"--secret", "source="+name+",target="+heldKeyName+",uid="+uid+",gid="+gid+",mode=0400",
 				image, databaseOption, made.path)
 			t.Cleanup(func() { removeService(t, name) })
@@ -170,6 +170,12 @@ func TestOracleSwarm(t *testing.T) { //nolint:paralleltest // a swarm is one for
 			made.expectKeyNotIn(t, log)
 		})
 	})
+}
+
+// csvField quotes one field of an option Docker reads as comma-separated values, such as
+// --mount's, so a path holding a comma, as a row's temporary folder does, stays one field.
+func csvField(field string) string {
+	return `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
 }
 
 // awaitServiceLog waits, up to the hang bound, for the service's log to hold a whole line, and

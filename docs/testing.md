@@ -133,7 +133,9 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   inherited entries as the file's own, the runner's account among them. A row that needs an exact
   access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
-  run through cmd, such as `mklink /J`, is given names relative to its working folder.
+  run through cmd, such as `mklink /J`, is given names relative to its working folder. Docker
+  reads an option such as `--mount` as comma-separated values, so a path there is quoted as one
+  field.
 - A bound on what the engine reads is a bound on the bytes read from that one file (the
   developer, 2026-11-10), never the process's count of bytes read (`rchar` in /proc/self/io on
   Linux, ReadTransferCount on Windows). That count also holds what the Go runtime reads for
