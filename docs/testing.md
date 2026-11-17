@@ -140,6 +140,12 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   itself: 8 bytes of its own wake-up for the network poller, on another thread, at moments its
   scheduler picks. On Windows it comes only through a raw pointer, which the imports refuse, or
   by asking another program, which timed out on CI's runner three times.
+- A file that opens and then fails its first read, for a line on a read that fails: on Linux, the
+  test process's own memory file, `/proc/<pid>/mem`, bound over the path through sudo, opens as a
+  regular file of mode 0600, the process's own, and its read at offset 0 fails with an
+  input/output error. Another process may not open it at all, so only Open called in the test
+  process itself can meet it, never the program. A file bound inside a folder that is no mount
+  point is found in `findmnt`'s whole list: `findmnt -R` on the folder prints nothing.
 - On Linux the row runs its case again in the test binary under `strace -ff --seccomp-bpf -y`,
   which names the file behind every read, stops the child only at the reads traced, and writes
   each thread's reads to a file of its own, so no read is split by another thread's. The row adds
@@ -272,7 +278,10 @@ a run whose user lacks sudo or elevation skips the rows that need it, by `TESTSK
 - A program that starts a server writes to a file, not a pipe: the server inherits its handles
   and would hold a pipe open. A cleanup that stops a server runs on a context of its own, since
   the test's has ended by then.
-- A test that sets the process's environment runs alone, before the parallel tests resume.
+- A test that sets the process's environment runs alone, before the parallel tests resume. The
+  paralleltest linter excuses only a test that calls `t.Setenv` itself, so a row that sets it
+  through a helper carries `//nolint:paralleltest` with its reason. A row keeps what it set; it
+  never reads the environment back, which the lint rules refuse in tests too.
 - A client that gives up does not end PostgreSQL's wait on a lock: the server notices a closed
   client only when it next writes to it. A client's give-up is read from the server's statement
   log, not from the server's list of what waits.

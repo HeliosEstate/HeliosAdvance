@@ -46,24 +46,32 @@ var openErrors = []error{
 	bootstrap.ErrKeyFileMissing, bootstrap.ErrKeyFileUnreadable, bootstrap.ErrKeyFilePermissions,
 	bootstrap.ErrKeyFileReachable, bootstrap.ErrKeyFileForm, bootstrap.ErrKeyStore,
 	bootstrap.ErrKeyStorePermissions, bootstrap.ErrKeyStoreReachable, bootstrap.ErrUnwrap,
-	bootstrap.ErrUnseal,
+	bootstrap.ErrCredentialUnset, bootstrap.ErrCredentialMissing, bootstrap.ErrCredentialUnreadable,
+	bootstrap.ErrCredentialForm, bootstrap.ErrSecretMissing, bootstrap.ErrSecretUnreadable,
+	bootstrap.ErrSecretReachable, bootstrap.ErrSecretForm, bootstrap.ErrUnseal,
 }
 
 // layout is one bootstrap folder a row made: the folder, its two files' paths, the key and its
 // key file's text, and the plaintext the bootstrap file seals. Under key holder 2 or 3 it also
 // holds the key store key's name and the wrapped bytes the sealed key carries, and what the key
-// store unwraps from them when that is not the key, each a secret no error may hold.
+// store unwraps from them when that is not the key, each a secret no error may hold. Under key
+// holder 4 or 5 it holds what the row wrote as systemd's credential or the Swarm secret, also a
+// secret no error may hold, whole or in part.
 type layout struct {
-	folder    string
-	file      string
-	keyFile   string
-	key       []byte
-	keyText   string
-	plaintext []byte
-	sealed    []byte
-	keyName   string
-	wrapped   []byte
-	unwrapped []byte
+	folder     string
+	file       string
+	keyFile    string
+	key        []byte
+	keyText    string
+	plaintext  []byte
+	sealed     []byte
+	keyName    string
+	wrapped    []byte
+	unwrapped  []byte
+	credential []byte
+	secret     []byte
+	// credentialFolder is the folder the row named in the variable systemd names it in, if any.
+	credentialFolder string
 	// turn, when set, is held while Open runs: the TPM serves one command at a time, so a row's
 	// Open would otherwise wait on every other row's, and on the oracle's keys, which take seconds
 	// each; taken in turn, the hang bound measures this Open alone.
@@ -308,6 +316,19 @@ func (made *layout) expectNothingSecret(t *testing.T, err error) {
 			secrets["what the key store unwrapped, "+name+", in hex"] = hex.EncodeToString(part)
 		}
 		secrets["what the key store unwrapped, its first 30 bytes in base64"] = base64.StdEncoding.EncodeToString(made.unwrapped[:min(30, len(made.unwrapped))])
+	}
+	// The credential and the secret as the row wrote them, whole, in hex, and their first and last
+	// 16 bytes: an engine that quoted what it read, or the part of it it took, shows here.
+	for name, written := range map[string][]byte{"systemd's credential": made.credential, "the Swarm secret": made.secret} {
+		if len(written) == 0 {
+			continue
+		}
+		secrets[name+", whole"] = string(written)
+		secrets[name+", in hex"] = hex.EncodeToString(written)
+		if len(written) >= 16 {
+			secrets[name+", its first 16 bytes"] = string(written[:16])
+			secrets[name+", its last 16 bytes"] = string(written[len(written)-16:])
+		}
 	}
 	for name, secret := range secrets {
 		if secret != "" && strings.Contains(text, secret) {

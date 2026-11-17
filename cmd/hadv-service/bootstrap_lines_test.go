@@ -22,13 +22,14 @@ import (
 // The oracle's broken headers the page's header line needs, each of which the engine refuses
 // before it reads the key file: the README's list, status 3.
 var headerEdits = map[string]string{
-	"a wrong magic":                      `magic "HADVBOOX"`,
-	"format version 0":                   "version 0",
-	"format version 2":                   "version 2",
-	"key holder 0":                       "holder 0",
-	"key holder 2":                       "holder 2",
-	"a sealed-key length of 1 that lies": "sealed-length 1",
-	"40 bytes, too short for its header": "truncate 40",
+	"a wrong magic":    `magic "HADVBOOX"`,
+	"format version 0": "version 0",
+	"format version 2": "version 2",
+	"key holder 0":     "holder 0",
+	"key holder 2":     "holder 2",
+	"key holder 6, the first the format lacks": "holder 6",
+	"a sealed-key length of 1 that lies":       "sealed-length 1",
+	"40 bytes, too short for its header":       "truncate 40",
 }
 
 // malformedKeys are key files not in the key file's form, each built from a good key's 44
@@ -309,7 +310,7 @@ func TestBootstrapProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("If the bootstrap file's header is not format version 1's for the key file or, on Windows, for the TPM or the software key store, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file or asking a key store, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's header is not format version 1's for the key file, on Windows for the TPM or the software key store, or on Linux for a systemd credential or a Swarm secret, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file, asking a key store, or reading a credential or secret, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for name, edits := range headerEdits {
 			t.Run(name+", alone, with the key file missing, unreadable and open to others: the same reason each time, not a missing key file's", func(t *testing.T) {
