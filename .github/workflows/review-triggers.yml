@@ -59,19 +59,22 @@ jobs:
           # cannot change its own labels; a list missing there fails the run.
           loop_list=$(git show "$BASE:loop-identities")
           path_list=$(git show "$BASE:security-paths")
-          loops=$(printf '%s\n' "$loop_list" | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep . || true)
+          # Each list's lines, comments and blanks dropped: awk answers 0 whether or not a line is
+          # left, so only a real failure stops the run.
+          loops=$(printf '%s\n' "$loop_list" | sed -e 's/#.*//' -e 's/[[:space:]]//g' | awk 'NF')
           if [ "$ACTION" != edited ] && grep -qxF -- "$SENDER" <<< "$loops"; then
             gh pr edit "$PR" --add-label needs-qa-replay
             echo "needs-qa-replay: on, a loop's build ($SENDER)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          mapfile -t paths < <(printf '%s\n' "$path_list" | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep . || true)
+          mapfile -t paths < <(printf '%s\n' "$path_list" | sed -e 's/#.*//' -e 's/[[:space:]]//g' | awk 'NF')
+          wait $! || { echo "::error::the security paths could not be read" >&2; exit 1; }
           touched=""
           [ "${#paths[@]}" -gt 0 ] && touched=$(git diff --name-only "$BASE...HEAD" -- "${paths[@]}")
           imports=$(git diff -U0 "$BASE...HEAD" -- '*.go' ':!*_test.go' |
-            grep -E '^\+[[:space:]]*(import[[:space:]]+)?([[:alnum:]_.]+[[:space:]]+)?"(crypto(/[^"]*)?|os/exec|net(/[^"]*)?|unsafe|syscall|golang\.org/x/sys(/[^"]*)?)"' || true)
+            awk '/^\+[[:space:]]*(import[[:space:]]+)?([[:alnum:]_.]+[[:space:]]+)?"(crypto(\/[^"]*)?|os\/exec|net(\/[^"]*)?|unsafe|syscall|golang\.org\/x\/sys(\/[^"]*)?)"/')
 
           set_label() { # label, wanted
-            if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi
+            if [ "$2" = yes ]; then gh pr edit "$PR" --add-label "$1"; else gh pr edit "$PR" --remove-label "$1" || true; fi # a label already off is the wanted state, and nothing reads this one
           }
           # A workflow, or a script one runs, which runs with the workflow's token. git exits 0 when
           # nothing matches, so an error here fails the run rather than reading as no review.
@@ -100,9 +103,12 @@ jobs:
           # anyone can type it. git is told to use ssh-keygen itself, whatever its own settings
           # name, and when a signature must be checked and ssh-keygen is missing the run stops,
           # rather than reading every QA commit as not one.
+          # A base without either list has no QA commit of that kind; a list there that git cannot
+          # read stops the run.
           signers=$(mktemp)
-          git show "$BASE:qa-signers" > "$signers" 2>/dev/null || : > "$signers"
-          grandfathered=$(git show "$BASE:qa-grandfathered" 2>/dev/null || true)
+          if git cat-file -e "$BASE:qa-signers" 2>/dev/null; then git show "$BASE:qa-signers" > "$signers"; fi
+          grandfathered=""
+          if git cat-file -e "$BASE:qa-grandfathered" 2>/dev/null; then grandfathered=$(git show "$BASE:qa-grandfathered"); fi
           is_qa() {
             grep -qxF "$1" <<< "$grandfathered" && return 0
             [ -s "$signers" ] || return 1
@@ -113,16 +119,23 @@ jobs:
             git -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen -c gpg.ssh.allowedSignersFile="$signers" \
               verify-commit "$1" >/dev/null 2>&1
           }
+          # A commit carrying the trailer that is not a QA commit adds nothing here and fails nothing.
           qa_lines=$(git log --format=%H --grep='^Helios-Role: qa$' "$BASE..HEAD" |
-            while read -r commit; do is_qa "$commit" && git show -U0 --format= "$commit" -- '*.go' | added; done)
+            while read -r commit; do
+              if is_qa "$commit"; then git show -U0 --format= "$commit" -- '*.go' | added; fi
+            done)
           # Each line as the summary lists it: its file, then the line as added. The file ends at
-          # the first tab; the line keeps its own, Go's indentation.
-          flagged=$(git diff -U0 "$BASE...HEAD" -- '*.go' | added |
-            { grep -vxF -f <(printf '%s\n' "$qa_lines" | grep . || true) || true; } |
-            awk '{ tab = index($0, "\t"); file = substr($0, 1, tab - 1); line = substr($0, tab + 1) }
-              line ~ /\/\/[[:space:]]*nolint|#nosec|\.Skip(f|Now)?\(|^\+\/\/go:build|"unsafe"|import[[:space:]]+"C"/ {
-                sub(/^\+/, "", line); print file ": " line }' || true)
+          # the first tab; the line keeps its own, Go's indentation. The QA commits' lines are read
+          # from a file awk opens itself, and one it cannot read stops the run.
+          qa_file=$(mktemp)
+          printf '%s\n' "$qa_lines" > "$qa_file"
+          flagged=$(git diff -U0 "$BASE...HEAD" -- '*.go' | added | awk -v qa="$qa_file" '
+            BEGIN { while ((got = (getline kept < qa)) > 0) if (kept != "") skip[kept] = 1; if (got < 0) exit 2 }
+            $0 in skip { next }
+            { tab = index($0, "\t"); file = substr($0, 1, tab - 1); line = substr($0, tab + 1) }
+            line ~ /\/\/[[:space:]]*nolint|#nosec|\.Skip(f|Now)?\(|^\+\/\/go:build|"unsafe"|import[[:space:]]+"C"/ {
+              sub(/^\+/, "", line); print file ": " line }')
           {
-            echo "lines for the developer, brought to him explained before the merge: $(printf '%s' "$flagged" | grep -c . || true)"
+            echo "lines for the developer, brought to him explained before the merge: $(awk 'NF { n++ } END { print n + 0 }' <<< "$flagged")"
             printf '%s\n' "$flagged"
           } | tee -a "$GITHUB_STEP_SUMMARY"

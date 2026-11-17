@@ -53,8 +53,8 @@ jobs:
           else echo "skip=0" >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
           printf '%s\n' "$files"
-          rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
-          full=$(printf '%s\n' "$files" | grep -xE '\.github/workflows/check\.yml|\.github/tool-versions' || true)
+          rest=$(printf '%s\n' "$files" | awk '!/\.md$/ && !/^docs\// && !/^(developer-owned-paths|security-paths|loop-identities)$/ && !/^\.github\//')
+          full=$(printf '%s\n' "$files" | awk '/^(\.github\/workflows\/check\.yml|\.github\/tool-versions)$/')
           if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
       # The Go of go.mod, for the cheap gates' own uses: gate 4b's list of systems, the self-test,
       # and the install of actionlint at its pin, as check.sh installs every gate tool. None of
@@ -251,8 +251,11 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$(pwsh -NoProfile -Command '[IO.Path]::GetTempPath()')")
           else tmp=${TMPDIR:-/tmp}; fi
-          left=$(ls -d "${tmp%/}"/hadv-test-run-* 2>/dev/null || true)
-          [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || true)"
+          shopt -s nullglob
+          folders=("${tmp%/}"/hadv-test-run-*)
+          left=$(printf '%s\n' "${folders[@]}")
+          # pgrep answers 1 for no process, which is the pass; more is a failure to look.
+          [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || [ $? = 1 ])"
           [ -z "$left" ] || { echo "$left"; echo "::error::a test run left these behind"; exit 1; }
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is a
       # report too; QA's broken copies are the gate on test strength (the developer, 2026-10-22).

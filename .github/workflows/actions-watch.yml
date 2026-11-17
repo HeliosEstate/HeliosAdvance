@@ -56,7 +56,8 @@ jobs:
             echo "$unpinned"
             exit 1
           fi
-          pins=$({ grep -hoE "$pin" "${files[@]}" || true; } | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
+          # grep answers 1 for no match, which the next line judges; more is a file it could not read.
+          pins=$({ grep -hoE "$pin" "${files[@]}" || [ $? = 1 ]; } | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
           [ -n "$pins" ] || { echo "::error::no pinned action found, so nothing was checked"; exit 1; }
           # Fields joined by the unit separator, which is not whitespace, so an empty one keeps its
           # place; line breaks and backticks in a summary are flattened, since it goes in a code block.

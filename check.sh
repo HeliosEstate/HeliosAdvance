@@ -17,11 +17,11 @@ MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # --self-test: the gates that lock the developer's files and the approved tests (3, 4, 4a and 4b),
-# the workflows' gate (4k), the shell gate (4l) and zizmor's (4m), judged over small histories
-# built in a temporary folder, each the shape a real one takes. This whole script runs over each,
-# as CI's cheap gates run it. A green case is built so that judging from the wrong QA commit, or
-# from the wrong copy of the base, fails it. QA commits are signed with a key made for the run,
-# which the fake base's qa-signers names.
+# the workflows' gate (4k), the shell gate (4l), zizmor's (4m) and the swallowed failures' (4n),
+# judged over small histories built in a temporary folder, each the shape a real one takes. This
+# whole script runs over each, as CI's cheap gates run it. A green case is built so that judging
+# from the wrong QA commit, or from the wrong copy of the base, fails it. QA commits are signed
+# with a key made for the run, which the fake base's qa-signers names.
 self_test() {
   local n=0 failed=0 plain main qa_b qa_c
   need ssh-keygen "OpenSSH's, which signs the self-test's QA commits"
@@ -267,6 +267,19 @@ $split"
   expect "Dependabot's settings with no wait for a new release" "FAIL: zizmor: a file above" \
     origin/development push
 
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' 'false || true'
+  expect "a failure swallowed with no reason" "FAIL: a failure is swallowed" origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' 'false || true # nothing reads the answer'
+  expect "a failure swallowed with its reason" green origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-latest
+  printf '      - run: false || true\n' >> .github/workflows/a.yaml; git add -A && dev "a step swallowed"
+  expect "a workflow step's failure swallowed with no reason" "FAIL: a failure is swallowed" \
+    origin/development push
+  # A gate that reads through awk fails, saying so, when a file it must read is gone.
+  fresh; git checkout -q -b f; printf 'package x\n' > x.go; git add -A && dev "a Go file"; rm x.go
+  expect "a tracked Go file the gates cannot read" "FAIL: git or awk could not read the Go files" \
+    origin/development push
+
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
 }
@@ -377,7 +390,9 @@ fi
 
 # 2. Specs are language-neutral.
 if [ -d docs/spec ]; then
-  hits=$(grep -rnE 'err != nil|pgx\.|context\.Context|goroutine|\binternal/[a-z]+|[a-z]+\.go\b|golang|lua_' docs/spec || true)
+  # grep answers 1 for no match, which is the pass; more is a file it could not read.
+  hits=$(grep -rnE 'err != nil|pgx\.|context\.Context|goroutine|\binternal/[a-z]+|[a-z]+\.go\b|golang|lua_' docs/spec) ||
+    [ $? = 1 ] || fail "grep could not read docs/spec"
   [ -z "$hits" ] || { echo "$hits"; fail "docs/spec names the implementation"; }
 fi
 
@@ -396,9 +411,12 @@ list_of() {
   elif [ -f "$1" ]; then cat -- "$1"
   else fail "$1 is missing"; fi
 }
-mapfile -t owned < <(list_of developer-owned-paths | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep . || true)
+# A list that cannot be read fails here by itself, never as one naming nothing.
+mapfile -t owned < <(list_of developer-owned-paths | sed -e 's/#.*//' -e 's/[[:space:]]//g' | awk 'NF')
+wait $! || fail "developer-owned-paths could not be read"
 [ "${#owned[@]}" -gt 0 ] || fail "developer-owned-paths names no path"
-mapfile -t loops < <(list_of loop-identities | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep . || true)
+mapfile -t loops < <(list_of loop-identities | sed -e 's/#.*//' -e 's/[[:space:]]//g' | awk 'NF')
+wait $! || fail "loop-identities could not be read"
 [ "${#loops[@]}" -gt 0 ] || fail "loop-identities names no identity"
 # A loop's commit: its author or its committer address is <id>+<login>@ or <login>@ for a login
 # on the list. The committer counts too: an amend, rebase or squash by a loop keeps the earlier
@@ -567,7 +585,7 @@ while IFS= read -r -d '' f; do
   [ -n "$merged" ] && git diff --quiet "$merged" HEAD -- ":(literal)$f" && continue
   last=$(git log -1 --format=%H -- ":(literal)$f")
   is_qa "$last" && continue
-  bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f" || true)
+  bad=$(grep -nE '^func (TestMain|init)\(|^//go:build' -- "$f") || [ $? = 1 ] || fail "grep could not read $f"
   [ -z "$bad" ] || { echo "$f: $bad"; fail "a non-QA test file declares TestMain, init or a build tag"; }
   stem=${f##*/}; stem=${stem%_test.go}
   if [[ $stem =~ _($goos)(_($goarch))?$ || $stem =~ _($goarch)$ ]]; then
@@ -577,8 +595,13 @@ done < <(git ls-files -z '*_test.go')
 
 # 4c. A comment never carries a line number or a step number: both drift silently. Attempt
 # one measured 66 drifted line numbers and 154 dead citations in its docs. Approved tests
-# are exempt: a row names the behaviour line it proves.
-pointers=$(git ls-files -z '*.go' | grep -zv '_test\.go$' | xargs -0 -r grep -niE '//.*[^[:alpha:]](line|step) [0-9]+' || true)
+# are exempt: a row names the behaviour line it proves. These gates read through awk, which
+# answers 0 whether or not a line matches, so a failed git or an unreadable file fails the gate
+# rather than reading as nothing found.
+# shellcheck disable=SC2016 # the dollar signs are awk's own fields, not the shell's
+pointers=$(git ls-files -z '*.go' ':!*_test.go' |
+  xargs -0 -r awk 'tolower($0) ~ /\/\/.*[^a-z](line|step) [0-9]+/ { print FILENAME ":" FNR ":" $0 }') ||
+  fail "git or awk could not read the Go files"
 [ -z "$pointers" ] || { echo "$pointers"; fail "a comment carries a line or step number"; }
 
 # 4d. A merge into main brings development's .github/ with it: main takes pull requests from
@@ -594,8 +617,9 @@ fi
 # every review let through. gosec's own "#nosec" counts too (the lint config also makes gosec
 # ignore it).
 if [ "$MUTATION" = 0 ]; then
-  silenced=$(git diff -U0 "$BASE...HEAD" -- '*.go' | grep -E '^\+' |
-    grep -E '//[[:space:]]*nolint([[:space:]]|$)|//[[:space:]]*nolint:[^/]*\b(gosec|forbidigo|depguard|all)\b|#nosec' || true)
+  silenced=$(git diff -U0 "$BASE...HEAD" -- '*.go' | awk '/^\+/ && (/\/\/[ \t]*nolint([ \t]|$)/ ||
+    /\/\/[ \t]*nolint:[^\/]*(^|[^A-Za-z0-9_])(gosec|forbidigo|depguard|all)([^A-Za-z0-9_]|$)/ || /#nosec/)') ||
+    fail "git could not show what this branch adds"
   [ -z "$silenced" ] || { echo "$silenced"; fail "a security linter is silenced: fix the finding, or bring it to the developer"; }
 fi
 
@@ -603,9 +627,13 @@ fi
 # should never be 2 contracts.go living side by side. final spec is the truth." So no
 # other Go file is named for a contract, and none but a test carries a "shall" in a comment,
 # which is how a unit line reads.
-specs=$(git ls-files '*.go' | grep -v '_test\.go$' | grep -v '/contract\.go$' | grep -i 'contract' || true)
+specs=$(git ls-files '*.go' ':!*_test.go' ':!*/contract.go' | awk 'tolower($0) ~ /contract/') ||
+  fail "git could not list the Go files"
 [ -z "$specs" ] || { echo "$specs"; fail "a second contract file beside contract.go: a package's specification is its contract.go alone"; }
-specs=$(git ls-files -z '*.go' | grep -zv '_test\.go$' | grep -zv '/contract\.go$' | xargs -0 -r grep -nwE '//.*shall' || true)
+# shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
+specs=$(git ls-files -z '*.go' ':!*_test.go' ':!*/contract.go' |
+  xargs -0 -r awk '/\/\/.*(^|[^A-Za-z0-9_])shall([^A-Za-z0-9_]|$)/ { print FILENAME ":" FNR ":" $0 }') ||
+  fail "git or awk could not read the Go files"
 [ -z "$specs" ] || { echo "$specs"; fail "a unit line outside contract.go: a package's specification is its contract.go alone"; }
 
 # 4g. A comment line is at most 100 columns, a tab counted as four: the width the comments are
@@ -633,15 +661,17 @@ long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
 paths=$(sed -E '/^[[:space:]]*(- )?(pkg|desc):/s/.*//' .golangci.yml | sed 's/#.*//' |
   grep -noE "github\.com/heliosestate/heliosadvance[^]}\"'[:space:],]*") ||
   fail "no path of the engine's own was found in .golangci.yml, so its import rules cannot be checked"
-loose=$(grep -vE ':(github\.com/heliosestate/heliosadvance/|.*\$)$' <<< "$paths" || true)
+loose=$(awk '!/:(github\.com\/heliosestate\/heliosadvance\/|.*\$)$/' <<< "$paths")
 [ -z "$loose" ] || { echo "$loose"; fail "an import rule names one of the engine's paths without a closing \$"; }
-wide=$(grep -cE ':github\.com/heliosestate/heliosadvance/$' <<< "$paths" || true)
+wide=$(awk '/:github\.com\/heliosestate\/heliosadvance\/$/ { n++ } END { print n + 0 }' <<< "$paths")
 [ "$wide" = 1 ] || fail "the import rules hold the engine's module-wide entry $wide times, not once"
 
 # 4i. The test support (internal/testrun) is for tests: no other file imports it, whatever its
 # build tags, which the linter's import rules do not see (a file built only for the race detector).
-leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/internal/testrun"' . |
-  grep -vE '_test\.go$|^\./internal/testrun/' || true)
+# shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
+leak=$(git ls-files -z '*.go' ':!*_test.go' ':!internal/testrun/*' | xargs -0 -r awk '
+  index($0, "\"github.com/heliosestate/heliosadvance/internal/testrun\"") { print FILENAME; nextfile }') ||
+  fail "git or awk could not read the Go files"
 [ -z "$leak" ] || { echo "$leak"; fail "a file that is not a test imports the test support"; }
 
 # 4j. A comment says its reason, never an issue's or a pull request's number for a reader to look
@@ -737,8 +767,20 @@ elif [ "$MUTATION" = 0 ]; then
   echo "check: LINT_WORKFLOWS=0, so another job of this run lints the workflows; gate 4k skipped"
 fi
 
-# 4l. Every shell script, a tracked file whose name ends in .sh in any case or whose first line
-# starts a shell (#! naming sh, bash, dash or ksh), is read by shellcheck at its pinned release,
+# shell_scripts: prints each tracked shell script, a file whose name ends in .sh in any case or
+# whose first line starts a shell (#! naming sh, bash, dash or ksh), one name a line, since awk
+# cannot print the NUL that git's listing uses on every system.
+shell_scripts() {
+  # shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
+  git ls-files -z | xargs -0 -r awk '
+    FNR == 1 {
+      if (tolower(FILENAME) ~ /\.sh$/ || $0 ~ /^#![ \t]*[^ \t]*\/(env[ \t]+)?(ba|da|k)?sh([ \t\r]|$)/)
+        print FILENAME
+      nextfile
+    }'
+}
+
+# 4l. Every shell script, as shell_scripts lists them, is read by shellcheck at its pinned release,
 # on every system the check runs on. What decides its answer is this script alone: no rc file is
 # read (--norc), and one in the repository is refused, since it would seem to count. A finding is
 # fixed, or set aside on its own line by a shellcheck directive that says why after a second hash
@@ -748,14 +790,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   rcs=$(git ls-files ':(glob,icase)**/.shellcheckrc' ':(glob,icase)**/shellcheckrc') ||
     fail "git could not list the files"
   [ -z "$rcs" ] || { echo "$rcs"; fail "a shellcheck rc file would change what the shell gate decides: its rules belong in check.sh"; }
-  # One name a line: awk cannot print the NUL that git's listing uses on every system.
-  # shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
-  mapfile -t scripts < <(git ls-files -z | xargs -0 -r awk '
-    FNR == 1 {
-      if (tolower(FILENAME) ~ /\.sh$/ || $0 ~ /^#![ \t]*[^ \t]*\/(env[ \t]+)?(ba|da|k)?sh([ \t\r]|$)/)
-        print FILENAME
-      nextfile
-    }')
+  mapfile -t scripts < <(shell_scripts)
   wait $! || fail "git or awk could not list the shell scripts"
   if [ "${#scripts[@]}" -gt 0 ]; then
     mapfile -d '' -t directive_files < <(git ls-files -z ':(glob,icase).github/workflows/*.yml' ':(glob,icase).github/workflows/*.yaml')
@@ -814,6 +849,23 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
 elif [ "$MUTATION" = 0 ]; then
   echo "check: LINT_WORKFLOWS=0, so another job of this run audits the workflows; gate 4m skipped"
 fi
+
+# 4n. No failure is swallowed unseen: in a shell script or a workflow, a command that ends in an
+# or-true, or its colon form, carries its reason after a hash sign on the same line. Gates that
+# swallowed a failed git or grep read the failure as nothing found and stayed green (the codebase
+# review, 2026-11-13); where one answer alone is the pass, such as grep's 1 for no match, the
+# script tests for that answer instead, and awk, which answers 0 whether or not a line matches,
+# reads what a gate judges. A backstop that reads one line at a time, not the test of the rule,
+# which stays review's. It needs no tool, so it runs wherever check.sh does.
+mapfile -t swallow_files < <(shell_scripts)
+wait $! || fail "git or awk could not list the shell scripts"
+mapfile -d '' -t swallow_workflows < <(git ls-files -z ':(glob,icase).github/workflows/*.yml' \
+  ':(glob,icase).github/workflows/*.yaml')
+wait $! || fail "git could not list the workflows"
+swallowed=$(awk '/\|\|[ \t]*(true|:)([ \t;)]|$)/ && !/\|\|[ \t]*(true|:)[^#]*#[ \t]*[^ \t]/ {
+  print FILENAME ":" FNR ": " $0 }' "${swallow_files[@]}" "${swallow_workflows[@]}" /dev/null) ||
+  fail "awk could not read the shell scripts and workflows"
+[ -z "$swallowed" ] || { echo "$swallowed"; fail "a failure is swallowed with no reason: test for the one answer that passes, or say why after a hash sign on the line"; }
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
 # CI sets SKIP_GO on its one runner for the cheap gates, and the full matrix does not start
@@ -909,7 +961,7 @@ if [ -n "$pkgs" ]; then
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
     go test -json "${gotest[@]}" "${packages[@]}" > "$stream" || status=$?
-    jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep -E 'into its window of|cannot tell' > "$TIMED" || true
+    jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep -E 'into its window of|cannot tell' > "$TIMED" || true # a report kept beside the run, never judged here
     jq -sj '[.[] | select(.Action == "fail" and (.Test | not)) | .Package] as $failed
       | .[] | select(.Action == "build-output" or .Action == "output")
       | select((.Package as $p | any($failed[]; . == $p))
