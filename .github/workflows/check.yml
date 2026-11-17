@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  # One Linux runner reads the change set and runs the cheap gates, which need no Go. A
+  # One Linux runner reads the change set and runs the cheap gates, which run no Go tests. A
   # docs-only change set stops here: only Markdown, files under docs/, the three list files
   # (developer-owned-paths, security-paths, loop-identities, which the cheap gates read), and
   # files under .github/ other than this one and .github/tool-versions. Anything else, a file
@@ -51,6 +51,13 @@ jobs:
           rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
           full=$(printf '%s\n' "$files" | grep -xE '\.github/workflows/check\.yml|\.github/tool-versions' || true)
           if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
+      # The Go of go.mod, for the cheap gates' own uses: gate 4b's list of systems, the self-test,
+      # and the install of actionlint at its pin, as check.sh installs every gate tool. None of
+      # them builds the engine, so no cache of its modules is restored here.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Cheap gates
         env:
           SKIP_GO: "1"
@@ -202,6 +209,8 @@ jobs:
           COVER: ${{ runner.os == 'Linux' && matrix.mode == 'norace' && '-coverprofile=coverage.out' || '' }}
           TESTSKIP: ${{ runner.os == 'Windows' && '^(TestOracle|TestLinux)' || '' }}
           GATES: ${{ matrix.gates && '1' || '0' }}
+          # The changes job above lints the workflows, once a run.
+          LINT_WORKFLOWS: "0"
           ONLY: ${{ matrix.pkgs }}
           EXCEPT: ${{ matrix.except }}
           PGDIR: ${{ steps.postgres.outputs.bin }}
