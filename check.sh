@@ -214,6 +214,9 @@ self_test() {
     origin/development push
   # shellcheck disable=SC2016 # the sample scripts' dollar signs are theirs, written as they are
   sound='echo "$1"' split='echo $1'
+  # A directive written after a space in the samples below would be refused in check.sh itself,
+  # which gate 4l reads as it reads any script, so they spell it through this word.
+  directive='# shellcheck'
   # On Linux actionlint hands a workflow's scripts to shellcheck; elsewhere it says it skips them.
   fresh; git checkout -q -b f; workflow ubuntu-latest
   printf '      - run: %s\n' "$split" >> .github/workflows/a.yaml; git add -A && dev "a script word-split"
@@ -286,8 +289,13 @@ $split"
 $sound"
   expect "a comment the tool reads as a directive though it names none" "FAIL: a shellcheck directive" \
     origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "if true; then $directive disable=SC2086 # why
+$split
+fi"
+  expect "a directive after code on its line, which the tool honours" "FAIL: a shellcheck directive" \
+    origin/development push
   fresh; git checkout -q -b f; workflow ubuntu-latest
-  printf '      - run: |\n          # shellcheck disable=SC2086\n          echo a\n' >> .github/workflows/a.yaml
+  printf '      - run: |\n          %s disable=SC2086\n          echo a\n' "$directive" >> .github/workflows/a.yaml
   git add -A && dev "a workflow directive with no reason"
   expect "a workflow's directive with no reason, no script tracked" "FAIL: a shellcheck directive" \
     origin/development push
@@ -372,6 +380,10 @@ $sound"
   gate=4g
   fresh; git checkout -q -b f; go_file x.go "// $(printf 'a%.0s' {1..100})"
   expect "a comment line past 100 columns" "FAIL: a comment line runs past 100 columns" origin/development push
+  # awk takes a name holding = as a setting, so gates 4g and 4j hand it each name with ./ before it.
+  fresh; git checkout -q -b f; go_file 'x=y.go' "// $(printf 'a%.0s' {1..100})"
+  expect "a long comment in a file whose name holds an equals sign" "FAIL: a comment line runs past 100 columns" \
+    origin/development push
   gate=4h
   fresh; git checkout -q -b f
   printf '            - github.com/heliosestate/heliosadvance/internal/x\n' >> .golangci.yml
@@ -386,6 +398,9 @@ $sound"
   fresh; git checkout -q -b f; go_file x.go "// As the issue ${hash}12 says."
   expect "a comment naming an issue by number" "FAIL: a comment names an issue or pull request by number" \
     origin/development push
+  fresh; git checkout -q -b f; go_file 'x=y.go' "// As the issue ${hash}12 says."
+  expect "an issue number in a file whose name holds an equals sign" \
+    "FAIL: a comment names an issue or pull request by number" origin/development push
 
   # Every gate above the Go gates has a case that makes it refuse. The Go gates (5) are the
   # tools' own: the linter, the vulnerability and licence checks and the tests, which a fake
@@ -962,12 +977,14 @@ fi
 # in the home folder), one in the repository is refused, since it would seem to count, and the
 # environment's options were cleared above. shellcheck lets a script's own directives change what
 # it judges, and nothing turns them off. It reads as a directive every comment that begins with
-# its own name in lower case, whatever follows the name (probed at the pin), so this gate reads
-# the same lines, in a shell script or a workflow, allows exactly two forms of them and refuses
-# every other: a finding set aside by its codes with the reason after a second hash sign,
-# `# shellcheck disable=SC2086 # why`, and a script's first line naming its dialect,
-# `# shellcheck shell=bash`. shellcheck answers 0 for no finding, 1 for a finding, and 2 to 4
-# when it could not judge. Run, or skipped, where gate 4k is.
+# its own name in lower case, whatever follows the name, and honours one after code on its line,
+# such as after then, a brace or a semicolon (both probed at the pin). So this gate reads every
+# such comment wherever it starts, in a shell script or a workflow, allows exactly two forms, each
+# on its own line, and refuses every other: a finding set aside by its codes with the reason
+# after a second hash sign, `# shellcheck disable=SC2086 # why`, and a script's first line
+# naming its dialect, `# shellcheck shell=bash`. A hash sign inside a string, after a space, reads
+# the same way here and is refused too; such a line is reworded. shellcheck answers 0 for no
+# finding, 1 for a finding, and 2 to 4 when it could not judge. Run, or skipped, where gate 4k is.
 if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   rcs=$(git ls-files ':(glob,icase)**/.shellcheckrc' ':(glob,icase)**/shellcheckrc') ||
     fail "git could not list the files"
@@ -976,7 +993,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   for file in "${shell_files[@]}" "${workflow_files[@]}"; do directive_paths+=(":(literal)$file"); done
   if [ "${#directive_paths[@]}" -gt 0 ]; then
     directives=$(mktemp) || fail "could not make a file for the shellcheck directives"
-    git grep -I -z -n -E '^[[:space:]]*#[[:space:]]*shellcheck' -- "${directive_paths[@]}" > "$directives" ||
+    git grep -I -z -n -E '(^|[[:space:];&|()<>])#[[:space:]]*shellcheck' -- "${directive_paths[@]}" > "$directives" ||
       [ $? = 1 ] || { rm -f "$directives"; fail "git grep could not read the shell scripts and workflows"; }
     allowed_disable='^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+disable=SC[0-9]+(,SC[0-9]+)*[[:space:]]+#[[:space:]]*[^[:space:]]'
     allowed_shell='^#[[:space:]]*shellcheck[[:space:]]+shell=(sh|bash|dash|ksh|busybox)[[:space:]]*$'
@@ -988,7 +1005,7 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
       refused+="$file:$number: $text"$'\n'
     done < "$directives"
     rm -f "$directives"
-    [ -z "$refused" ] || { printf '%s' "$refused"; fail "a shellcheck directive is not one of the two allowed: \`# shellcheck disable=SC<code>[,SC<code>] # why\` or a first line \`# shellcheck shell=<dialect>\`"; }
+    [ -z "$refused" ] || { printf '%s' "$refused"; fail "a shellcheck directive is not one of the two allowed, each on its own line: \`# shellcheck disable=SC<code>[,SC<code>] # why\` or a first line \`# shellcheck shell=<dialect>\`"; }
   fi
   if [ "${#shell_files[@]}" -gt 0 ]; then
     shellcheck_tool
