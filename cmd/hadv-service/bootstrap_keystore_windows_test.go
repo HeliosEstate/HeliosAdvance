@@ -138,6 +138,9 @@ func TestWindowsElevatedBootstrapKeyStoreProgram(t *testing.T) {
 			folder := t.TempDir()
 			program := filepath.Join(folder, filepath.Base(programPath))
 			copyFile(t, programPath, program)
+			if err := os.CopyFS(filepath.Join(folder, langFolder), os.DirFS(shippedLang)); err != nil {
+				t.Fatalf("placing the shipped lang folder beside the copy of the program: %v", err)
+			}
 			if err := os.WriteFile(filepath.Join(folder, "ncrypt.dll"), []byte("not a DLL, planted beside the program"), 0o600); err != nil {
 				t.Fatalf("planting ncrypt.dll: %v", err)
 			}

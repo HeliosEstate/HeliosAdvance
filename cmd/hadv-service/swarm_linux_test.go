@@ -113,7 +113,8 @@ func removeService(t *testing.T, name string) {
 }
 
 // engineImage builds the program with cgo off, so it needs no library in an image from scratch, and
-// an image of it alone, removed when the row ends; it returns the image's name.
+// an image of it with the shipped lang folder beside it, removed when the row ends; it returns the
+// image's name.
 func engineImage(t *testing.T, name string) string {
 	t.Helper()
 	folder := t.TempDir()
@@ -124,7 +125,11 @@ func engineImage(t *testing.T, name string) string {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building the program for the image: %v: %s", err, output)
 	}
-	dockerfile := "FROM scratch\nCOPY hadv-service /hadv-service\nENTRYPOINT [\"/hadv-service\"]\n"
+	// The engine refuses to start without its language files beside it.
+	if err := os.CopyFS(filepath.Join(folder, langFolder), os.DirFS(shippedLang)); err != nil {
+		t.Fatalf("placing the shipped lang folder beside the program: %v", err)
+	}
+	dockerfile := "FROM scratch\nCOPY hadv-service /hadv-service\nCOPY " + langFolder + " /" + langFolder + "\nENTRYPOINT [\"/hadv-service\"]\n"
 	if err := os.WriteFile(filepath.Join(folder, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
 		t.Fatalf("writing the Dockerfile: %v", err)
 	}
