@@ -77,7 +77,7 @@ self_test() {
   # the self-test unless its last line starts with want and it exits as want says: 0 for green.
   expect() {
     local out status=0 got refused=0 to_refuse=0
-    out=$(GITHUB_EVENT_NAME=$4 BASE=$3 SKIP_GO=1 bash "$script" ${5:+"$5"} 2>&1) || status=$?
+    out=$(GITHUB_EVENT_NAME=$4 BASE=$3 SKIP_GO=1 LINT_WORKFLOWS=1 bash "$script" ${5:+"$5"} 2>&1) || status=$?
     got=$(tail -1 <<< "$out")
     [ "$status" = 0 ] || refused=1
     [ "$2" = green ] || to_refuse=1
@@ -198,6 +198,10 @@ self_test() {
   fresh; git checkout -q -b f; workflow ubuntu-99.04
   printf 'self-hosted-runner:\n  labels: [ubuntu-99.04]\n' > .github/actionlint.yaml; git add -A && dev config
   expect "a config file that would excuse a workflow" "FAIL: actionlint's config file" origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-latest
+  sed -i 's/^ACTIONLINT=.*/ACTIONLINT=v1.7.13/' .github/tool-versions; git add -A && dev "a new pin"
+  expect "a new pin of actionlint, its set-aside not tried again" "FAIL: actionlint's pin is no longer" \
+    origin/development push
 
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
@@ -592,7 +596,11 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
       1) fail "actionlint: a workflow above is one GitHub would refuse or misread" ;;
       *) fail "actionlint could not judge the workflows (it answered $linted): see its message above" ;;
     esac
+  else
+    echo "check: no workflows in .github/workflows; gate 4k has nothing to read"
   fi
+elif [ "$MUTATION" = 0 ]; then
+  echo "check: LINT_WORKFLOWS=0, so another job of this run lints the workflows; gate 4k skipped"
 fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
