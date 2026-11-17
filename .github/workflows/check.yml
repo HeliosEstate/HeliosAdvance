@@ -209,7 +209,7 @@ jobs:
           COVER: ${{ runner.os == 'Linux' && matrix.mode == 'norace' && '-coverprofile=coverage.out' || '' }}
           TESTSKIP: ${{ runner.os == 'Windows' && '^(TestOracle|TestLinux)' || '' }}
           GATES: ${{ matrix.gates && '1' || '0' }}
-          # The changes job above lints the workflows, once a run.
+          # The changes job above lints the workflows and the shell scripts, once a run.
           LINT_WORKFLOWS: "0"
           ONLY: ${{ matrix.pkgs }}
           EXCEPT: ${{ matrix.except }}

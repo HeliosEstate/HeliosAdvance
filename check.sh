@@ -5,7 +5,8 @@
 #   env: BASE (default origin/development), RACE, COVER, SKIP_GO=1 (CI, a change set with no Go
 #   in it), TESTSKIP (CI, a -skip pattern for go test), PKGS (CI, the packages one job tests;
 #   default all), GATES=0 (CI, a job whose Go gates another job of the same run checks),
-#   LINT_WORKFLOWS=0 (CI, a job whose workflows another job of the same run lints), TIMED
+#   LINT_WORKFLOWS=0 (CI, a job whose workflows and shell scripts another job of the same run
+#   lints), TIMED
 #   (CI, a file for the timed rows' place-in-window lines), MUTATE (CI, with --mutation: whole
 #   packages to mutate instead of the lines changed since BASE)
 set -euo pipefail
@@ -16,15 +17,15 @@ MUTATION=0; [ "${1:-}" = "--mutation" ] && MUTATION=1
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # --self-test: the gates that lock the developer's files and the approved tests (3, 4, 4a and 4b),
-# and the workflows' gate (4k), judged over small histories built in a temporary folder, each the
-# shape a real one takes. This whole script runs over each, as CI's cheap gates run it. A green
-# case is built so that judging from the wrong QA commit, or from the wrong copy of the base,
-# fails it. QA commits are signed with a key made for the run, which the fake base's qa-signers
-# names.
+# the workflows' gate (4k) and the shell gate (4l), judged over small histories built in a
+# temporary folder, each the shape a real one takes. This whole script runs over each, as CI's
+# cheap gates run it. A green case is built so that judging from the wrong QA commit, or from the
+# wrong copy of the base, fails it. QA commits are signed with a key made for the run, which the
+# fake base's qa-signers names.
 self_test() {
   local n=0 failed=0 plain main qa_b qa_c
   need ssh-keygen "OpenSSH's, which signs the self-test's QA commits"
-  need go "Go, which gate 4b asks for the names of operating systems and processors"
+  need go "Go, which gate 4b asks for the names of operating systems and processors, and which builds actionlint"
   # Not local: the trap that removes it runs after this function has returned.
   t=$(mktemp -d) || fail "could not make the self-test's folder"
   trap 'cd / && rm -rf "$t"' EXIT
@@ -63,14 +64,14 @@ self_test() {
   # fresh: a new repository whose development and main both hold one commit: the lists the gates
   # read, an owned file and two tests.
   fresh() {
-    cd / && rm -rf "$t/r" && git init -q -b development "$t/r" && cd "$t/r" || fail "self-test: no repository"
+    { cd / && rm -rf "$t/r" && git init -q -b development "$t/r" && cd "$t/r"; } || fail "self-test: no repository"
     printf 'owned/*\n' > developer-owned-paths
     printf 'loop[bot]\n' > loop-identities
     printf 'qa@example.invalid %s\n' "$(cat "$t/key.pub")" > qa-signers
     printf 'linters:\n  settings:\n    depguard:\n      rules:\n        main:\n          allow:\n            - %s\n' \
       github.com/heliosestate/heliosadvance/ > .golangci.yml
     mkdir owned && echo owned > owned/file
-    git add -A && test_file a/a_test.go && test_file b/b_test.go || fail "self-test: no base"
+    { git add -A && test_file a/a_test.go && test_file b/b_test.go; } || fail "self-test: no base"
     dev base; git branch main; sync development main
   }
   # expect case want base event [flag]: runs this script over the repository as CI would, and fails
@@ -202,6 +203,50 @@ self_test() {
   sed -i 's/^ACTIONLINT=.*/ACTIONLINT=v0.0.0-test/' .github/tool-versions; git add -A && dev "a new pin"
   expect "a new pin of actionlint, its set-aside not tried again" "FAIL: actionlint's pin is no longer" \
     origin/development push
+  # shellcheck disable=SC2016 # the sample scripts' dollar signs are theirs, written as they are
+  sound='echo "$1"' split='echo $1'
+  # On Linux actionlint hands a workflow's scripts to shellcheck; elsewhere it says it skips them.
+  fresh; git checkout -q -b f; workflow ubuntu-latest
+  printf '      - run: %s\n' "$split" >> .github/workflows/a.yaml; git add -A && dev "a script word-split"
+  if [ "$(uname -s)" = Linux ]; then
+    expect "a workflow's script shellcheck finds wrong" "FAIL: actionlint: a workflow" origin/development push
+  else
+    expect "a workflow's script, not read off Linux" green origin/development push
+  fi
+
+  # shell_script file first-line body: a shell script at file, its first line and body as given,
+  # committed with the real pins beside it.
+  shell_script() {
+    mkdir -p .github "$(dirname "$1")" || fail "self-test: no folder for $1"
+    cp "${script%/*}/.github/tool-versions" .github/tool-versions || fail "self-test: no tool pins"
+    printf '%s\n%s\n' "$2" "$3" > "$1"
+    git add -A && dev "script $1"
+  }
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$sound"
+  expect "a sound shell script" green origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$split"
+  expect "a shell script shellcheck finds wrong" "FAIL: shellcheck: a shell script" origin/development push
+  fresh; git checkout -q -b f; shell_script tools/run '#!/usr/bin/env bash' "$split"
+  expect "a shell script known by its first line, not its name" "FAIL: shellcheck: a shell script" \
+    origin/development push
+  fresh; git checkout -q -b f; shell_script A.SH '#!/bin/sh' "$split"
+  expect "a shell script, its name's extension in capitals" "FAIL: shellcheck: a shell script" \
+    origin/development push
+  fresh; git checkout -q -b f
+  shell_script a.sh '#!/bin/sh' "# shellcheck disable=SC2086 # the words are split on purpose
+$split"
+  expect "a finding set aside with its reason" green origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "# shellcheck disable=SC2086
+$split"
+  expect "a finding set aside with no reason" "FAIL: a shellcheck directive" origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$split"
+  printf 'disable=SC2086\n' > .shellcheckrc; git add -A && dev "an rc file"
+  expect "an rc file that would excuse a script" "FAIL: a shellcheck rc file" origin/development push
+  fresh; git checkout -q -b f; shell_script a.sh '#!/bin/sh' "$sound"
+  sed -i -E 's/^(SHELLCHECK_[A-Z0-9_]+=).*/\1'"$(printf '0%.0s' {1..64})"'/' .github/tool-versions
+  git add -A && dev "a hash nobody released"
+  expect "a shellcheck archive that does not match its pinned hash" "FAIL: shellcheck's" \
+    origin/development push
 
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
@@ -237,6 +282,52 @@ pinned() {
   [ -x "$dir/$1" ] || fail "$1 $version is not in $dir: remove that folder and run the check again"
   echo "check: $1 $version, built by $goversion" >&2
   echo "$dir/$1"
+}
+# released: prints the path of shellcheck at the release .github/tool-versions pins as SHELLCHECK,
+# downloaded from its GitHub releases when missing. It is the one gate tool that is no Go module,
+# so no checksum database stands behind it: what is trusted is the SHA-256 pinned beside it for
+# this system's archive (the developer, 2026-11-17), checked before the archive is unpacked. Its
+# folder is named for the version and the hash, so a moved pin or hash downloads again, and it is
+# renamed into place, as pinned's is. A system with no archive pinned fails, naming itself. It runs
+# inside $(...), where set -e does not hold, so every step fails by itself.
+released() {
+  local version os arch archive pin hash exe goenv gopath hostos sep dir tmp got
+  version=$(sed -n 's/^SHELLCHECK=//p' .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "SHELLCHECK in .github/tool-versions is not a release like v1.2.3, so shellcheck cannot be run at its pin"
+  os=$(uname -s) || fail "uname failed, so no shellcheck archive can be chosen"
+  arch=$(uname -m) || fail "uname failed, so no shellcheck archive can be chosen"
+  case "$os $arch" in
+    "Linux x86_64") archive=shellcheck-$version.linux.x86_64.tar.gz pin=SHELLCHECK_LINUX_X86_64 exe=shellcheck ;;
+    "MINGW64_NT"*" x86_64" | "MSYS_NT"*" x86_64") archive=shellcheck-$version.zip pin=SHELLCHECK_WINDOWS_X86_64 exe=shellcheck.exe ;;
+    *) fail "no shellcheck archive is pinned for $os $arch in .github/tool-versions" ;;
+  esac
+  hash=$(sed -n "s/^$pin=//p" .github/tool-versions | tr -d '\r') || fail "reading .github/tool-versions failed"
+  [[ $hash =~ ^[0-9a-f]{64}$ ]] || fail "$pin in .github/tool-versions is not a SHA-256, so shellcheck's archive cannot be checked"
+  goenv=$(go env GOPATH GOHOSTOS | tr -d '\r') || fail "go env failed, so shellcheck has no folder"
+  { read -r gopath; read -r hostos; } <<< "$goenv"
+  sep=:; [ "$hostos" = windows ] && sep=';'
+  gopath=${gopath%%"$sep"*}
+  [ -n "$gopath" ] || fail "go env gave no GOPATH, so shellcheck has no folder"
+  dir="$gopath/hadv-tools/shellcheck/$version-${hash:0:16}"
+  if [ ! -x "$dir/$exe" ]; then
+    need curl "curl, to fetch shellcheck's release"
+    need sha256sum "sha256sum, from the system's core utilities"
+    mkdir -p "${dir%/*}" || fail "could not make ${dir%/*}"
+    tmp=$(mktemp -d "${dir%/*}/.install.XXXXXX") || fail "could not make a folder to install shellcheck into"
+    curl -fsSL --retry 3 -o "$tmp/$archive" "https://github.com/koalaman/shellcheck/releases/download/$version/$archive" ||
+      { rm -rf "$tmp"; fail "fetching shellcheck's $archive failed"; }
+    got=$(sha256sum < "$tmp/$archive" | cut -d' ' -f1) || { rm -rf "$tmp"; fail "sha256sum could not read shellcheck's $archive"; }
+    [ "$got" = "$hash" ] || { rm -rf "$tmp"; fail "shellcheck's $archive has SHA-256 $got, not the $hash .github/tool-versions pins as $pin"; }
+    case $archive in
+      *.zip) need unzip "unzip, to unpack shellcheck's release"; unzip -q -o "$tmp/$archive" "$exe" -d "$tmp" ;;
+      *) tar -xzf "$tmp/$archive" -C "$tmp" --strip-components=1 "shellcheck-$version/$exe" ;;
+    esac || { rm -rf "$tmp"; fail "could not unpack $exe from shellcheck's $archive"; }
+    rm -f "$tmp/$archive"
+    mv -T "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp" # another check installed it first
+  fi
+  [ -x "$dir/$exe" ] || fail "shellcheck $version is not in $dir: remove that folder and run the check again"
+  echo "check: shellcheck $version, its archive matching the SHA-256 pinned as $pin" >&2
+  echo "$dir/$exe"
 }
 # Gates 3, 4a and 4e judge this branch against $BASE. Without it they cannot run, and a gate that
 # cannot run fails: fetch the base, or name in BASE the commit to judge from.
@@ -335,7 +426,7 @@ if [ "$MUTATION" = 0 ]; then
     # Each name whole and taken literally (a leading : or a wildcard is part of the name), with no
     # rename hiding the old name; a git that fails here fails the gate too.
     while IFS= read -r -d '' path; do
-      git diff --quiet "$parted" "$merge^2" -- ":(literal)$path" && git diff --quiet "$merge^1" "$merge" -- ":(literal)$path" ||
+      { git diff --quiet "$parted" "$merge^2" -- ":(literal)$path" && git diff --quiet "$merge^1" "$merge" -- ":(literal)$path"; } ||
         fail "the loop's merge ${merge:0:7} has $path as no clean merge leaves it"
     done < <(git diff -z --no-renames --name-only "$merge^2" "$merge" -- "${owned[@]}")
     wait $! || fail "git could not list the owned paths the loop's merge ${merge:0:7} touched"
@@ -490,6 +581,7 @@ specs=$(git ls-files -z '*.go' | grep -zv '_test\.go$' | grep -zv '/contract\.go
 # wrapped to, which reviews checked by eye until a review round and two noticed issues went to
 # it. Code lines have no limit, since a test row quotes its behavior line whole. A line holding a
 # link is exempt, since a link does not wrap.
+# shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
 long=$(git ls-files -z '*.go' | xargs -0 -r awk '/^[ \t]*\/\// && !/:\/\// {
   line = $0; gsub(/\t/, "    ", line)
   if (length(line) > 100) print FILENAME ":" FNR ": " length(line) " columns"
@@ -534,6 +626,7 @@ leak=$(grep -rlE --include='*.go' '"github\.com/heliosestate/heliosadvance/inter
 # where a hash sign and a number make a character), after a repository's name, "PR", "pull
 # request" or "issue" (joined, spaced, or with "number" or "no."), or after /issues/ or /pull/ in
 # a link. A lone hash sign before a number fails even as an ordinal: write "first", not the number.
+# shellcheck disable=SC2016 # the dollar signs are awk's own fields, not the shell's
 numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Dockerfile' '*Makefile' |
   xargs -0 -r awk '
   FNR == 1 { slash = (FILENAME ~ /(\.go|(^|\/)go\.mod)$/); pas = (FILENAME ~ /\.pas$/) }
@@ -570,11 +663,15 @@ numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Do
 # unread, at the cost of reading one it would not. A cheap gate, since a change set of workflows
 # alone runs no Go gates; in CI the cheap job alone runs it, so it is built once a run, and a
 # mutation run, which is a report, skips it.
-# What decides its answer is this script alone: its shellcheck and pyflakes passes are turned
-# off by name, since it turns each on when it finds the tool on the machine, and the config file
-# it would read by itself from .github is refused. One message is set aside, anchored, for this
-# pin only: v1.7.12 does not know ubuntu-26.04-arm, a runner GitHub provides and the engine's
-# checks run on. A new pin fails until the set-aside is tried without and kept or removed.
+# What decides its answer is this script alone: its pyflakes pass is turned off by name, since it
+# turns it on when it finds the tool on the machine; its shellcheck pass is given the pinned tool
+# by path, on Linux only, since on Windows actionlint writes a script whole into the tool's input
+# before starting it, and a script over the 4 KiB a Windows pipe holds waits forever (probed at
+# the pin); and the config file it would read by itself from .github is refused. Off Linux it
+# says it skips the workflows' scripts, which CI's cheap job reads. One message is set aside,
+# anchored, for this pin only: v1.7.12 does not know ubuntu-26.04-arm, a runner GitHub provides
+# and the engine's checks run on. A new pin fails until the set-aside is tried without and kept
+# or removed.
 if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   for config in .github/actionlint.yaml .github/actionlint.yml; do
     [ ! -e "$config" ] || fail "actionlint's config file $config would change what the workflows' gate decides: its rules belong in check.sh"
@@ -587,9 +684,15 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
     [ "$(sed -n 's/^ACTIONLINT=//p' .github/tool-versions | tr -d '\r')" = v1.7.12 ] ||
       fail "actionlint's pin is no longer v1.7.12: try gate 4k without its set-aside for ubuntu-26.04-arm, then keep it for the new pin or remove it"
     actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
+    if [ "$(uname -s)" = Linux ]; then
+      shell_pass=-shellcheck=$(released)
+    else
+      shell_pass=-shellcheck=
+      echo "check: on $(uname -s) actionlint's shellcheck pass waits forever on a script over 4 KiB, so the workflows' scripts are read on Linux, in CI's cheap job"
+    fi
     # actionlint answers 1 for a workflow it finds wrong, and more when it could not judge.
     linted=0
-    "$actionlint" -no-color -shellcheck= -pyflakes= -ignore '^label "ubuntu-26\.04-arm" is unknown\.' \
+    "$actionlint" -no-color "$shell_pass" -pyflakes= -ignore '^label "ubuntu-26\.04-arm" is unknown\.' \
       "${workflow_files[@]}" < /dev/null || linted=$?
     case $linted in
       0) ;;
@@ -601,6 +704,49 @@ if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
   fi
 elif [ "$MUTATION" = 0 ]; then
   echo "check: LINT_WORKFLOWS=0, so another job of this run lints the workflows; gate 4k skipped"
+fi
+
+# 4l. Every shell script, a tracked file whose name ends in .sh in any case or whose first line
+# starts a shell (#! naming sh, bash, dash or ksh), is read by shellcheck at its pinned release,
+# on every system the check runs on. What decides its answer is this script alone: no rc file is
+# read (--norc), and one in the repository is refused, since it would seem to count. A finding is
+# fixed, or set aside on its own line by a shellcheck directive that says why after a second hash
+# sign; a directive with no reason fails, in a script or in a workflow, whose scripts gate 4k
+# reads. Run, or skipped, where gate 4k is.
+if [ "${LINT_WORKFLOWS:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
+  rcs=$(git ls-files ':(glob,icase)**/.shellcheckrc' ':(glob,icase)**/shellcheckrc') ||
+    fail "git could not list the files"
+  [ -z "$rcs" ] || { echo "$rcs"; fail "a shellcheck rc file would change what the shell gate decides: its rules belong in check.sh"; }
+  # One name a line: awk cannot print the NUL that git's listing uses on every system.
+  # shellcheck disable=SC2016 # the dollar sign is awk's own field, not the shell's
+  mapfile -t scripts < <(git ls-files -z | xargs -0 -r awk '
+    FNR == 1 {
+      if (tolower(FILENAME) ~ /\.sh$/ || $0 ~ /^#![ \t]*[^ \t]*\/(env[ \t]+)?(ba|da|k)?sh([ \t\r]|$)/)
+        print FILENAME
+      nextfile
+    }')
+  wait $! || fail "git or awk could not list the shell scripts"
+  if [ "${#scripts[@]}" -gt 0 ]; then
+    mapfile -d '' -t directive_files < <(git ls-files -z ':(glob,icase).github/workflows/*.yml' ':(glob,icase).github/workflows/*.yaml')
+    wait $! || fail "git could not list the workflows"
+    bare=$(awk '/^[ \t]*#[ \t]*shellcheck[ \t]+disable=/ && !/disable=[^#]*#[ \t]*[^ \t]/ {
+      print FILENAME ":" FNR ": " $0 }' "${scripts[@]}" "${directive_files[@]}") ||
+      fail "awk could not read the shell scripts"
+    [ -z "$bare" ] || { echo "$bare"; fail "a shellcheck directive sets a finding aside with no reason: say why after a second hash sign"; }
+    shellcheck=$(released)
+    # The tool answers 1 for a script it finds wrong, and more when it could not judge.
+    checked=0
+    "$shellcheck" --norc -f gcc -- "${scripts[@]}" < /dev/null || checked=$?
+    case $checked in
+      0) ;;
+      1) fail "shellcheck: a shell script above has a finding: fix it, or set it aside on its line with the reason" ;;
+      *) fail "shellcheck could not judge the scripts (it answered $checked): see its message above" ;;
+    esac
+  else
+    echo "check: no shell scripts tracked; gate 4l has nothing to read"
+  fi
+elif [ "$MUTATION" = 0 ]; then
+  echo "check: LINT_WORKFLOWS=0, so another job of this run reads the shell scripts; gate 4l skipped"
 fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
@@ -672,6 +818,7 @@ if [ -n "$pkgs" ]; then
   # Get-Tpm answers only an elevated process; an unelevated one skips them already by their name's
   # start. Anything but a TPM both present and ready, an error included, counts as none.
   if [ "$elevated" = True ]; then
+    # shellcheck disable=SC2016 # the dollar signs are PowerShell's own, not the shell's
     tpm=$(powershell.exe -NoProfile -Command '$tpm = Get-Tpm -ErrorAction Stop; "$($tpm.TpmPresent) $($tpm.TpmReady)"' 2>/dev/null | tr -d '\r')
     if [ "$tpm" != "True True" ]; then
       TESTSKIP="${TESTSKIP:+$TESTSKIP|}^TestWindowsElevatedTPM"
@@ -679,7 +826,14 @@ if [ -n "$pkgs" ]; then
     fi
   fi
   # One package at a time, on every machine: the timed rows' margins are measured that way, and
-  # every failure from load on record came with every package at once.
+  # every failure from load on record came with every package at once. Each option and package is
+  # an argument of its own; PKGS names packages split by spaces.
+  gotest=(-p 1)
+  if [ -n "${RACE:-}" ]; then gotest+=("$RACE"); fi
+  if [ -n "${COVER:-}" ]; then gotest+=("$COVER"); fi
+  if [ -n "${TESTSKIP:-}" ]; then gotest+=(-skip "$TESTSKIP"); fi
+  gotest+=(-count=1)
+  read -ra packages <<< "${PKGS:-./...}"
   if [ -n "${TIMED:-}" ]; then
     # CI keeps every timed row's place in its window, and every line where a row says it cannot
     # tell and sets its check aside, since such a pass proves nothing: a passing run's logs show
@@ -688,7 +842,7 @@ if [ -n "$pkgs" ]; then
     # output, so a crash or a hang that Go does not pin on one test still shows its cause.
     need jq "jq, from the system's packages"
     stream=$(mktemp); status=0
-    go test -json -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...} > "$stream" || status=$?
+    go test -json "${gotest[@]}" "${packages[@]}" > "$stream" || status=$?
     jq -j 'select(.Action == "output") | .Package + ":" + .Output' "$stream" | grep -E 'into its window of|cannot tell' > "$TIMED" || true
     jq -sj '[.[] | select(.Action == "fail" and (.Test | not)) | .Package] as $failed
       | .[] | select(.Action == "build-output" or .Action == "output")
@@ -698,7 +852,7 @@ if [ -n "$pkgs" ]; then
     rm -f "$stream"
     [ "$status" = 0 ] || exit "$status"
   else
-    go test -p 1 ${RACE:-} ${COVER:-} ${TESTSKIP:+-skip "$TESTSKIP"} -count=1 ${PKGS:-./...}
+    go test "${gotest[@]}" "${packages[@]}"
   fi
   if [ "$MUTATION" = 1 ] && [ "$(go env GOOS)" = windows ]; then
     # gremlins v0.6.0 misreads coverage on Windows (its coverage paths use / and file
