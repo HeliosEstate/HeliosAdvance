@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/session"
 	"github.com/heliosestate/heliosadvance/internal/telnet"
 	"github.com/heliosestate/heliosadvance/internal/textio"
@@ -30,6 +31,16 @@ type stackPair struct {
 	client *net.TCPConn
 	server *net.TCPConn
 	line   *telnet.Line
+	texts  *language.Texts
+}
+
+// openSession is openStack for a row of Run's, with the board's texts in en-us for Run.
+func openSession(t *testing.T, answer, after []byte) stackPair {
+	t.Helper()
+	texts := enUSTexts(t)
+	pair := openStack(t, answer, after)
+	pair.texts = texts
+	return pair
 }
 
 // openStack connects, makes a Line on the server end with Accept, and has the caller answer with
@@ -184,14 +195,28 @@ type runResult struct {
 	returned time.Time
 }
 
-// runOn calls Run on its own goroutine over a Conn on the pair's Line.
+// runOn calls Run on its own goroutine over a Conn on the pair's Line, with the pair's texts.
 func runOn(ctx context.Context, pair stackPair) <-chan runResult {
 	done := make(chan runResult, 1)
 	go func() {
-		ending, err := session.Run(ctx, textio.New(pair.line))
+		ending, err := session.Run(ctx, textio.New(pair.line), pair.texts)
 		done <- runResult{ending: ending, err: err, returned: time.Now()}
 	}()
 	return done
+}
+
+// awaitRun waits for Run's result no longer than the hang bound.
+func awaitRun(t *testing.T, done <-chan runResult) runResult {
+	t.Helper()
+	timer := time.NewTimer(progressLimit)
+	defer timer.Stop()
+	select {
+	case got := <-done:
+		return got
+	case <-timer.C:
+		t.Fatalf("Run did not return within %v", progressLimit)
+		return runResult{}
+	}
 }
 
 // recording is a Chars that passes every call through to the real Line and counts the SendChar
@@ -238,23 +263,58 @@ func (chars *recordingChars) Echoes() bool {
 
 func TestSessionRun(t *testing.T) {
 	t.Parallel()
-	t.Run("When it is called, Run shall write Greeting and then Prompt before it reads.", func(t *testing.T) {
+	t.Run("If texts is nil, then Run shall return ErrConnectionFailed without writing.", func(t *testing.T) {
+		t.Parallel()
+		t.Run("nil texts, bob CR typed ahead: ErrConnectionFailed, and the caller then receives only the marker written after it", func(t *testing.T) {
+			t.Parallel()
+			pair := openStack(t, refused, []byte("bob\r"))
+			got := awaitRun(t, runOn(t.Context(), pair))
+			if !errors.Is(got.err, session.ErrConnectionFailed) || got.ending != 0 {
+				t.Fatalf("Run returned (%v, %v), want no Ending and ErrConnectionFailed", got.ending, got.err)
+			}
+			// A probe that must be answered: anything Run queued or wrote comes before it.
+			marker := []byte("nil-texts-marker\r\n")
+			if err := textio.New(pair.line).SendString(t.Context(), string(marker)); err != nil {
+				t.Fatalf("writing the marker: %v", err)
+			}
+			pair.expectReceived(t, marker)
+		})
+	})
+	t.Run("When it is called, Run shall write the greeting and CR LF, then the name prompt, before it reads.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a name typed ahead, ECHO agreed: the greeting and the prompt come before its echo", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, []byte("bob\r"))
+			pair := openSession(t, answers, []byte("bob\r"))
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, join(asked, echoed("bob")))
 			if got := <-done; got.err != nil || got.ending != session.Answered {
 				t.Fatalf("Run returned (%v, %v), want Answered", got.ending, got.err)
 			}
 		})
+		t.Run("the board xx-test, its greeting holding Grüß and its prompt a full-width question mark: their UTF-8 bytes, CR LF between", func(t *testing.T) {
+			t.Parallel()
+			texts := loadTexts(t, testCode, map[string]string{testCode: testFile})
+			pair := openStack(t, refused, nil)
+			pair.texts = texts
+			done := runOn(t.Context(), pair)
+			// The test's own UTF-8 of Grüß and of the full-width question mark, U+FF1F.
+			want := join([]byte("Gr\xc3\xbc\xc3\x9f Gott, Helios Advance BBS!\r\n"), []byte("Wie hei\xc3\x9fen Sie\xef\xbc\x9f "))
+			if !bytes.Equal(want, []byte(testGreeting+"\r\n"+testNamePrompt)) {
+				t.Fatalf("the test's own UTF-8 disagrees with its texts: a fault in the test")
+			}
+			pair.expectReceived(t, want)
+			pair.send(t, []byte(annEnded))
+			pair.expectReceived(t, []byte(testReply+"ann!\r\n"))
+			if got := awaitRun(t, done); got.err != nil || got.ending != session.Answered {
+				t.Fatalf("Run returned (%v, %v), want Answered", got.ending, got.err)
+			}
+		})
 	})
-	t.Run("Run shall read the name with RecvString, with a deadline of NameSeconds after Prompt was written, which typing does not move, and a limit of NameMostCharacters.", func(t *testing.T) {
+	t.Run("Run shall read the name with RecvString, with a deadline of NameSeconds after the name prompt was written, which typing does not move, and a limit of NameMostCharacters.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("a silent caller: NoName 60 seconds after the prompt", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, nil)
+			pair := openSession(t, answers, nil)
 			called := time.Now()
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, asked)
@@ -267,7 +327,7 @@ func TestSessionRun(t *testing.T) {
 		})
 		t.Run("typing every 10 seconds, never ending: still NoName at 60 seconds", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, refused, nil)
+			pair := openSession(t, refused, nil)
 			called := time.Now()
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, asked)
@@ -287,17 +347,17 @@ func TestSessionRun(t *testing.T) {
 		t.Run("31 characters: the first 30", func(t *testing.T) {
 			t.Parallel()
 			thirty := strings.Repeat("x", nameMost)
-			pair := openStack(t, refused, []byte(thirty+"y\r"))
+			pair := openSession(t, refused, []byte(thirty+"y\r"))
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, join(asked, helloTo(thirty)))
 			<-done
 		})
 	})
-	t.Run("Run shall count toward the name what the caller sent after negotiation and before Prompt was written, as RecvString reads it.", func(t *testing.T) {
+	t.Run("Run shall count toward the name what the caller sent after negotiation and before the name prompt was written, as RecvString reads it.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("bob typed in the same write as the answers, ended after the prompt", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, refused, []byte("bob"))
+			pair := openSession(t, refused, []byte("bob"))
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, asked)
 			pair.send(t, []byte("by\r"))
@@ -305,12 +365,41 @@ func TestSessionRun(t *testing.T) {
 			<-done
 		})
 	})
-	t.Run("When RecvString returns a name, Run shall write Reply, the name and CR LF, and return Answered.", func(t *testing.T) {
+	t.Run("When RecvString returns a name, Run shall write the name reply, with the name as language.PlaceholderName, and CR LF, and return Answered.", func(t *testing.T) {
 		t.Parallel()
+		for name, row := range map[string]struct {
+			reply, typed, want string
+		}{
+			"a reply Bonjour {$NAME} !, ann CR: Bonjour ann !":                {"Bonjour {$NAME} !", annEnded, "Bonjour ann !\r\n"},
+			"a reply {$NAME} et {$NAME}, ann CR: the name in both places":     {"{$NAME} et {$NAME}", annEnded, "ann et ann\r\n"},
+			"a reply with no placeholder, Au revoir, ann CR: Au revoir alone": {"Au revoir", annEnded, "Au revoir\r\n"},
+			"the en-us reply, a name typed {$NAME}: Hello {$NAME}, as typed":  {"", "{$NAME}\r", "Hello {$NAME}\r\n"},
+			"the en-us reply, a name typed {#x}: Hello {#x}, as typed":        {"", "{#x}\r", "Hello {#x}\r\n"},
+			`the en-us reply, a name typed a\{b|c}: as typed`:                 {"", "a\\{b|c}\r", "Hello a\\{b|c}\r\n"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				texts := enUSTexts(t)
+				if row.reply != "" {
+					file := "name = \"Français\"\n\n[session]\ngreeting = \"Hello Helios Advance BBS!\"\nname_prompt = \"What is your name? \"\nname_reply = \"" + row.reply + "\"\n"
+					texts = loadTexts(t, "fr-fr", map[string]string{"fr-fr": file})
+				}
+				pair := openStack(t, refused, nil)
+				pair.texts = texts
+				done := runOn(t.Context(), pair)
+				pair.expectReceived(t, asked)
+				pair.send(t, []byte(row.typed))
+				pair.expectReceived(t, []byte(row.want))
+				if got := awaitRun(t, done); got.err != nil || got.ending != session.Answered {
+					t.Fatalf("Run returned (%v, %v), want Answered", got.ending, got.err)
+				}
+				pair.expectQuiet(t)
+			})
+		}
 		for name, typed := range map[string]string{"CR": "ann\r", "LF": "ann\n"} {
 			t.Run("ann ended by "+name, func(t *testing.T) {
 				t.Parallel()
-				pair := openStack(t, refused, nil)
+				pair := openSession(t, refused, nil)
 				done := runOn(t.Context(), pair)
 				pair.expectReceived(t, asked)
 				pair.send(t, []byte(typed))
@@ -326,7 +415,7 @@ func TestSessionRun(t *testing.T) {
 		t.Parallel()
 		t.Run("ab typed with ECHO agreed, never ended: the echo goes, nothing more, NoName", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, nil)
+			pair := openSession(t, answers, nil)
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, asked)
 			pair.send(t, []byte("ab"))
@@ -344,7 +433,7 @@ func TestSessionRun(t *testing.T) {
 		t.Parallel()
 		t.Run("a cancelled context: ErrCallEnded, and nothing queued or written", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, []byte("bob\r"))
+			pair := openSession(t, answers, []byte("bob\r"))
 			got := <-runOn(ended(t), pair)
 			if !errors.Is(got.err, session.ErrCallEnded) || !errors.Is(got.err, context.Canceled) {
 				t.Fatalf("Run returned %v, want ErrCallEnded wrapping context.Canceled", got.err)
@@ -355,7 +444,7 @@ func TestSessionRun(t *testing.T) {
 		})
 		t.Run("a context whose deadline passed: ErrCallEnded wrapping context.DeadlineExceeded", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, nil)
+			pair := openSession(t, answers, nil)
 			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 			defer cancel()
 			got := <-runOn(ctx, pair)
@@ -371,7 +460,7 @@ func TestSessionRun(t *testing.T) {
 		t.Parallel()
 		t.Run("cancelled while it waits for the name: ErrCallEnded wrapping context.Canceled", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, nil)
+			pair := openSession(t, answers, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			done := runOn(ctx, pair)
 			pair.expectReceived(t, asked)
@@ -382,7 +471,7 @@ func TestSessionRun(t *testing.T) {
 		})
 		t.Run("the context's deadline while it waits for the name: ErrCallEnded wrapping context.DeadlineExceeded", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, nil)
+			pair := openSession(t, answers, nil)
 			// A second was met in the greeting's write on a slow machine, before the wait for the
 			// name the row is about.
 			deadline := testrun.CaseDeadline()
@@ -397,7 +486,7 @@ func TestSessionRun(t *testing.T) {
 		})
 		t.Run("cancelled while the greeting's write waits on a caller that does not read: ErrCallEnded", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, answers, nil)
+			pair := openSession(t, answers, nil)
 			pair.stallCaller(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			done := runOn(ctx, pair)
@@ -409,7 +498,7 @@ func TestSessionRun(t *testing.T) {
 		})
 		t.Run("the caller closes mid-name: ErrCallerClosed", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, refused, nil)
+			pair := openSession(t, refused, nil)
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, asked)
 			pair.send(t, []byte("ab"))
@@ -420,7 +509,7 @@ func TestSessionRun(t *testing.T) {
 		})
 		t.Run("the caller resets mid-name: ErrConnectionFailed wrapping the Line's", func(t *testing.T) {
 			t.Parallel()
-			pair := openStack(t, refused, nil)
+			pair := openSession(t, refused, nil)
 			done := runOn(t.Context(), pair)
 			pair.expectReceived(t, asked)
 			pair.resetCaller(t)
