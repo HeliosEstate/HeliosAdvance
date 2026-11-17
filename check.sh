@@ -618,7 +618,7 @@ fi
 # ignore it).
 if [ "$MUTATION" = 0 ]; then
   silenced=$(git diff -U0 "$BASE...HEAD" -- '*.go' | awk '/^\+/ && (/\/\/[ \t]*nolint([ \t]|$)/ ||
-    /\/\/[ \t]*nolint:[^\/]*(^|[^A-Za-z0-9_])(gosec|forbidigo|depguard|all)([^A-Za-z0-9_]|$)/ || /#nosec/)') ||
+    /\/\/[ \t]*nolint:([^\/]*[^A-Za-z0-9_\/])?(gosec|forbidigo|depguard|all)([^A-Za-z0-9_]|$)/ || /#nosec/)') ||
     fail "git could not show what this branch adds"
   [ -z "$silenced" ] || { echo "$silenced"; fail "a security linter is silenced: fix the finding, or bring it to the developer"; }
 fi
