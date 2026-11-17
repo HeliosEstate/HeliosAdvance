@@ -199,7 +199,7 @@ self_test() {
   printf 'self-hosted-runner:\n  labels: [ubuntu-99.04]\n' > .github/actionlint.yaml; git add -A && dev config
   expect "a config file that would excuse a workflow" "FAIL: actionlint's config file" origin/development push
   fresh; git checkout -q -b f; workflow ubuntu-latest
-  sed -i 's/^ACTIONLINT=.*/ACTIONLINT=v1.7.13/' .github/tool-versions; git add -A && dev "a new pin"
+  sed -i 's/^ACTIONLINT=.*/ACTIONLINT=v0.0.0-test/' .github/tool-versions; git add -A && dev "a new pin"
   expect "a new pin of actionlint, its set-aside not tried again" "FAIL: actionlint's pin is no longer" \
     origin/development push
 
