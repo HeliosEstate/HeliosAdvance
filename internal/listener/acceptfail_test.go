@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/listener"
 
 	"github.com/heliosestate/heliosadvance/internal/testrun"
@@ -198,8 +199,12 @@ func startChild(t *testing.T) childListener {
 	if directory := flag.Lookup("test.gocoverdir"); directory != nil && directory.Value.String() != "" {
 		arguments = append(arguments, "-test.gocoverdir="+directory.Value.String())
 	}
+	// The child makes nothing on disk: the lang folder its Listener's texts come from is this
+	// row's, given as the argument after childArgument, and removed when the row ends, after the
+	// child has ended.
+	lang := writeLang(t, map[string]string{"en-us": enUSFile})
 	child := exec.CommandContext(t.Context(), "sh", append([]string{"-c", `ulimit -n "$1" && shift && exec "$@"`},
-		append(arguments, childArgument)...)...)
+		append(arguments, childArgument, lang)...)...)
 	child.WaitDelay = testrun.Patient(testrun.HangBound)
 	stdin, err := child.StdinPipe()
 	if err != nil {
@@ -307,7 +312,20 @@ func holdListener(t *testing.T) {
 		sockets = append(sockets, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.New(sockets, openTelnet, listener.NewCount())
+	place := slices.Index(os.Args, childArgument)
+	if place < 0 || place+1 >= len(os.Args) {
+		announce(t, "start_failed=no lang folder named after "+childArgument)
+		return
+	}
+	texts, err := language.Load(os.Args[place+1], "en-us")
+	if err != nil {
+		for _, socket := range sockets {
+			_ = socket.Close()
+		}
+		announce(t, "start_failed=loading the texts: "+err.Error())
+		return
+	}
+	engine, err := listener.New(sockets, openTelnet, listener.NewCount(), texts)
 	if err != nil {
 		for _, socket := range sockets {
 			_ = socket.Close()
