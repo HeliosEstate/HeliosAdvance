@@ -571,7 +571,37 @@ elif [ -n "$pkgs" ]; then
   go run ./tools/namecheck .
   "$vulncheck" ./...
 fi
+# fetch_oracle folder: an oracle that is not this repository's code is not committed (the
+# developer, 2026-11-10: "If it's not our code, I'd prefer it not to be in our repo. Instead CI
+# should download it as needed."). The folder's pin names the source repository's commit, then each
+# file's SHA-256 and path there. A file missing from the folder is fetched from that commit into a
+# temporary file beside it and moved into place only once it matches; a file that does not match
+# its pin, fetched or already there, fails the check, since the tests would judge the engine against
+# files nobody approved. Nothing fetched is run.
+fetch_oracle() {
+  local folder=$1 source=$2 commit hash path name file tmp got
+  need curl "curl, to fetch the oracle's files"
+  need sha256sum "sha256sum, from the system's core utilities"
+  [ -f "$folder/pin" ] || fail "$folder/pin is missing, so the oracle's files cannot be fetched or checked"
+  commit=$(tr -d '\r' < "$folder/pin" | sed -n 's/^commit \([0-9a-f]\{40\}\)$/\1/p')
+  [ "$(echo "$commit" | grep -c .)" = 1 ] || fail "$folder/pin names no single 40-character commit"
+  while read -r hash path; do
+    name=${path##*/}
+    file=$folder/$name
+    if [ ! -f "$file" ]; then
+      tmp=$(mktemp "$folder/.fetch.XXXXXX") || fail "could not make a file to fetch $name into"
+      curl -fsSL --retry 3 -o "$tmp" "$source/$commit/$path" || { rm -f "$tmp"; fail "fetching $name from $source at $commit failed"; }
+      got=$(sha256sum "$tmp" | cut -d' ' -f1)
+      [ "$got" = "$hash" ] || { rm -f "$tmp"; fail "$name fetched at $commit has SHA-256 $got, not the $hash $folder/pin names"; }
+      mv "$tmp" "$file" || fail "could not move the fetched $name into $folder"
+      echo "check: fetched $name at $commit, as $folder/pin names it"
+    fi
+    got=$(sha256sum "$file" | cut -d' ' -f1)
+    [ "$got" = "$hash" ] || fail "$file has SHA-256 $got, not the $hash $folder/pin names: remove it, and this check fetches the pinned one"
+  done < <(tr -d '\r' < "$folder/pin" | grep -E '^[0-9a-f]{64}  [^ ]+$')
+}
 if [ -n "$pkgs" ]; then
+  fetch_oracle oracle/messageformat2 https://raw.githubusercontent.com/unicode-org/message-format-wg
   # On Windows the rows that need a Linux container (TestOracle…) or Linux itself (TestLinux…)
   # cannot pass, so they are skipped there unless TESTSKIP says otherwise: the loop runs this on
   # Windows, and CI sets the same pattern for its Windows runner. The rows that need an elevated

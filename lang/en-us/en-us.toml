@@ -1,0 +1,6 @@
+name = "English (United States)"
+
+[session]
+greeting = "Hello Helios Advance BBS!"
+name_prompt = "What is your name? "
+name_reply = "Hello {$NAME}"
