@@ -51,3 +51,4 @@ jobs:
           check govulncheck "$GOVULNCHECK" golang.org/x/vuln
           check gremlins "$GREMLINS" github.com/go-gremlins/gremlins
           check go-licenses "$GO_LICENSES" github.com/google/go-licenses/v2
+          check actionlint "$ACTIONLINT" github.com/rhysd/actionlint

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/heliosestate/heliosadvance/internal/language"
 	"github.com/heliosestate/heliosadvance/internal/session"
 	"github.com/heliosestate/heliosadvance/internal/textio"
 )
@@ -18,6 +19,7 @@ import (
 // builds before the package is built and the build never needs to change the contract.
 
 type listenerState struct {
+	texts       *language.Texts
 	stopContext context.Context
 	cancel      context.CancelFunc
 	sockets     []*net.TCPListener
@@ -41,8 +43,10 @@ func newCount() *ConnectionCount {
 
 // The stop context is made here, not in start, so that a Stop before Start has something to
 // cancel.
-func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount) (*Listener, error) {
-	if len(sockets) == 0 || slices.Contains(sockets, nil) || open == nil || count == nil {
+func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount,
+	texts *language.Texts) (*Listener, error) {
+	if len(sockets) == 0 || slices.Contains(sockets, nil) || open == nil || count == nil ||
+		texts == nil {
 		return nil, ErrNoListeners
 	}
 	listener := &Listener{}
@@ -51,6 +55,7 @@ func newListener(sockets []*net.TCPListener, open Open, count *ConnectionCount) 
 	state.sockets = slices.Clone(sockets)
 	state.open = open
 	state.count = count
+	state.texts = texts
 	return listener, nil
 }
 
@@ -138,7 +143,7 @@ func (state *listenerState) serve(connection *net.TCPConn, acceptedAt time.Time)
 	if err != nil || kindConnection == nil {
 		return
 	}
-	if ending, err := session.Run(ctx, textio.New(kindConnection)); err != nil || ending != session.Answered {
+	if ending, err := session.Run(ctx, textio.New(kindConnection), state.texts); err != nil || ending != session.Answered {
 		return
 	}
 	//nolint:errcheck // the connection is closed next whatever the kind's close returns

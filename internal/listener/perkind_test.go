@@ -48,6 +48,7 @@ type kindListener struct {
 // from them, not yet started, counted in count; it is stopped when the test ends.
 func makeListener(t *testing.T, sockets int, open listener.Open, count *listener.ConnectionCount) kindListener {
 	t.Helper()
+	texts := enUSTexts(t)
 	var listening []*net.TCPListener
 	var addresses []string
 	for range sockets {
@@ -62,7 +63,7 @@ func makeListener(t *testing.T, sockets int, open listener.Open, count *listener
 		listening = append(listening, socket)
 		addresses = append(addresses, socket.Addr().String())
 	}
-	engine, err := listener.New(listening, open, count)
+	engine, err := listener.New(listening, open, count, texts)
 	if err != nil {
 		for _, socket := range listening {
 			_ = socket.Close()
@@ -370,18 +371,23 @@ func keptPath(t *testing.T, address string, path pathCall) {
 // keepingOpen holds every place it is given until the row ends, past the name's 60 seconds and
 // the ceiling's 70, which would end a Telnet caller held as long: it waits for the row's end,
 // not its context's, so the shared execution path keeps the place while it runs.
+// Each Open that runs says so on taken, which holds a place for every caller the row dials.
 type keepingOpen struct {
-	calls  atomic.Int64
+	taken  chan struct{}
 	rowEnd chan struct{}
 }
 
 // keepPlaces makes a Listener on count whose Open keeps its places, and holds the given number
-// of them, each one's Open seen running.
+// of them, each one's Open seen running: the test's own Open announces it, so the row waits on
+// that, never on the clock.
 func keepPlaces(t *testing.T, count *listener.ConnectionCount, places int) {
 	t.Helper()
-	keeping := &keepingOpen{rowEnd: make(chan struct{})}
+	keeping := &keepingOpen{taken: make(chan struct{}, places), rowEnd: make(chan struct{})}
 	made := startedListener(t, 1, func(_ context.Context, _ *net.TCPConn) (listener.KindConnection, error) {
-		keeping.calls.Add(1)
+		select {
+		case keeping.taken <- struct{}{}:
+		default: // an Open past the places dialed; the row counts only those
+		}
 		<-keeping.rowEnd
 		return nil, errRefusedByTest
 	}, count)
@@ -390,12 +396,14 @@ func keepPlaces(t *testing.T, count *listener.ConnectionCount, places int) {
 	for range places {
 		dial(t, made.addresses[0])
 	}
-	deadline := time.Now().Add(progressLimit)
-	for keeping.calls.Load() < int64(places) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d of %d kept places were taken after %v", keeping.calls.Load(), places, progressLimit)
+	timer := time.NewTimer(progressLimit)
+	defer timer.Stop()
+	for taken := range places {
+		select {
+		case <-keeping.taken:
+		case <-timer.C:
+			t.Fatalf("%d of %d kept places were taken after %v", taken, places, progressLimit)
 		}
-		wait(t, time.Now().Add(5*time.Millisecond))
 	}
 }
 
@@ -555,20 +563,17 @@ func TestListenerPerKind(t *testing.T) {
 			t.Parallel()
 			count := listener.NewCount()
 			probe := startedListener(t, 1, openTelnet, count)
-			holding := &countingOpen{}
+			// The test's own Open announces that it runs, so the row waits on that, never on the
+			// clock.
+			opened := make(chan struct{})
+			var openOnce sync.Once
 			ending := startedListener(t, 1, func(ctx context.Context, _ *net.TCPConn) (listener.KindConnection, error) {
-				holding.calls.Add(1)
+				openOnce.Do(func() { close(opened) })
 				<-ctx.Done()
 				return nil, errRefusedByTest
 			}, count)
 			call := dial(t, ending.addresses[0])
-			deadline := time.Now().Add(progressLimit)
-			for holding.calls.Load() == 0 {
-				if time.Now().After(deadline) {
-					t.Fatalf("the caller's Open had not run after %v", progressLimit)
-				}
-				wait(t, time.Now().Add(5*time.Millisecond))
-			}
+			awaitSignal(t, "the caller's Open running", opened)
 			// The kept places are taken a few seconds after this caller's accept, so that their
 			// own ceilings come after the probes: a place may be freed when its connection
 			// closes or when the work on it returns, and the line does not say which.
