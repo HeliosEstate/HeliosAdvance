@@ -139,6 +139,16 @@ func TestLoad(t *testing.T) {
 			makeUnopenable(t, filepath.Join(folder, fallbackCode, fileName(fallbackCode)))
 			expectRefused(t, folder, fallbackCode, fileName(fallbackCode))
 		})
+		// An entry of the file's name counts whatever kind it is, so a folder there is a file
+		// that cannot be read, not an absent one.
+		t.Run("fr-fr's file a folder, the board en-us: ErrFileRefused naming it", func(t *testing.T) {
+			t.Parallel()
+			folder := makeLang(t, map[string]string{fallbackCode: enUSFile()})
+			if err := os.MkdirAll(filepath.Join(folder, frFR, fileName(frFR)), 0o700); err != nil {
+				t.Fatalf("making fr-fr/fr-fr.toml a folder: %v", err)
+			}
+			expectRefused(t, folder, fallbackCode, fileName(frFR))
+		})
 	})
 
 	t.Run("If a language's file is over MostFileBytes, then Load shall return ErrFileRefused naming it, having read no more than MostFileBytes and one byte of it.", func(t *testing.T) {
