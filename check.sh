@@ -16,8 +16,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "$1 is not installed: $2"; }
 # --self-test: the gates that lock the developer's files and the approved tests (3, 4, 4a and 4b),
 # and the workflows' gate (4k), judged over small histories built in a temporary folder, each the
-# shape a real one takes. This
-# whole script runs over each, as CI's cheap gates run it. A green case is built so that judging
+# shape a real one takes. This whole script runs over each, as CI's cheap gates run it. A green case is built so that judging
 # from the wrong QA commit, or from the wrong copy of the base, fails it. QA commits are signed
 # with a key made for the run, which the fake base's qa-signers names.
 self_test() {
@@ -171,22 +170,32 @@ self_test() {
   rm -f ".git/objects/${qa_c:0:2}/${qa_c:2}"
   expect "a commit git cannot read" "FAIL: git could not" origin/development push
 
-  # workflow runner [runs-on line]: a workflow of one job on runner, its runs-on line left out
-  # when the third argument is "none", committed with the real pin of actionlint beside it.
+  # workflow runner [none] [file]: a workflow of one job on runner, written to file (a.yaml
+  # unless given), its runs-on line left out when the second argument is "none", committed with
+  # the real pin of actionlint beside it.
   workflow() {
     mkdir -p .github/workflows || fail "self-test: no workflows folder"
     cp "${script%/*}/.github/tool-versions" .github/tool-versions || fail "self-test: no tool pins"
     { printf 'on: push\njobs:\n  a:\n'
       [ "${2:-}" = none ] || printf '    runs-on: %s\n' "$1"
-      printf '    steps:\n      - run: echo a\n'; } > .github/workflows/a.yaml
+      printf '    steps:\n      - run: echo a\n'; } > ".github/workflows/${3:-a.yaml}"
     git add -A && dev workflow
   }
   fresh; git checkout -q -b f; workflow ubuntu-latest none
-  expect "a workflow job with no runner" "FAIL: actionlint" origin/development push
+  expect "a workflow job with no runner" "FAIL: actionlint: a workflow" origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-latest none A.YML
+  expect "a workflow job with no runner, its file's extension in capitals" \
+    "FAIL: actionlint: a workflow" origin/development push
   fresh; git checkout -q -b f; workflow ubuntu-26.04-arm
   expect "a workflow on the runner actionlint does not know yet" green origin/development push
   fresh; git checkout -q -b f; workflow ubuntu-99.04
-  expect "a workflow on a runner nobody provides" "FAIL: actionlint" origin/development push
+  expect "a workflow on a runner nobody provides" "FAIL: actionlint: a workflow" origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-latest; mkdir -p .github/workflows/parts
+  printf 'not a workflow\n' > .github/workflows/parts/b.yml; git add -A && dev "a fragment in a subfolder"
+  expect "a file in a folder below the workflows, which GitHub never runs" green origin/development push
+  fresh; git checkout -q -b f; workflow ubuntu-99.04
+  printf 'self-hosted-runner:\n  labels: [ubuntu-99.04]\n' > .github/actionlint.yaml; git add -A && dev config
+  expect "a config file that would excuse a workflow" "FAIL: actionlint's config file" origin/development push
 
   [ "$failed" = 0 ] || fail "self-test: a case above did not go as it should"
   echo "self-test: green"
@@ -547,19 +556,38 @@ numbered=$(git ls-files -z '*.go' '*go.mod' '*.pas' '*.sh' '*.yml' '*.yaml' '*Do
   }')
 [ -z "$numbered" ] || { echo "$numbered"; fail "a comment names an issue or pull request by number: say its reason in words"; }
 
-# 4k. Every workflow GitHub would run, .yml or .yaml, is read as GitHub reads it before it runs,
-# by actionlint at its pin: a workflow GitHub would refuse, or one whose expressions or job
-# references name something that does not exist, fails here and not on a runner. A cheap gate,
-# since a change set of workflows alone runs no Go gates. Its shellcheck and pyflakes passes are
-# turned off by name, so its answer never depends on what else a machine has installed. One
-# message is set aside, anchored: actionlint at this pin does not know ubuntu-26.04-arm, a runner
-# GitHub provides and the engine's checks run on.
-workflows=$(git ls-files '.github/workflows/*.yml' '.github/workflows/*.yaml') || fail "git could not list the workflows"
-if [ -n "$workflows" ]; then
-  actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
-  mapfile -t workflow_files <<< "$workflows"
-  "$actionlint" -no-color -shellcheck= -pyflakes= -ignore '^label "ubuntu-26\.04-arm" is unknown\.' \
-    "${workflow_files[@]}" < /dev/null || fail "actionlint: a workflow above is one GitHub would refuse or misread"
+# 4k. Every workflow GitHub would run, a .yml or .yaml file straight in .github/workflows in any
+# case, is read as GitHub reads it before it runs, by actionlint at its pin: a workflow GitHub
+# would refuse, or one whose expressions or job references name something that does not exist,
+# fails here and not on a runner. A cheap gate, since a change set of workflows alone runs no Go
+# gates; not run again by the jobs that only test, nor by a mutation run, which is a report.
+# What decides its answer is this script alone: its shellcheck and pyflakes passes are turned
+# off by name, since it turns each on when it finds the tool on the machine, and the config file
+# it would read by itself from .github is refused. One message is set aside, anchored, for this
+# pin only: v1.7.12 does not know ubuntu-26.04-arm, a runner GitHub provides and the engine's
+# checks run on. A new pin fails until the set-aside is tried without and kept or removed.
+if [ "${GATES:-1}" != 0 ] && [ "$MUTATION" = 0 ]; then
+  for config in .github/actionlint.yaml .github/actionlint.yml; do
+    [ ! -e "$config" ] || fail "actionlint's config file $config would change what the workflows' gate decides: its rules belong in check.sh"
+  done
+  listed=$(mktemp) || fail "could not make a file to list the workflows in"
+  git ls-files -z ':(glob,icase).github/workflows/*.yml' ':(glob,icase).github/workflows/*.yaml' > "$listed" ||
+    { rm -f "$listed"; fail "git could not list the workflows"; }
+  mapfile -d '' -t workflow_files < "$listed"; rm -f "$listed"
+  if [ "${#workflow_files[@]}" -gt 0 ]; then
+    actionlint=$(pinned actionlint github.com/rhysd/actionlint/cmd/actionlint ACTIONLINT)
+    [ "$(sed -n 's/^ACTIONLINT=//p' .github/tool-versions | tr -d '\r')" = v1.7.12 ] ||
+      fail "actionlint's pin is no longer v1.7.12: try gate 4k without its set-aside for ubuntu-26.04-arm, then keep it for the new pin or remove it"
+    # actionlint answers 1 for a workflow it finds wrong, and more when it could not judge.
+    linted=0
+    "$actionlint" -no-color -shellcheck= -pyflakes= -ignore '^label "ubuntu-26\.04-arm" is unknown\.' \
+      "${workflow_files[@]}" < /dev/null || linted=$?
+    case $linted in
+      0) ;;
+      1) fail "actionlint: a workflow above is one GitHub would refuse or misread" ;;
+      *) fail "actionlint could not judge the workflows (it answered $linted): see its message above" ;;
+    esac
+  fi
 fi
 
 # 5. Go gates, when there is Go. A failing go list is a failure, not an empty repository.
