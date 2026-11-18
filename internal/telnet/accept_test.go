@@ -284,10 +284,10 @@ func TestAcceptUrgent(t *testing.T) {
 				return time.Time{}, nil
 			}
 		}
-		t.Run("RecvChar's deadline at 750 ms: os.ErrDeadlineExceeded then, and the Line writes nothing more", func(t *testing.T) {
+		t.Run("RecvChar's deadline at 500 ms: os.ErrDeadlineExceeded then, and the Line writes nothing more", func(t *testing.T) {
 			t.Parallel()
 			pair, line := stalled(t)
-			deadline := time.Now().Add(testrun.Patient(margin))
+			deadline := time.Now().Add(500 * time.Millisecond)
 			returned, err := recvBounded(t, pair, func() error { _, err := line.RecvChar(t.Context(), deadline); return err }, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want os.ErrDeadlineExceeded", err)

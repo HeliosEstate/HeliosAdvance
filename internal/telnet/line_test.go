@@ -700,7 +700,7 @@ func TestLine(t *testing.T) {
 			fill(t, pair.server.TCPConn)
 			queued := repeated([]byte("q"), sendBufferBytes)
 			sendAll(t, line, queued)
-			deadline := time.Now().Add(testrun.Patient(margin))
+			deadline := time.Now().Add(300 * time.Millisecond)
 			if err := line.SendChar(withDeadline(t, deadline), 'r'); !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("SendChar returned %v, want the context's deadline", err)
 			}
@@ -765,7 +765,7 @@ func TestLine(t *testing.T) {
 			fill(t, pair.server.TCPConn)
 			queued := []byte("queued")
 			sendAll(t, line, queued)
-			deadline := time.Now().Add(testrun.Patient(margin))
+			deadline := time.Now().Add(500 * time.Millisecond)
 			err := line.Flush(endsLate(t, deadline))
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("Flush returned %v, want context.DeadlineExceeded", err)
@@ -800,7 +800,7 @@ func TestLine(t *testing.T) {
 			pair, line := answeredLine(t, []byte("waiting"))
 			fill(t, pair.server.TCPConn)
 			queued := repeated([]byte("abcdefghij"), 300)
-			ctx := withDeadline(t, time.Now().Add(testrun.Patient(margin)))
+			ctx := withDeadline(t, time.Now().Add(300*time.Millisecond))
 			var sent []byte
 			for _, value := range queued {
 				if line.SendChar(ctx, value) != nil {
@@ -820,7 +820,7 @@ func TestLine(t *testing.T) {
 			fill(t, pair.server.TCPConn)
 			queued := []byte("queued")
 			sendAll(t, line, queued)
-			if _, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(margin))); !errors.Is(err, os.ErrDeadlineExceeded) {
+			if _, err := line.RecvChar(t.Context(), time.Now().Add(300*time.Millisecond)); !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("RecvChar returned %v, want os.ErrDeadlineExceeded", err)
 			}
 			write(t, pair.client, []byte("k"))
