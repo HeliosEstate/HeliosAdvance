@@ -298,10 +298,15 @@ func TestAccept(t *testing.T) {
 			t.Run(version.name+": a caller that stops after its ClientHello receives whole TLS records alone, and no byte outside them", func(t *testing.T) {
 				t.Parallel()
 				connection := connect(t)
+				// The key files and the ClientHello are made before Accept's second starts, so
+				// the second is the engine's alone: made inside it, by outside programs on a busy
+				// machine, they could spend it before the handshake began.
+				certificate := readCertificate(t, goodFiles(t, ecdsaP256))
+				hello := clientHello(t, version.id)
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				t.Cleanup(cancel)
-				done := acceptOn(ctx, connection.server, readCertificate(t, goodFiles(t, ecdsaP256)))
-				send(t, connection.client, clientHello(t, version.id))
+				done := acceptOn(ctx, connection.server, certificate)
+				send(t, connection.client, hello)
 				got := waitAccepted(t, done, time.Now().Add(testrun.Patient(time.Second+margin)))
 				if got.line != nil {
 					t.Fatalf("Accept gave a Line where the caller never finished its handshake")
