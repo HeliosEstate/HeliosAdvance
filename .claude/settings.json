@@ -5,7 +5,6 @@
   "permissions": {
     "allow": [
       "Bash(bash check.sh*)",
-      "Bash(make check)",
       "Bash(go build *)",
       "Bash(go vet *)",
       "Bash(go test *)",
