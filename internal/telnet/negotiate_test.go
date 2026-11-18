@@ -302,7 +302,7 @@ func sweep() []byte {
 }
 
 // expectDeadlineAt checks a read on the server end, the client silent, waits until the deadline.
-// closeAfter closes the server end a stretched margin after the deadline, or after now if that
+// closeAfter closes the server end a stretched hang bound after the deadline, or after now if that
 // is later: under the race detector Negotiate may return past the deadline, and a watchdog
 // already run out would close the connection before the check reads it.
 func closeAfter(server *net.TCPConn, deadline time.Time) *time.Timer {
