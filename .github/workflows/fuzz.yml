@@ -124,7 +124,8 @@ jobs:
           else
             input="Go wrote no input: a build that broke, a seed that fails, or a fuzzing process ended from outside, such as by the system for its memory, which can be a finding. Fuzz the target where you can watch it: go test -run '^\$' -fuzz '^$NAME\$' $PKG"
           fi
-          output=$(grep -v '^fuzz: elapsed' "$RUNNER_TEMP/fuzz.txt" || true)
+          # grep answers 1 when every line is a progress line; more is a file it could not read.
+          output=$(grep -v '^fuzz: elapsed' "$RUNNER_TEMP/fuzz.txt") || [ $? = 1 ]
           failure=$(sed -n '/^--- FAIL\|^panic:/,$p' <<< "$output")
           {
             echo "Fuzzing $NAME in $PKG failed. $input"
