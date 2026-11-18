@@ -109,9 +109,11 @@ jobs:
       # says how many processes the limit stopped, of any kind (the developer's decisions,
       # 2026-11-11). sudo starts from a clean environment: a variable the run needs goes in the
       # list after "sudo env" below, as well as in env:. Inside the group the run is the runner's
-      # own user again, with that user's groups, docker among them, which the Swarm rows need:
-      # setpriv sets all three. systemd-run's own --uid kept root's groups instead, so the run
-      # could not reach Docker (probed on CI's runner, systemd 259).
+      # own user again, with that user's groups, docker among them, which a test that starts a
+      # container needs: setpriv sets all three. systemd-run's own --uid kept root's groups
+      # instead, so the run could not reach Docker (probed on CI's runner, systemd 259). A
+      # container a test starts runs under Docker's own service, outside the group: its memory is
+      # not held by the limit, and the report does not count it if the kernel stops it.
       - name: Mutate
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
         env:
