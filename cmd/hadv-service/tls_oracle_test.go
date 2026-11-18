@@ -413,12 +413,13 @@ func (client *sClient) handshakeText(t *testing.T) string {
 // the prompt, and types the name on s_client's input. On Windows s_client shows what it receives
 // only when it ends, if its output is a pipe, so the prompt cannot be waited on: the engine
 // writes it once negotiation's 3 seconds pass after the handshake, which s_client answers
-// nothing of, and the name is typed a margin after that. A name typed before the prompt would
-// fall in negotiation, which keeps no data byte.
+// nothing of, and the name is typed a whole negotiation's length after that. A name typed before
+// the prompt would fall in negotiation, which keeps no data byte; the second negotiation's length
+// is room for the engine and the test to run late, far inside the name's 60 seconds.
 func (client *sClient) typeAfterPrompt(t *testing.T, name string) {
 	t.Helper()
 	client.waitFor(t, "Cipher is", time.Now().Add(testrun.Patient(testrun.HangBound)))
-	pause(t, negotiationLimit+testrun.Patient(margin))
+	pause(t, negotiationLimit+testrun.Patient(negotiationLimit))
 	client.send(t, name+"\n")
 }
 
