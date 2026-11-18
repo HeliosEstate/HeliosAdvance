@@ -108,7 +108,12 @@ jobs:
       # not reserved address space, which a test binary holds far more of than it uses. The report
       # says how many processes the limit stopped, of any kind (the developer's decisions,
       # 2026-11-11). sudo starts from a clean environment: a variable the run needs goes in the
-      # list after "sudo env" below, as well as in env:.
+      # list after "sudo env" below, as well as in env:. Inside the group the run is the runner's
+      # own user again, with that user's groups, docker among them, which a test that starts a
+      # container needs: setpriv sets all three. systemd-run's own --uid kept root's groups
+      # instead, so the run could not reach Docker (probed on CI's runner, systemd 259). A
+      # container a test starts runs under Docker's own service, outside the group: its memory is
+      # not held by the limit, and the report does not count it if the kernel stops it.
       - name: Mutate
         if: steps.scope.outputs.diff || steps.scope.outputs.packages
         env:
@@ -119,11 +124,11 @@ jobs:
         run: |
           export PATH="$PGDIR:$PATH"
           if [ -n "$MUTATE" ]; then echo "mutating, whole: $MUTATE"; else echo "mutating the pull request's changed lines"; fi
-          sudo env "PATH=$PATH" "HOME=$HOME" "MUTATE=$MUTATE" "BASE=$BASE" "GATES=$GATES" \
-            "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" \
+          sudo env "PATH=$PATH" "HOME=$HOME" "USER=$USER" "LOGNAME=$USER" "MUTATE=$MUTATE" \
+            "BASE=$BASE" "GATES=$GATES" "GITHUB_STEP_SUMMARY=$GITHUB_STEP_SUMMARY" \
             systemd-run --scope --quiet --collect \
-            -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue \
-            --uid="$(id -u)" --gid="$(id -g)" --same-dir -- bash -c '
+            -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue --same-dir -- \
+            setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups bash -c '
               bash check.sh --mutation
               status=$?
               events=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.events
