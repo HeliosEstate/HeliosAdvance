@@ -437,7 +437,7 @@ func TestOpen(t *testing.T) {
 					write(t, pair.client, sent)
 				}
 				_ = pair.client.CloseWrite()
-				got := call.result(t, time.Now().Add(testrun.Patient(testrun.HangBound)))
+				got := call.result(t, time.Now().Add(testrun.Patient(margin)))
 				if !errors.Is(got.err, telnet.ErrCallerClosed) || !errors.Is(got.err, io.EOF) {
 					t.Fatalf("Open returned %v, want ErrCallerClosed matching io.EOF", got.err)
 				}
@@ -582,7 +582,7 @@ func TestOpen(t *testing.T) {
 			pair := connect(t)
 			call := openOn(t.Context(), pair.server)
 			_ = pair.client.CloseWrite()
-			if got := call.result(t, time.Now().Add(testrun.Patient(testrun.HangBound))); !errors.Is(got.err, telnet.ErrCallerClosed) || got.line != nil {
+			if got := call.result(t, time.Now().Add(testrun.Patient(margin))); !errors.Is(got.err, telnet.ErrCallerClosed) || got.line != nil {
 				t.Fatalf("Open returned (%v, %v), want a nil Line and ErrCallerClosed", got.line, got.err)
 			}
 		})

@@ -170,7 +170,7 @@ func TestAccept(t *testing.T) {
 			done := acceptOn(t.Context(), pair.server.TCPConn)
 			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			_ = pair.client.CloseWrite()
-			got := waitAccepted(t, done, testrun.Patient(testrun.HangBound))
+			got := waitAccepted(t, done, testrun.Patient(margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrCallerClosed) || !errors.Is(got.err, io.EOF) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrCallerClosed matching io.EOF", got.line, got.err)
 			}
