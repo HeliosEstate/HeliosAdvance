@@ -124,11 +124,6 @@ type sendResult struct {
 // have begun, to be waiting by then: such a send blocks at once.
 const sendReach = 100 * time.Millisecond
 
-// sendLead is how far after the deadline is set a row fixes the moment that ends or opens a send on
-// a full connection: the send must begin sendReach before that moment, and the test's own steps up
-// to the send get a margin, as the engine does.
-const sendLead = sendMargin + sendReach
-
 // sendBounded calls WriteUrgent with DM alone on its own goroutine and waits for it no later than
 // until. Past until, the caller resets, which ends the send, and the row fails.
 func sendBounded(t *testing.T, engine *acceptedConn, caller *net.TCPConn, until time.Time) sendResult {
@@ -190,20 +185,20 @@ func TestUrgentSend(t *testing.T) {
 			arrange func(t *testing.T, engine *acceptedConn, caller *net.TCPConn, set time.Time) (time.Time, func(*testing.T))
 		}{
 			{
-				name:     "the urgent byte alone on a full connection, its write deadline 850 ms away: os.ErrDeadlineExceeded at that deadline, nothing sent",
+				name:     "the urgent byte alone on a full connection, its write deadline 500 ms away: os.ErrDeadlineExceeded at that deadline, nothing sent",
 				full:     true,
-				deadline: sendLead,
+				deadline: 500 * time.Millisecond,
 				arrange: func(_ *testing.T, _ *acceptedConn, _ *net.TCPConn, set time.Time) (time.Time, func(*testing.T)) {
-					return set.Add(sendLead), nil
+					return set.Add(500 * time.Millisecond), nil
 				},
 			},
 			{
-				name:     "the same, its deadline 10 seconds away, a long-passed deadline set from another goroutine at 850 ms: os.ErrDeadlineExceeded then",
+				name:     "the same, its deadline 10 seconds away, a long-passed deadline set from another goroutine at 500 ms: os.ErrDeadlineExceeded then",
 				full:     true,
 				deadline: testrun.Patient(10 * time.Second),
 				arrange: func(t *testing.T, engine *acceptedConn, _ *net.TCPConn, _ time.Time) (time.Time, func(*testing.T)) {
 					t.Helper()
-					wakeAt := time.Now().Add(sendLead)
+					wakeAt := time.Now().Add(500 * time.Millisecond)
 					woken := make(chan struct{})
 					wake := time.AfterFunc(time.Until(wakeAt), func() {
 						defer close(woken)
@@ -218,7 +213,7 @@ func TestUrgentSend(t *testing.T) {
 				},
 			},
 			{
-				name:     "the same, its deadline 10 seconds away, the context the wake is registered with cancelled at 850 ms: os.ErrDeadlineExceeded then",
+				name:     "the same, its deadline 10 seconds away, the context the wake is registered with cancelled at 500 ms: os.ErrDeadlineExceeded then",
 				full:     true,
 				deadline: testrun.Patient(10 * time.Second),
 				arrange: func(t *testing.T, engine *acceptedConn, _ *net.TCPConn, _ time.Time) (time.Time, func(*testing.T)) {
@@ -226,14 +221,14 @@ func TestUrgentSend(t *testing.T) {
 					ctx, cancel := context.WithCancel(t.Context())
 					release := wakeOnEnd(ctx, engine)
 					t.Cleanup(release)
-					cancelAt := time.Now().Add(sendLead)
+					cancelAt := time.Now().Add(500 * time.Millisecond)
 					stop := time.AfterFunc(time.Until(cancelAt), cancel)
 					t.Cleanup(func() { stop.Stop(); cancel() })
 					return cancelAt, nil
 				},
 			},
 			{
-				name:     "the same, its deadline 10 seconds away, the caller reading from 850 ms: the byte sent with no error once room opens, DM the last byte read",
+				name:     "the same, its deadline 10 seconds away, the caller reading from 500 ms: the byte sent with no error once room opens, DM the last byte read",
 				full:     true,
 				sent:     true,
 				deadline: testrun.Patient(10 * time.Second),
@@ -242,7 +237,7 @@ func TestUrgentSend(t *testing.T) {
 					read := make(chan struct{})
 					var last byte
 					var readErr error
-					readAt := time.Now().Add(sendLead)
+					readAt := time.Now().Add(500 * time.Millisecond)
 					reader := time.AfterFunc(time.Until(readAt), func() {
 						defer close(read)
 						last, _, readErr = readAll(caller)
