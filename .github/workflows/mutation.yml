@@ -59,7 +59,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          engine() { grep -E '^internal/' | grep -vE '^internal/testrun(/|$)' || true; }
+          engine() { awk '/^internal\// && !/^internal\/testrun(\/|$)/'; }
           if [ "$EVENT" != pull_request ]; then
             echo "packages=." >> "$GITHUB_OUTPUT"
             echo "base=HEAD" >> "$GITHUB_OUTPUT"

@@ -32,24 +32,29 @@ jobs:
     outputs:
       skip: ${{ steps.changes.outputs.skip }}
     steps:
+      # No step here pushes or fetches with the token, so the clone does not keep it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Change set
         id: changes
         # On a push the change set is everything the push brought, from the commit before it, not
         # only the last commit; a new branch or an unreachable one runs everything (the codebase
-        # review, 2026-10-24).
+        # review, 2026-10-24). The base branch's name reaches the shell as data in the environment,
+        # never inside the script.
         env:
           BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then base="origin/${{ github.base_ref }}"
+          if [ "$EVENT" = pull_request ]; then base="origin/$BASE_REF"
           elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base="$BEFORE"
           else echo "skip=0" >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(git diff --name-only "$base...HEAD" 2>/dev/null || git diff --name-only HEAD^ HEAD)
           printf '%s\n' "$files"
-          rest=$(printf '%s\n' "$files" | grep -vE '\.md$' | grep -vE '^docs/' | grep -vxE 'developer-owned-paths|security-paths|loop-identities' | grep -vE '^\.github/' || true)
-          full=$(printf '%s\n' "$files" | grep -xE '\.github/workflows/check\.yml|\.github/tool-versions' || true)
+          rest=$(printf '%s\n' "$files" | awk '!/\.md$/ && !/^docs\// && !/^(developer-owned-paths|security-paths|loop-identities)$/ && !/^\.github\//')
+          full=$(printf '%s\n' "$files" | awk '/^(\.github\/workflows\/check\.yml|\.github\/tool-versions)$/')
           if [ -n "$files" ] && [ -z "$rest" ] && [ -z "$full" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
       # The Go of go.mod, for the cheap gates' own uses: gate 4b's list of systems, the self-test,
       # and the install of actionlint at its pin, as check.sh installs every gate tool. None of
@@ -119,6 +124,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -209,7 +215,7 @@ jobs:
           COVER: ${{ runner.os == 'Linux' && matrix.mode == 'norace' && '-coverprofile=coverage.out' || '' }}
           TESTSKIP: ${{ runner.os == 'Windows' && '^(TestOracle|TestLinux)' || '' }}
           GATES: ${{ matrix.gates && '1' || '0' }}
-          # The changes job above lints the workflows, once a run.
+          # The changes job above lints the workflows and the shell scripts, once a run.
           LINT_WORKFLOWS: "0"
           ONLY: ${{ matrix.pkgs }}
           EXCEPT: ${{ matrix.except }}
@@ -245,8 +251,11 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Windows ]; then tmp=$(cygpath -u "$(pwsh -NoProfile -Command '[IO.Path]::GetTempPath()')")
           else tmp=${TMPDIR:-/tmp}; fi
-          left=$(ls -d "${tmp%/}"/hadv-test-run-* 2>/dev/null || true)
-          [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || true)"
+          shopt -s nullglob
+          folders=("${tmp%/}"/hadv-test-run-*)
+          left=$(printf '%s\n' "${folders[@]}")
+          # pgrep answers 1 for no process, which is the pass; more is a failure to look.
+          [ "$RUNNER_OS" = Windows ] || left="$left$(pgrep -af "${tmp%/}/hadv-test-run-" || [ $? = 1 ])"
           [ -z "$left" ] || { echo "$left"; echo "::error::a test run left these behind"; exit 1; }
       # Coverage is a report, never a gate: a percentage fails nothing. Mutation testing is a
       # report too; QA's broken copies are the gate on test strength (the developer, 2026-10-22).
@@ -336,10 +345,14 @@ jobs:
         run: |
           echo "::error::a pull request into main comes from this repository's development alone, not $HEAD_REF"
           exit 1
-      - run: |
-          test "${{ needs.changes.result }}" = success
-          if [ "${{ needs.changes.outputs.skip }}" = 1 ]; then
-            test "${{ needs.run.result }}" = skipped
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          SKIP: ${{ needs.changes.outputs.skip }}
+          RUN: ${{ needs.run.result }}
+        run: |
+          test "$CHANGES" = success
+          if [ "$SKIP" = 1 ]; then
+            test "$RUN" = skipped
           else
-            test "${{ needs.run.result }}" = success
+            test "$RUN" = success
           fi
