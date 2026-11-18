@@ -117,7 +117,7 @@ func TestCall(t *testing.T) {
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(negotiationLimit + testrun.Patient(testrun.HangBound)))
 			call.send(t, join([]byte{iac, subnegotiationBegin, telnetTypeOption}, answers))
-			for next := time.Now(); next.Before(call.dialed.Add(negotiationLimit - 300*time.Millisecond)); next = next.Add(200 * time.Millisecond) {
+			for next := time.Now(); next.Before(call.dialed.Add(negotiationLimit - margin)); next = next.Add(200 * time.Millisecond) {
 				wait(t, next)
 				call.send(t, join([]byte("data"), request(doVerb, telnetTypeOption)))
 			}
