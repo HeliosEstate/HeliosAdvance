@@ -31,8 +31,10 @@ var headerEdits = map[string]string{
 	"a sealed-key length of 1 that lies":                        "sealed-length 1",
 	"10 bytes, shorter than the header's start":                 "truncate 10",
 	"40 bytes, one short of header, nonce and tag":              "truncate 40",
-	"key holder 4, no sealed key":                               "holder 4",
-	"key holder 5, no sealed key":                               "holder 5",
+	"key holder 6, the first the format lacks":                  "holder 6",
+	"key holder 4, 293 sealed bytes, a name in its form":        "holder 4\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256",
+	"key holder 5, 293 sealed bytes, a name in its form":        "holder 5\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256",
+	"key holder 4, a sealed-key length of 1 that lies":          "holder 4\nsealed-length 1",
 	"key holder 2, a sealed key a byte short, its name in form": "holder 2\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:255",
 	"key holder 2, a sealed key a byte long, its name in form":  "holder 2\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:257",
 	"key holder 3, a sealed key a byte short, its name in form": "holder 3\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:255",
@@ -170,7 +172,7 @@ func TestOpen(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0 or, on Windows, KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file or asks a key store.", func(t *testing.T) {
+	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0, on Windows KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or on Linux KeyHolderSystemd or KeyHolderSwarm with a sealed-key length of 0, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file, asks a key store, or reads a credential or secret.", func(t *testing.T) {
 		t.Parallel()
 		for name, edits := range headerEdits {
 			t.Run(name+": ErrHeader", func(t *testing.T) {
@@ -355,7 +357,7 @@ func TestOpen(t *testing.T) {
 		})
 	})
 
-	t.Run("No error the bootstrap package returns shall hold, in its text, the key or any part of either file's contents.", func(t *testing.T) {
+	t.Run("No error the bootstrap package returns shall hold, in its text, the key or any part of what it reads: the bootstrap file, the key file, systemd's credential or the Swarm secret.", func(t *testing.T) {
 		t.Parallel()
 		// Every refusal row above checks its error's text the same way; these rows put the
 		// secrets where a careless error would quote them.

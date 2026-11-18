@@ -73,7 +73,7 @@ func TestWindowsBootstrapKeyStoreProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap file's header is not format version 1's for the key file or, on Windows, for the TPM or the software key store, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file or asking a key store, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's header is not format version 1's for the key file, on Windows for the TPM or the software key store, or on Linux for a systemd credential or a Swarm secret, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file, asking a key store, or reading a credential or secret, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		for store, holder := range holderOf {
 			for name, edits := range map[string]func(name string) string{
@@ -274,7 +274,7 @@ func TestWindowsElevatedBootstrapKeyStoreProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("The engine shall not write the bootstrap file's password, or its key from the key file or a Windows key store, to the local log.", func(t *testing.T) {
+	t.Run("The engine shall not write the bootstrap file's password, or its key from the key file, a Windows key store, a systemd credential or a Swarm secret, to the local log.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("key holder 3, a run that starts and stops: neither the password, nor the key, nor the wrapped key anywhere in its log", func(t *testing.T) {
 			t.Parallel()
