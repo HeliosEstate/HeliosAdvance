@@ -386,7 +386,7 @@ func TestNothingKept(t *testing.T) {
 				[]byte{iac, subnegotiationBegin, windowSizeOption, 0, 80, 0, 24, iac, subnegotiationEnd})
 			agreed := []byte{iac, doVerb, echo, iac, doVerb, sga, iac, doVerb, binary, iac, will, binary,
 				iac, will, telnetTypeOption, iac, will, windowSizeOption, iac, will, environOption, iac, will, speedOption}
-			call.readExactly(t, opening, call.connected.Add(testrun.Patient(testrun.HangBound)))
+			call.readExactly(t, opening, call.connected.Add(testrun.Patient(margin)))
 			call.send(t, join(agreed, reports))
 			call.readExactly(t, join(terminalTypeSend, environSend, speedSend, asked), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			call.send(t, join([]byte("a"), reports, []byte("b\r")))

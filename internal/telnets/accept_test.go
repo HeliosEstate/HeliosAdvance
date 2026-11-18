@@ -244,7 +244,7 @@ func TestAccept(t *testing.T) {
 				t.Run(certificate.name+", "+made.name+": ErrConnectionFailed, no Line, and a byte still passes both ways", func(t *testing.T) {
 					t.Parallel()
 					connection := connect(t)
-					got := waitAccepted(t, acceptOn(made.make(t), connection.server, certificate.value), time.Now().Add(testrun.Patient(testrun.HangBound)))
+					got := waitAccepted(t, acceptOn(made.make(t), connection.server, certificate.value), time.Now().Add(testrun.Patient(margin)))
 					if got.line != nil || !errors.Is(got.err, telnet.ErrConnectionFailed) {
 						t.Fatalf("Accept gave %v and %v, want no Line and ErrConnectionFailed", got.line, got.err)
 					}
@@ -385,11 +385,11 @@ func TestAccept(t *testing.T) {
 				connection := connect(t)
 				done := acceptOn(t.Context(), connection.server, readCertificate(t, goodFiles(t, ecdsaP256)))
 				call := handshake(t, connection.client, clientConfig(version.id))
-				call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))
+				call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
 				if err := call.tls.CloseWrite(); err != nil {
 					t.Fatalf("the caller's close_notify failed: %v", err)
 				}
-				got := waitAccepted(t, done, time.Now().Add(testrun.Patient(testrun.HangBound)))
+				got := waitAccepted(t, done, time.Now().Add(testrun.Patient(margin)))
 				if got.line != nil || !errors.Is(got.err, telnet.ErrCallerClosed) {
 					t.Fatalf("Accept gave %v and %v, want no Line and ErrCallerClosed", got.line, got.err)
 				}
@@ -441,10 +441,10 @@ func TestAccept(t *testing.T) {
 			connection, call, line := acceptedCaller(t, tls.VersionTLS12)
 			done := make(chan error, 1)
 			go func() { done <- line.Close(t.Context()) }()
-			if received, err := call.readToEnd(time.Now().Add(testrun.Patient(testrun.HangBound))); len(received) != 0 || !errors.Is(err, io.EOF) {
+			if received, err := call.readToEnd(time.Now().Add(testrun.Patient(margin))); len(received) != 0 || !errors.Is(err, io.EOF) {
 				t.Fatalf("the caller read % x and %v inside the channel, want close_notify's end of file", received, err)
 			}
-			if received, err := rawToEnd(connection.client, time.Now().Add(testrun.Patient(testrun.HangBound))); len(received) != 0 || !errors.Is(err, io.EOF) {
+			if received, err := rawToEnd(connection.client, time.Now().Add(testrun.Patient(margin))); len(received) != 0 || !errors.Is(err, io.EOF) {
 				t.Fatalf("after close_notify the caller's TCP connection gave % x and %v, want end of stream", received, err)
 			}
 			types, trailing := recordTypes(call.tap.receivedSoFar())

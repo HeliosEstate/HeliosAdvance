@@ -1047,7 +1047,7 @@ func TestTLSProgram(t *testing.T) {
 			config.ServerName = canary + ".test"
 			config.NextProtos = []string{canary}
 			call := dialTLS(t, telnets[0], config)
-			call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
 			call.send(t, answers)
 			call.readExactly(t, []byte(greeting+prompt), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			call.send(t, []byte(typedName+"\r"))

@@ -366,7 +366,7 @@ func TestProgram(t *testing.T) {
 			// The engine refuses a request only once it has read every byte the caller sent
 			// before it, so the refusal shows the text above has been read.
 			during.send(t, []byte{iac, will, unknownOption})
-			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			during.readExactly(t, []byte{iac, dont, unknownOption}, time.Now().Add(testrun.Patient(margin)))
 			// The text sent after negotiation becomes the name, cut at 30 characters, and once
 			// Hello is written the engine shuts its sending side and says nothing more, so the
 			// only sign it has read all of the text, to the caller's end of stream, is the call
