@@ -311,9 +311,11 @@ func TestCall(t *testing.T) {
 			dialed := time.Now()
 			client := readyClient(t, program.ssh, "anyone")
 			connected := time.Now()
-			// The shell at 9 seconds sets the name's 60 seconds to end at 69, so a name typed
-			// at 68.3 gets its Hello after 68 seconds and inside the ceiling.
-			waitUntil(t, dialed.Add(9*time.Second))
+			// The shell at 10 seconds sets the name's 60 seconds to end at 70, with the ceiling, so
+			// a name typed at 68.3 gets its Hello after 68 seconds, with 1.7 seconds before the
+			// name's end for the test's own steps to run late. The name stays at 68.3 so the
+			// nearest fault, a close 3 seconds after Hello, falls past the window's end.
+			waitUntil(t, dialed.Add(10*time.Second))
 			client.toShell(false)
 			client.readUntil(asked, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			waitUntil(t, dialed.Add(68300*time.Millisecond))
