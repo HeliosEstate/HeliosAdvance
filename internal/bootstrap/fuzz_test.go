@@ -20,12 +20,15 @@ func FuzzHeader(fuzzing *testing.F) {
 	}
 	plaintext := paddedPlaintext(64)
 	// Seeds under key holders 2 and 3 with a sealed key of its length, its name in its form and out
-	// of it, so the fuzzer starts from headers that reach a key store on Windows.
+	// of it, so the fuzzer starts from headers that reach a key store on Windows; and under key
+	// holders 4 and 5 with none, which reach systemd's credential and the Swarm secret on Linux.
 	storeSeeds := []string{
 		"holder 2\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256",
 		"holder 3\nsealed \"hadv-0123456789abcdef0123456789abcdef\" random:256",
 		"holder 3\nsealed \"HADV-0123456789ABCDEF0123456789ABCDEF\" random:256",
 		"holder 2\nsealed \"hadv_0123456789abcdef0123456789abcdeg\" random:256",
+		"holder 4",
+		"holder 5",
 	}
 	for _, edits := range append(append([]string{""}, editsOf(headerEdits)...), storeSeeds...) {
 		sealed, err := sealIn(fuzzing.TempDir(), keyText, plaintext, edits)

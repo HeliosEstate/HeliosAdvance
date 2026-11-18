@@ -75,7 +75,7 @@ func TestLinuxBootstrapProgram(t *testing.T) {
 		})
 	})
 
-	t.Run("If the bootstrap file's header is not format version 1's for the key file or, on Windows, for the TPM or the software key store, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file or asking a key store, and exit with a non-zero code.", func(t *testing.T) {
+	t.Run("If the bootstrap file's header is not format version 1's for the key file, on Windows for the TPM or the software key store, or on Linux for a systemd credential or a Swarm secret, or the bootstrap file is too short for its header, nonce and tag, then the engine shall write one `start_failed` line saying so, without reading the key file, asking a key store, or reading a credential or secret, and exit with a non-zero code.", func(t *testing.T) {
 		t.Parallel()
 		// Linux has neither of Windows' key stores, so a header naming either is one it does not
 		// read, however well formed its sealed key is. Each folder also holds a good key file the

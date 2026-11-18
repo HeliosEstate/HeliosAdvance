@@ -24,7 +24,7 @@ const (
 	alphabet     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 )
 
-// refusals are the three errors a file's reading can end in, which differ between the two files
+// refusals are the three errors a file's reading can end in, which differ between the four files
 // although the reading is one.
 type refusals struct{ missing, unreadable, tooLarge error }
 
@@ -85,14 +85,23 @@ func headerIsOurs(sealed []byte) bool {
 
 // readKeyFile takes the key from the key file into buffer, which the caller clears.
 func readKeyFile(root *os.Root, buffer []byte) ([]byte, error) {
-	keyText, err := readFrom(root, KeyFileName, KeyFileMostBytes, keyFileRefusals, checkKeyFile)
+	return readKeyText(root, KeyFileName, keyFileRefusals, checkKeyFile, buffer)
+}
+
+// readKeyText takes a key in the key file's form from a file of the folder into buffer, which the
+// caller clears. A text out of form is refused as too large, which for both files in this form is
+// the form error, since the form bounds the length.
+func readKeyText(root *os.Root, name string, refuse refusals, check func(*os.File, fs.FileInfo) error,
+	buffer []byte,
+) ([]byte, error) {
+	keyText, err := readFrom(root, name, KeyFileMostBytes, refuse, check)
 	if err != nil {
 		return nil, err
 	}
 	defer clear(keyText)
 	key, ok := decodeKey(keyText, buffer)
 	if !ok {
-		return nil, ErrKeyFileForm
+		return nil, refuse.tooLarge
 	}
 	return key, nil
 }
@@ -105,10 +114,18 @@ func readFrom(root *os.Root, name string, most int, refuse refusals,
 	check func(*os.File, fs.FileInfo) error,
 ) ([]byte, error) {
 	opened, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, fs.ErrNotExist) {
+	return readAndClose(opened, err, most, refuse, check)
+}
+
+// readAndClose reads what an open gave, bounded as readFrom says, and closes it; a file opened by
+// its path rather than in a folder is read the same way.
+func readAndClose(opened *os.File, openErr error, most int, refuse refusals,
+	check func(*os.File, fs.FileInfo) error,
+) ([]byte, error) {
+	if errors.Is(openErr, fs.ErrNotExist) {
 		return nil, refuse.missing
 	}
-	if err != nil {
+	if openErr != nil {
 		return nil, refuse.unreadable
 	}
 	contents, err := readOpened(opened, most, refuse, check)

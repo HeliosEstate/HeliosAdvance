@@ -151,7 +151,9 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   inherited entries as the file's own, the runner's account among them. A row that needs an exact
   access list writes it whole, from SDDL.
 - cmd reads a comma as a space, and a row's temporary folder carries its name's commas: a command
-  run through cmd, such as `mklink /J`, is given names relative to its working folder.
+  run through cmd, such as `mklink /J`, is given names relative to its working folder. Docker
+  reads an option such as `--mount` as comma-separated values, so a path there is quoted as one
+  field.
 - A socket for a row on Linux is made with mknod, `S_IFSOCK`, bound by nothing: a socket's
   address holds about 108 bytes, which a row's own folder can pass, and opening one bound by
   nothing fails as opening a bound one does (ENXIO). Windows has the same limit on a socket's
@@ -165,6 +167,12 @@ built, and locked by the QA commit: a build changes code until they pass, never 
   itself: 8 bytes of its own wake-up for the network poller, on another thread, at moments its
   scheduler picks. On Windows it comes only through a raw pointer, which the imports refuse, or
   by asking another program, which timed out on CI's runner three times.
+- A file that opens and then fails its first read, for a line on a read that fails: on Linux, the
+  test process's own memory file, `/proc/<pid>/mem`, bound over the path through sudo, opens as a
+  regular file of mode 0600, the process's own, and its read at offset 0 fails with an
+  input/output error. Another process may not open it at all, so only Open called in the test
+  process itself can meet it, never the program. A file bound inside a folder that is no mount
+  point is found in `findmnt`'s whole list: `findmnt -R` on the folder prints nothing.
 - On Linux the row runs its case again in the test binary under `strace -ff --seccomp-bpf -y`,
   which names the file behind every read, stops the child only at the reads traced, and writes
   each thread's reads to a file of its own, so no read is split by another thread's. The row adds
@@ -307,7 +315,10 @@ rows run nowhere else and a run here skips them.
 - A program that starts a server writes to a file, not a pipe: the server inherits its handles
   and would hold a pipe open. A cleanup that stops a server runs on a context of its own, since
   the test's has ended by then.
-- A test that sets the process's environment runs alone, before the parallel tests resume.
+- A test that sets the process's environment runs alone, before the parallel tests resume. The
+  paralleltest linter excuses only a test that calls `t.Setenv` itself, so a row that sets it
+  through a helper carries `//nolint:paralleltest` with its reason. A row keeps what it set; it
+  never reads the environment back, which the lint rules refuse in tests too.
 - A client that gives up does not end PostgreSQL's wait on a lock: the server notices a closed
   client only when it next writes to it. A client's give-up is read from the server's statement
   log, not from the server's list of what waits.

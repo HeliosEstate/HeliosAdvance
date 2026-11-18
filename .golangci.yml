@@ -331,7 +331,9 @@ linters:
           msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
           msg: read into a fixed-size buffer with io.ReadFull; no read drains a reader, bounded or not
-        - pattern: ^os\.(Getenv|LookupEnv)$
+        # Every way into the environment, not the two common ones alone: syscall's own read and
+        # the whole list reach it as well.
+        - pattern: ^(os\.(Getenv|LookupEnv|Environ|ExpandEnv)|syscall\.Getenv)$
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
@@ -380,10 +382,15 @@ linters:
       - path: cmd/hadv-service/main\.go
         linters: [forbidigo]
         text: os\.Stdout
-      # systemd names its ready socket only in the environment, NOTIFY_SOCKET (sd_notify), read in
-      # the Linux ready message's one file; it is the only variable the engine reads (Part 6's
-      # page, its line on NOTIFY_SOCKET; developer, 2026-10-28).
+      # The engine reads two variables, each in one file, since systemd names each only in the
+      # environment. NOTIFY_SOCKET, its ready socket (sd_notify), in the Linux ready message's
+      # file (Part 6's page, its line on NOTIFY_SOCKET; developer, 2026-10-28).
       - path: internal/servicemanager/notify_linux\.go
+        linters: [forbidigo]
+        text: os\.LookupEnv
+      # CREDENTIALS_DIRECTORY, the folder of the service's credentials, in the bootstrap unit's
+      # Linux credential file (bootstrap Part 3's page, its line on key holder 4).
+      - path: internal/bootstrap/credential_linux\.go
         linters: [forbidigo]
         text: os\.LookupEnv
       # A test's child process reports to the test through its standard output; the console
@@ -391,6 +398,11 @@ linters:
       - path: _test\.go
         linters: [forbidigo]
         text: os\.Std(out|err)
+      # A test hands its own environment to a child process it starts; the environment rule is
+      # for the engine reading its settings.
+      - path: _test\.go
+        linters: [forbidigo]
+        text: os\.Environ
       # Copied code is judged in production code only: approved tests are locked, so a finding
       # there is one no session could fix.
       - path: _test\.go
@@ -438,6 +450,13 @@ linters:
       - path: ^internal/bootstrap/keystore_windows\.go$
         linters: [gosec]
         text: G103
+      # systemd's credential and the Swarm secret are named, not held, in the contract (bootstrap
+      # Part 3): the two constants say where the key is found, and gosec reads a name holding
+      # "Credential" or "Secret" as a password written into the code.
+      - path: ^internal/bootstrap/contract\.go$
+        linters: [gosec]
+        text: G101
+        source: '^\s*(CredentialName|SecretName) = "hadv-bootstrap-key"$'
 
 formatters:
   enable:

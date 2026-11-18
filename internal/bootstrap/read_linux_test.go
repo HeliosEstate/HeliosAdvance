@@ -42,10 +42,11 @@ func runPattern(name string) string {
 	return strings.Join(parts, "/")
 }
 
-// isFolderFile reports whether path names one of a bootstrap folder's two files.
+// isFolderFile reports whether path names one of a bootstrap folder's two files, or the file key
+// holders 4 and 5 keep the key in.
 func isFolderFile(path string) bool {
 	base := filepath.Base(path)
-	return base == fileName || base == keyFileName
+	return base == fileName || base == keyFileName || base == heldKeyName
 }
 
 // grouped is a count in digits with a comma between each group of three, as the rows' names
@@ -134,10 +135,10 @@ func expectReadAtMost(t *testing.T, made *layout, name string, most int64) {
 }
 
 // readsOf runs the calling row again in a child under strace, which opens folder, and returns the
-// bytes read from each file in folder, by its name. The child must pass the row: it checks what
-// Open returned. Each thread's reads go to a file of their own, so no read is split across lines
-// by another thread's.
-func readsOf(t *testing.T, folder string) map[string]int64 {
+// bytes read from each file in folder, and in each of the other folders given, by its name. The
+// child must pass the row: it checks what Open returned. Each thread's reads go to a file of their
+// own, so no read is split across lines by another thread's.
+func readsOf(t *testing.T, folder string, others ...string) map[string]int64 {
 	t.Helper()
 	if _, err := exec.LookPath("strace"); err != nil {
 		t.Fatalf("strace, which names the file behind each read, is not installed: %v", err)
@@ -146,9 +147,13 @@ func readsOf(t *testing.T, folder string) map[string]int64 {
 	if err != nil {
 		t.Fatalf("finding the test binary: %v", err)
 	}
-	root, err := filepath.EvalSymlinks(folder)
-	if err != nil {
-		t.Fatalf("resolving the bootstrap folder %s: %v", folder, err)
+	roots := map[string]bool{}
+	for _, each := range append([]string{folder}, others...) {
+		root, err := filepath.EvalSymlinks(each)
+		if err != nil {
+			t.Fatalf("resolving the folder %s: %v", each, err)
+		}
+		roots[root] = true
 	}
 	account := filepath.Join(t.TempDir(), "reads")
 	bound := testrun.Patient(testrun.HangBound)
@@ -202,11 +207,11 @@ func readsOf(t *testing.T, folder string) map[string]int64 {
 			if err != nil {
 				t.Fatalf("strace's account gives a read's result as %q: %v", found[2], err)
 			}
-			if filepath.Dir(found[1]) != root {
+			if !roots[filepath.Dir(found[1])] {
 				// A folder's file the account names in another form than the folder's would be
 				// counted nowhere, and a bound on it would pass on nothing read.
 				if isFolderFile(found[1]) {
-					t.Fatalf("strace's account names a bootstrap folder's file outside the row's folder %s: %q", root, line)
+					t.Fatalf("strace's account names a bootstrap folder's file outside the row's folders %v: %q", roots, line)
 				}
 				continue
 			}

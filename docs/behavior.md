@@ -362,8 +362,8 @@ changes two of its lines, on the schema version and on waiting.
   and exit with a non-zero code.
 - The engine shall take where it connects, its login and its password from the bootstrap file
   alone.
-- The engine shall not write the bootstrap file's password, or its key from the key file or a
-  Windows key store, to the local log.
+- The engine shall not write the bootstrap file's password, or its key from the key file, a
+  Windows key store, a systemd credential or a Swarm secret, to the local log.
 
 #### Signing in
 
@@ -445,8 +445,8 @@ Telnet over TLS port option.
 ## bootstrap
 
 The bootstrap folder: the encrypted bootstrap file that tells the engine where its database is and
-how to sign in, and what holds the key it is sealed under: the key file or, on Windows, a key
-store.
+how to sign in, and what holds the key it is sealed under: the key file, on Windows a key store,
+or on Linux a systemd credential or a Swarm secret.
 
 ### Part 1: The bootstrap file and its key file
 
@@ -483,10 +483,11 @@ settings come from.
 
 #### The bootstrap file
 
-- If the bootstrap file's header is not format version 1's for the key file or, on Windows, for
-  the TPM or the software key store, or the bootstrap file is too short for its header, nonce and
-  tag, then the engine shall write one `start_failed` line saying so, without reading the key file
-  or asking a key store, and exit with a non-zero code.
+- If the bootstrap file's header is not format version 1's for the key file, on Windows for the
+  TPM or the software key store, or on Linux for a systemd credential or a Swarm secret, or the
+  bootstrap file is too short for its header, nonce and tag, then the engine shall write one
+  `start_failed` line saying so, without reading the key file, asking a key store, or reading a
+  credential or secret, and exit with a non-zero code.
 - If the bootstrap file does not unseal under the key its key holder gives, then the engine shall
   write one `start_failed` line saying so, and exit with a non-zero code.
 
@@ -518,6 +519,36 @@ Part 1's lines, above, and one of the database's Part 1, on the local log.
 - If the engine is unable to confirm that no account but those above has access to the Windows
   key, such as an access-list entry of a kind it does not judge, then the engine shall write one
   `start_failed` line saying so, and exit with a non-zero code.
+
+### Part 3: systemd and Swarm on Linux
+
+On Linux, the bootstrap file's key can be held by a systemd credential, which systemd unseals and
+hands the engine when it starts the service (key holder 4), or by a Swarm secret (key holder 5).
+On Windows both are refused. Part 3 changes one of Part 1's lines, above, and one of the
+database's Part 1, on the local log.
+
+#### The systemd credential
+
+- When the bootstrap file's key holder is 4, the engine shall take the bootstrap file's key only
+  from the file `hadv-bootstrap-key` in the folder systemd names in `CREDENTIALS_DIRECTORY`.
+- If, under key holder 4, no folder is named in `CREDENTIALS_DIRECTORY`, or the folder or its
+  `hadv-bootstrap-key` is missing or unreadable, then the engine shall write one `start_failed`
+  line saying which, and exit with a non-zero code.
+- If, under key holder 4, the key is not exactly 32 bytes, or is 32 zero bytes, then the engine
+  shall write one `start_failed` line saying so, and exit with a non-zero code.
+
+#### The Swarm secret
+
+- When the bootstrap file's key holder is 5, the engine shall take the bootstrap file's key only
+  from the Swarm secret `/run/secrets/hadv-bootstrap-key`.
+- If, under key holder 5, the secret is missing, unreadable or a link leading out of
+  `/run/secrets`, then the engine shall write one `start_failed` line saying which, and exit with a
+  non-zero code.
+- If, under key holder 5, the secret's mode gives its group or others any access, then the engine
+  shall write one `start_failed` line saying so, and exit with a non-zero code.
+- If, under key holder 5, the secret is not in the key file's form, or holds a key of 32 zero
+  bytes, then the engine shall write one `start_failed` line saying so, and exit with a non-zero
+  code.
 
 ## languages
 

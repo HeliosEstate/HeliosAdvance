@@ -194,7 +194,7 @@ var badNames = map[string]func(name string) string{
 func TestWindowsKeyStore(t *testing.T) {
 	t.Parallel()
 
-	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0 or, on Windows, KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file or asks a key store.", func(t *testing.T) {
+	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0, on Windows KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or on Linux KeyHolderSystemd or KeyHolderSwarm with a sealed-key length of 0, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file, asks a key store, or reads a credential or secret.", func(t *testing.T) {
 		t.Parallel()
 		spoils := map[string]func(t *testing.T, made *layout){
 			"beside a good key file holding the key it is sealed under": func(*testing.T, *layout) {},
@@ -259,7 +259,7 @@ func TestWindowsKeyStore(t *testing.T) {
 		}
 	})
 
-	t.Run("No error the bootstrap package returns shall hold, in its text, the key or any part of either file's contents.", func(t *testing.T) {
+	t.Run("No error the bootstrap package returns shall hold, in its text, the key or any part of what it reads: the bootstrap file, the key file, systemd's credential or the Swarm secret.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("key holder 3, a key that is not there: ErrKeyStore, neither the key's name nor its hex digits nor the wrapped bytes in the error", func(t *testing.T) {
 			t.Parallel()
@@ -382,7 +382,7 @@ func storeRows(t *testing.T, store string, keys *unwrapKeys) {
 		})
 	})
 
-	t.Run("No error the bootstrap package returns shall hold, in its text, the key or any part of either file's contents.", func(t *testing.T) {
+	t.Run("No error the bootstrap package returns shall hold, in its text, the key or any part of what it reads: the bootstrap file, the key file, systemd's credential or the Swarm secret.", func(t *testing.T) {
 		t.Parallel()
 		t.Run("an unwrap of 33 bytes: ErrUnwrap, none of the 33 bytes in the error", func(t *testing.T) {
 			t.Parallel()
@@ -398,7 +398,7 @@ func TestWindowsElevatedKeyStore(t *testing.T) {
 	keys := makeUnwrapKeys(t, softwareStore)
 	storeRows(t, softwareStore, keys)
 
-	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0 or, on Windows, KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file or asks a key store.", func(t *testing.T) {
+	t.Run("If the bootstrap file is shorter than HeaderBytes, NonceBytes and TagBytes together, or its first HeaderBytes are not Magic, FormatVersion, then KeyHolderKeyFile with a sealed-key length of 0, on Windows KeyHolderTPM or KeyHolderSoftwareKeyStore with a sealed-key length of SealedKeyBytes, or on Linux KeyHolderSystemd or KeyHolderSwarm with a sealed-key length of 0, or, under key holder 2 or 3, the file is too short for the sealed key, nonce and tag, or the sealed key's first KeyNameBytes are not KeyNamePrefix and 32 lower-case hex digits, then Open shall return ErrHeader before it opens the key file, asks a key store, or reads a credential or secret.", func(t *testing.T) {
 		t.Parallel()
 		// The key is there under its lower-case name, so a store that matched names without
 		// regard to case would find it: only the header check refuses these.
@@ -429,7 +429,7 @@ func TestWindowsElevatedKeyStore(t *testing.T) {
 		})
 	})
 
-	t.Run("Under KeyHolderKeyFile, Open shall take the key from the key file by the lines that follow on the key file, and under KeyHolderTPM or KeyHolderSoftwareKeyStore by the lines on the key store key, never by the other's; it shall not open the key file under key holder 2 or 3.", func(t *testing.T) {
+	t.Run("Open shall take the key under KeyHolderKeyFile by the lines on the key file, under KeyHolderTPM or KeyHolderSoftwareKeyStore by the lines on the key store key, under KeyHolderSystemd by the lines on systemd's credential, and under KeyHolderSwarm by the lines on the Swarm secret, never by another holder's; it shall open the key file only under key holder 1.", func(t *testing.T) {
 		t.Parallel()
 		for name, spoil := range map[string]func(t *testing.T, made *layout){
 			"no key file": func(*testing.T, *layout) {},
@@ -537,7 +537,7 @@ func TestWindowsElevatedKeyStore(t *testing.T) {
 		})
 	})
 
-	t.Run("When it returns, Open shall have closed the bootstrap folder and the files it opened, and freed every key store handle it opened.", func(t *testing.T) {
+	t.Run("When it returns, Open shall have closed every folder and file it opened, and freed every key store handle it opened.", func(t *testing.T) {
 		t.Parallel()
 		// Whether Open freed its key store handles cannot be seen from outside: an open key's
 		// handle does not hold the key's file. That half is proved by reading.
