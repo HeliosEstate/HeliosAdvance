@@ -148,7 +148,10 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			if row.filled {
 				fillUntilWaiting(t, server)
 			}
-			if err := server.SetWriteDeadline(time.Now().Add(row.deadline)); err != nil {
+			// The row's clock starts before the deadline is set and the wake or drain armed, so a
+			// test that stalls in its own setup cannot make a correct return look too soon.
+			started := time.Now()
+			if err := server.SetWriteDeadline(started.Add(row.deadline)); err != nil {
 				t.Fatalf("setting the write deadline: %v", err)
 			}
 			var drained chan struct{}
@@ -187,7 +190,6 @@ func TestUrgentWaitsForRoom(t *testing.T) {
 			// A send no deadline wakes never returns; the row's own bound fails it by name instead
 			// of leaving the test binary to its timeout.
 			finished := make(chan urgentResult, 1)
-			started := time.Now()
 			go func() {
 				sent, sendErr := server.WriteUrgent([]byte{TelnetDM})
 				finished <- urgentResult{sent, sendErr}
