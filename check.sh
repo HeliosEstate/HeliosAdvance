@@ -1281,8 +1281,8 @@ if [ -n "$pkgs" ]; then
     # diff entry. MUTATE names whole packages instead (a QA change to existing rows, a
     # milestone), each mutated in full.
     # One test process at a time, as the test pass above runs: -p=1 for gremlins' coverage pass,
-    # one go test over every package, and --workers 1 for its mutants, each of which runs its
-    # package's tests again. Two at once collided on the places a machine has only one of, such as
+    # one go test over the target's packages, and --workers 1 for its mutants, each of which runs
+    # its package's tests again. Two at once collided on the places a machine has only one of, such as
     # /run/secrets, and the timed rows' margins hold only one at a time. A mutant's time limit is
     # three times the coverage pass, so a mutant that hangs holds the whole run that long.
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
