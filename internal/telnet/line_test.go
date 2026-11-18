@@ -545,7 +545,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, join([]byte("early"), request(doVerb, echo), []byte("text")))
-			got := call.result(t, call.called.Add(negotiationLimit+testrun.Patient(margin)))
+			got := call.result(t, call.called.Add(negotiationLimit+testrun.Patient(testrun.HangBound)))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
@@ -558,7 +558,7 @@ func TestOpen(t *testing.T) {
 			call := openOn(t.Context(), pair.server)
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, []byte{iac, doVerb})
-			got := call.result(t, call.called.Add(negotiationLimit+testrun.Patient(margin)))
+			got := call.result(t, call.called.Add(negotiationLimit+testrun.Patient(testrun.HangBound)))
 			if got.err != nil || got.outcome != telnet.TimedOut {
 				t.Fatalf("Open returned (%v, %v), want TimedOut", got.outcome, got.err)
 			}
@@ -1233,7 +1233,7 @@ func TestLine(t *testing.T) {
 			call := openOn(t.Context(), &splitRead{urgentConn: pair.server, marker: 'z'})
 			expectReceived(t, pair.client, opening)
 			write(t, pair.client, answers)
-			got := call.result(t, time.Now().Add(testrun.Patient(margin)))
+			got := call.result(t, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			if got.err != nil {
 				t.Fatalf("Open returned %v", got.err)
 			}
@@ -1264,7 +1264,7 @@ func TestLine(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			call := openOn(t.Context(), pair.server)
-			got := call.result(t, call.called.Add(negotiationLimit+testrun.Patient(margin)))
+			got := call.result(t, call.called.Add(negotiationLimit+testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, join(request(doVerb, echo), []byte("x")))
 			expectData(t, got.line, []byte("x"))
 			if !got.line.Echoes() {
@@ -1283,7 +1283,7 @@ func TestLine(t *testing.T) {
 		t.Run("a caller silent through negotiation", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
-			got := openOn(t.Context(), pair.server).result(t, time.Now().Add(negotiationLimit+testrun.Patient(margin)))
+			got := openOn(t.Context(), pair.server).result(t, time.Now().Add(negotiationLimit+testrun.Patient(testrun.HangBound)))
 			if got.err != nil || got.outcome != telnet.TimedOut || got.line == nil {
 				t.Fatalf("Open returned (%v, %v, %v), want a Line and TimedOut", got.line, got.outcome, got.err)
 			}

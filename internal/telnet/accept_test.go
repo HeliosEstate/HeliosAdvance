@@ -65,7 +65,7 @@ func acceptedLine(t *testing.T) (connected, *telnet.Line) {
 	done := acceptOn(t.Context(), pair.server.TCPConn)
 	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	write(t, pair.client, answers)
-	got := waitAccepted(t, done, testrun.Patient(margin))
+	got := waitAccepted(t, done, testrun.Patient(testrun.HangBound))
 	if got.err != nil || got.line == nil {
 		t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 	}
@@ -237,7 +237,7 @@ func TestAcceptUrgent(t *testing.T) {
 			write(t, pair.client, command(abortOutput))
 			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, answers)
-			if got := waitAccepted(t, done, testrun.Patient(margin)); got.err != nil || got.line == nil {
+			if got := waitAccepted(t, done, testrun.Patient(testrun.HangBound)); got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
 		})
