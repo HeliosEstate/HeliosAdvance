@@ -49,9 +49,12 @@ jobs:
           [ "${#files[@]}" -gt 0 ] || { echo "::error::no workflow file found, so nothing was checked"; exit 1; }
           pin='uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[^@ ]+)?@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+'
           # Any uses key, quoted or not, first on its line or not: one not in the pinned form above
-          # fails the run rather than go unchecked.
+          # fails the run rather than go unchecked. A line whose indent is followed by # is a
+          # comment or text inside a block, never a key, so its words are not read; -H keeps the
+          # file name that filter reads even when only one file matches.
           key="(^|[{,[:space:]])[\"']?uses[\"']?[[:space:]]*:"
-          if unpinned=$(grep -nE "$key" "${files[@]}" | grep -vE "$pin(\s|\}|$)"); then
+          if unpinned=$(grep -HnE "$key" "${files[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
+            grep -vE "$pin(\s|\}|$)"); then
             echo "::error::these uses lines are not in the form this watch reads (uses: owner/repo@hash # vX.Y.Z), so it cannot check them:"
             echo "$unpinned"
             exit 1
