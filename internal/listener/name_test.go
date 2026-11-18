@@ -187,13 +187,13 @@ func TestName(t *testing.T) {
 			// is only a second after this one: the window keeps margin.
 			stream.expectAskedAt(t, len(opening), sent.began, sent.done.Add(margin))
 		})
-		t.Run("the answers a byte at a time, 50 ms apart: the greeting and the prompt after the last", func(t *testing.T) {
+		t.Run("the answers a byte at a time, 10 ms apart: the greeting and the prompt after the last", func(t *testing.T) {
 			t.Parallel()
 			call := dial(t, startEngine(t, 1)[0])
 			stream := call.record(call.connected.Add(testrun.Patient(testrun.HangBound)))
 			var lastSent sending
 			for index := range answers {
-				wait(t, time.Now().Add(50*time.Millisecond))
+				wait(t, time.Now().Add(10*time.Millisecond))
 				lastSent = call.send(t, answers[index:index+1])
 			}
 			stream.waitFor(t, len(opening)+len(asked), lastSent.done.Add(progressLimit))
