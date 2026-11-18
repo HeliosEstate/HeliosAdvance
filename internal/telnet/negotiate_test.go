@@ -740,7 +740,7 @@ func TestNegotiate(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			got := negotiate(ctx, pair.server).result(t, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			got := negotiate(ctx, pair.server).result(t, time.Now().Add(testrun.Patient(margin)))
 			if !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) || errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Negotiate returned %v for a cancelled context", got.err)
 			}

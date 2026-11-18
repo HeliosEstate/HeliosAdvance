@@ -210,7 +210,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			call := negotiate(t.Context(), held)
 			expectOpening(t, pair.client, call.called.Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, command(abortOutput))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
 			write(t, pair.client, request(doVerb, telnetTypeOption))
 			got := call.result(t, call.called.Add(negotiationLimit+holdPast+testrun.Patient(testrun.HangBound)))
 			expectReturn(t, got, telnet.TimedOut, nil, held.released, held.released.Add(margin))

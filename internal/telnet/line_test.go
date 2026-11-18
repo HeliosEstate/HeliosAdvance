@@ -325,7 +325,7 @@ func TestOpen(t *testing.T) {
 			write(t, pair.client, sweep())
 			want := join(opening, expectedReplies(sweep()))
 			expectReceived(t, pair.client, want)
-			got := call.result(t, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			got := call.result(t, time.Now().Add(testrun.Patient(margin)))
 			if got.err != nil || got.outcome != telnet.Answered || got.line == nil {
 				t.Fatalf("Open returned (%v, %v, %v), want a Line and Answered", got.line, got.outcome, got.err)
 			}

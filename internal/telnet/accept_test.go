@@ -235,7 +235,7 @@ func TestAcceptUrgent(t *testing.T) {
 			done := acceptOn(t.Context(), pair.server.TCPConn)
 			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, command(abortOutput))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
 			write(t, pair.client, answers)
 			if got := waitAccepted(t, done, testrun.Patient(testrun.HangBound)); got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
