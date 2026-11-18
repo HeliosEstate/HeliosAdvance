@@ -533,7 +533,7 @@ func TestTextConn(t *testing.T) {
 				t.Fatalf("SendChar returned %v", err)
 			}
 			pair.expectQuiet(t)
-			if value, err := conn.RecvChar(t.Context(), time.Now().Add(testrun.Patient(margin))); err != nil || value != 'k' {
+			if value, err := conn.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || value != 'k' {
 				t.Fatalf("RecvChar returned %#02x and %v, want k", value, err)
 			}
 			if err := pair.line.Flush(t.Context()); err != nil {
@@ -627,14 +627,14 @@ func TestTextConn(t *testing.T) {
 		t.Run("ab BS c CR sent before the call", func(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, []byte("ab\x08c\r"))
-			if got, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ac" {
+			if got, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ac" {
 				t.Fatalf("RecvString returned %q and %v, want ac", got, err)
 			}
 		})
 		t.Run("a among commands, ESC and 255 dropped, then b CR", func(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, join([]byte("a"), request(doVerb, telnetTypeOption), []byte{0x1b, iac, iac}, []byte("b\r")))
-			if got, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ab" {
+			if got, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ab" {
 				t.Fatalf("RecvString returned %q and %v, want ab", got, err)
 			}
 		})
@@ -645,7 +645,7 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, answers, join([]byte("a"), request(dont, echo), []byte("b\r")))
 			conn := textio.New(pair.line)
-			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ab" {
+			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ab" {
 				t.Fatalf("RecvString returned %q and %v", got, err)
 			}
 			_ = conn.SendString(t.Context(), "")
@@ -656,7 +656,7 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, join([]byte("a"), request(doVerb, echo), []byte("b\x08c\r")))
 			conn := textio.New(pair.line)
-			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ac" {
+			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ac" {
 				t.Fatalf("RecvString returned %q and %v", got, err)
 			}
 			_ = conn.SendString(t.Context(), "")
@@ -669,10 +669,10 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, []byte("ab\rcd\r"))
 			conn := textio.New(pair.line)
-			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ab" {
+			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ab" {
 				t.Fatalf("RecvString returned %q and %v", got, err)
 			}
-			if value, err := conn.RecvChar(t.Context(), time.Now().Add(testrun.Patient(margin))); err != nil || value != 'c' {
+			if value, err := conn.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || value != 'c' {
 				t.Fatalf("RecvChar returned %#02x and %v, want c", value, err)
 			}
 		})
@@ -680,7 +680,7 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, join([]byte("ab\r"), request(doVerb, telnetTypeOption)))
 			conn := textio.New(pair.line)
-			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ab" {
+			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ab" {
 				t.Fatalf("RecvString returned %q and %v", got, err)
 			}
 			_ = conn.SendString(t.Context(), "x")
@@ -714,7 +714,7 @@ func TestTextConn(t *testing.T) {
 			pair := openStack(t, answers, []byte("ab\r"))
 			chars := &recordingChars{line: pair.line}
 			conn := textio.New(chars)
-			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); err != nil || got != "ab" {
+			if got, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); err != nil || got != "ab" {
 				t.Fatalf("RecvString returned %q and %v", got, err)
 			}
 			pair.expectQuiet(t)
@@ -761,10 +761,10 @@ func TestTextConn(t *testing.T) {
 				t.Parallel()
 				pair := openStack(t, refused, []byte("a\r"))
 				conn := textio.New(pair.line)
-				if _, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), most); !errors.Is(err, textio.ErrMostOutOfRange) {
+				if _, err := conn.RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), most); !errors.Is(err, textio.ErrMostOutOfRange) {
 					t.Fatalf("RecvString returned %v, want ErrMostOutOfRange", err)
 				}
-				if value, err := conn.RecvChar(t.Context(), time.Now().Add(testrun.Patient(margin))); err != nil || value != 'a' {
+				if value, err := conn.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound))); err != nil || value != 'a' {
 					t.Fatalf("RecvChar returned %#02x and %v, want a", value, err)
 				}
 			})
@@ -777,7 +777,7 @@ func TestTextConn(t *testing.T) {
 				if most == 1 {
 					want = "a"
 				}
-				if got, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), most); err != nil || got != want {
+				if got, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), most); err != nil || got != want {
 					t.Fatalf("RecvString returned %q and %v, want %q", got, err, want)
 				}
 			})
@@ -789,7 +789,7 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, []byte("ab"))
 			_ = pair.client.CloseWrite()
-			if _, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); !errors.Is(err, io.EOF) {
+			if _, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); !errors.Is(err, io.EOF) {
 				t.Fatalf("RecvString returned %v, want io.EOF", err)
 			}
 		})
@@ -797,7 +797,7 @@ func TestTextConn(t *testing.T) {
 			t.Parallel()
 			pair := openStack(t, refused, []byte("ab"))
 			pair.resetCaller(t)
-			if _, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(margin)), nameMost); !errors.Is(err, telnet.ErrConnectionFailed) {
+			if _, err := textio.New(pair.line).RecvString(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)), nameMost); !errors.Is(err, telnet.ErrConnectionFailed) {
 				t.Fatalf("RecvString returned %v, want the Line's ErrConnectionFailed", err)
 			}
 		})

@@ -441,7 +441,7 @@ func expectServedBy(t *testing.T, address string, deadline time.Time) {
 		if deadline.After(giveUp) {
 			giveUp = deadline
 		}
-		giveUp = giveUp.Add(testrun.Patient(wideMargin))
+		giveUp = giveUp.Add(testrun.Patient(testrun.HangBound))
 	}
 	for {
 		if isServed, _, arrived := served(t, address); isServed {

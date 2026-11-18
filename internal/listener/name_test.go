@@ -635,7 +635,7 @@ func TestName(t *testing.T) {
 			// The window opens 3 seconds after the name's CR went, a moment provably before the
 			// engine's shutdown: the caller's own sight of the shutdown can lag it on a loaded
 			// runner (ubuntu-24.04-arm, 2026-10-25, 74 ms early by that sight).
-			closedAt := call.awaitReset(t, shutAt.Add(closingWaitLimit+testrun.Patient(2*margin)))
+			closedAt := call.awaitReset(t, shutAt.Add(closingWaitLimit+testrun.Patient(testrun.HangBound)))
 			expectWithin(t, "the close", closedAt, sent.began.Add(closingWaitLimit), shutAt.Add(closingWaitLimit+margin))
 		})
 		t.Run("Hello after 68 seconds: closed at the ceiling, not 3 seconds after the shutdown", func(t *testing.T) {
@@ -698,7 +698,7 @@ func TestName(t *testing.T) {
 			promptAt := stream.byteAt(t, len(opening)+len(asked)-1)
 			// Whatever the caller sends after the 60 seconds meets a closed connection, not a
 			// closing wait that would take it.
-			closedAt := call.awaitReset(t, promptAt.Add(nameLimit+testrun.Patient(2*margin)))
+			closedAt := call.awaitReset(t, promptAt.Add(nameLimit+testrun.Patient(testrun.HangBound)))
 			expectWithin(t, "the close", closedAt, call.connected.Add(nameLimit), promptAt.Add(nameLimit+margin))
 		})
 		t.Run("an Open that runs the real Accept and returns a nil KindConnection: closed at once after the opening, no greeting", func(t *testing.T) {
@@ -1016,7 +1016,7 @@ func clampCall(t *testing.T, index int) bool {
 	t.Helper()
 	address := startEngine(t, 1)[0]
 	call := dialSmall(t, address)
-	closeAt := watchClose(t, call, address, call.connected.Add(ceilingLimit+closingWaitLimit+testrun.Patient(margin)))
+	closeAt := watchClose(t, call, address, call.connected.Add(ceilingLimit+closingWaitLimit+testrun.Patient(testrun.HangBound)))
 	wait(t, call.connected.Add(time.Second))
 	call.flood(t)
 	wait(t, call.connected.Add(10*time.Second))
@@ -1063,7 +1063,7 @@ func watchClose(t *testing.T, call caller, address string, deadline time.Time) f
 		closed <- closedAt
 	}()
 	return func() time.Time {
-		timer := time.NewTimer(time.Until(deadline.Add(testrun.Patient(margin))))
+		timer := time.NewTimer(time.Until(deadline.Add(testrun.Patient(testrun.HangBound))))
 		defer timer.Stop()
 		select {
 		case closedAt := <-closed:

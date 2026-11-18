@@ -175,17 +175,17 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			cancelling := time.Now()
 			cancel()
 			cancelledAt := time.Now()
-			expectReturn(t, call.result(t, cancelledAt.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, cancelling, cancelledAt.Add(margin))
+			expectReturn(t, call.result(t, cancelledAt.Add(testrun.Patient(testrun.HangBound))), 0, []error{telnet.ErrDeadlineEnded, context.Canceled}, cancelling, cancelledAt.Add(margin))
 		})
 		t.Run("the Synch's urgent write held to 4 seconds: Negotiate still waiting at 3.5, and TimedOut once it ends", func(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: 4 * time.Second}
 			call := negotiate(t.Context(), held)
-			expectOpening(t, pair.client, call.called.Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, call.called.Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, command(abortOutput))
 			expectNotReturned(t, call, call.called.Add(3500*time.Millisecond))
-			got := call.result(t, call.called.Add(4*time.Second+testrun.Patient(margin)))
+			got := call.result(t, call.called.Add(4*time.Second+testrun.Patient(testrun.HangBound)))
 			expectReturn(t, got, telnet.TimedOut, nil, held.released, held.released.Add(margin))
 		})
 		t.Run("a caller that floods, then reads from 5 seconds: Negotiate returns only once it reads", func(t *testing.T) {
@@ -198,7 +198,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			expectNotReturned(t, call, call.called.Add(5*time.Second))
 			readingAt := time.Now()
 			go func() { _, _ = readToEnd(pair.client, time.Now().Add(testrun.Patient(30*time.Second))) }()
-			expectReturn(t, call.result(t, readingAt.Add(testrun.Patient(margin))), telnet.TimedOut, nil, readingAt, readingAt.Add(margin))
+			expectReturn(t, call.result(t, readingAt.Add(testrun.Patient(testrun.HangBound))), telnet.TimedOut, nil, readingAt, readingAt.Add(margin))
 		})
 	})
 	t.Run("If NegotiationSeconds have passed when a write ends without an error, Receive has not returned true, and the context has not ended, then Negotiate shall return TimedOut with no error, reading nothing more.", func(t *testing.T) {
@@ -208,14 +208,14 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			pair := connect(t)
 			held := &heldCall{urgentConn: pair.server, testEnds: t.Context(), holdWrite: 2, after: negotiationLimit + holdPast}
 			call := negotiate(t.Context(), held)
-			expectOpening(t, pair.client, call.called.Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, call.called.Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, command(abortOutput))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, request(doVerb, telnetTypeOption))
-			got := call.result(t, call.called.Add(negotiationLimit+holdPast+testrun.Patient(margin)))
+			got := call.result(t, call.called.Add(negotiationLimit+holdPast+testrun.Patient(testrun.HangBound)))
 			expectReturn(t, got, telnet.TimedOut, nil, held.released, held.released.Add(margin))
 			_ = pair.server.CloseWrite()
-			expectStream(t, pair.client, nil, time.Now().Add(testrun.Patient(margin)))
+			expectStream(t, pair.client, nil, time.Now().Add(testrun.Patient(testrun.HangBound)))
 		})
 		t.Run("a caller that floods, then reads from 4 seconds: TimedOut, each request answered once or still unread, in order", func(t *testing.T) {
 			t.Parallel()
@@ -279,7 +279,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			if !stallNegotiation(t, pair, call) {
 				return
 			}
-			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
+			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(testrun.HangBound))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
 		})
 		t.Run("the same, the context reporting its end only later: the clock tells", func(t *testing.T) {
 			t.Parallel()
@@ -289,7 +289,7 @@ func TestNegotiateWaitingWrite(t *testing.T) {
 			if !stallNegotiation(t, pair, call) {
 				return
 			}
-			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(margin))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
+			expectReturn(t, call.result(t, deadline.Add(testrun.Patient(testrun.HangBound))), 0, []error{telnet.ErrDeadlineEnded, context.DeadlineExceeded}, deadline, deadline.Add(margin))
 		})
 	})
 }

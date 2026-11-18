@@ -63,7 +63,7 @@ func acceptedLine(t *testing.T) (connected, *telnet.Line) {
 	t.Helper()
 	pair := connect(t)
 	done := acceptOn(t.Context(), pair.server.TCPConn)
-	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	write(t, pair.client, answers)
 	got := waitAccepted(t, done, testrun.Patient(margin))
 	if got.err != nil || got.line == nil {
@@ -126,11 +126,11 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			_ = pair.server.Close()
-			got := waitAccepted(t, acceptOn(t.Context(), pair.server.TCPConn), testrun.Patient(margin))
+			got := waitAccepted(t, acceptOn(t.Context(), pair.server.TCPConn), testrun.Patient(testrun.HangBound))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrConnectionFailed) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrConnectionFailed", got.line, got.err)
 			}
-			received, err := readToEnd(pair.client, time.Now().Add(testrun.Patient(margin)))
+			received, err := readToEnd(pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			t.Logf("the caller's read ended with %v", err)
 			if len(received) != 0 {
 				t.Fatalf("the caller received % x", received)
@@ -145,9 +145,9 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			sent := write(t, pair.client, answers)
-			got := waitAccepted(t, done, testrun.Patient(margin))
+			got := waitAccepted(t, done, testrun.Patient(testrun.HangBound))
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
@@ -157,8 +157,8 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
-			got := waitAccepted(t, done, negotiationLimit+testrun.Patient(2*margin))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
+			got := waitAccepted(t, done, negotiationLimit+testrun.Patient(testrun.HangBound))
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
@@ -168,9 +168,9 @@ func TestAccept(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			_ = pair.client.CloseWrite()
-			got := waitAccepted(t, done, testrun.Patient(margin))
+			got := waitAccepted(t, done, testrun.Patient(testrun.HangBound))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrCallerClosed) || !errors.Is(got.err, io.EOF) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrCallerClosed matching io.EOF", got.line, got.err)
 			}
@@ -180,7 +180,7 @@ func TestAccept(t *testing.T) {
 			pair := connect(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			done := acceptOn(ctx, pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			cancel()
 			got := waitAccepted(t, done, testrun.Patient(margin))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.Canceled) {
@@ -199,11 +199,11 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, answers[:21])
 			writeUrgent(t, pair.client, command(dataMark))
 			sent := write(t, pair.client, answers[21:])
-			got := waitAccepted(t, done, negotiationLimit+testrun.Patient(2*margin))
+			got := waitAccepted(t, done, negotiationLimit+testrun.Patient(testrun.HangBound))
 			if got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 			}
@@ -233,9 +233,9 @@ func TestAcceptUrgent(t *testing.T) {
 			t.Parallel()
 			pair := connect(t)
 			done := acceptOn(t.Context(), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, command(abortOutput))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			write(t, pair.client, answers)
 			if got := waitAccepted(t, done, testrun.Patient(margin)); got.err != nil || got.line == nil {
 				t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
@@ -246,7 +246,7 @@ func TestAcceptUrgent(t *testing.T) {
 			pair, line := acceptedLine(t)
 			write(t, pair.client, join([]byte("x"), command(interruptProcess), []byte("y")))
 			expectData(t, line, []byte("xy"))
-			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(margin)))
+			expectSynchs(t, pair.client, nil, 1, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			expectQuiet(t, pair.client)
 		})
 	})
@@ -297,7 +297,7 @@ func TestAcceptUrgent(t *testing.T) {
 				"SendChar": func() error { return line.SendChar(t.Context(), 'x') },
 				"Flush":    func() error { return line.Flush(t.Context()) },
 				"RecvChar": func() error {
-					_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(margin)))
+					_, err := line.RecvChar(t.Context(), time.Now().Add(testrun.Patient(testrun.HangBound)))
 					return err
 				},
 			} {
@@ -341,7 +341,7 @@ func TestAcceptUrgent(t *testing.T) {
 			deadline := testrun.CaseDeadline()
 			called := time.Now()
 			done := acceptOn(withDeadline(t, deadline), pair.server.TCPConn)
-			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+			expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			fill(t, pair.server.TCPConn)
 			write(t, pair.client, join(command(abortOutput), lateAnswers))
 			// Negotiation's own 3 seconds end a read that waits, so a setup that ends near them
@@ -354,7 +354,7 @@ func TestAcceptUrgent(t *testing.T) {
 				t.Fatalf("cannot tell: the setup took %v, too near negotiation's 3 seconds for the write to be what waits", late)
 			}
 			testrun.ExpectCaseReached(t, deadline, margin)
-			got := waitAccepted(t, done, time.Until(deadline)+testrun.Patient(2*margin))
+			got := waitAccepted(t, done, time.Until(deadline)+testrun.Patient(testrun.HangBound))
 			if got.line != nil || !errors.Is(got.err, telnet.ErrDeadlineEnded) || !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Accept gave %v and %v, want no Line and ErrDeadlineEnded", got.line, got.err)
 			}
@@ -408,7 +408,7 @@ func TestLineClose(t *testing.T) {
 				write(t, pair.client, chunk)
 				wait(t.Context(), time.Now().Add(200*time.Millisecond))
 			}
-			got := waitClosed(t, done, closingWaitLimit+testrun.Patient(2*margin))
+			got := waitClosed(t, done, closingWaitLimit+testrun.Patient(testrun.HangBound))
 			if got.err != nil {
 				t.Fatalf("Close gave %v, want no error", got.err)
 			}
@@ -420,7 +420,7 @@ func TestLineClose(t *testing.T) {
 			deadline := time.Now().Add(time.Second)
 			ctx, cancel := context.WithDeadline(t.Context(), deadline)
 			t.Cleanup(cancel)
-			got := waitClosed(t, closeOn(ctx, line), time.Second+testrun.Patient(2*margin))
+			got := waitClosed(t, closeOn(ctx, line), time.Second+testrun.Patient(testrun.HangBound))
 			if !errors.Is(got.err, context.DeadlineExceeded) {
 				t.Fatalf("Close gave %v, want context.DeadlineExceeded", got.err)
 			}
@@ -455,7 +455,7 @@ func TestLineClose(t *testing.T) {
 			t.Parallel()
 			_, line := acceptedLine(t)
 			called := time.Now()
-			got := waitClosed(t, closeOn(t.Context(), line), closingWaitLimit+testrun.Patient(2*margin))
+			got := waitClosed(t, closeOn(t.Context(), line), closingWaitLimit+testrun.Patient(testrun.HangBound))
 			if got.err != nil {
 				t.Fatalf("Close gave %v, want no error", got.err)
 			}
@@ -597,14 +597,14 @@ func markedLine(t *testing.T, cancel context.CancelFunc) (connected, *telnet.Lin
 	t.Helper()
 	pair := connect(t)
 	call := openOn(t.Context(), markedConn{urgentConn: pair.server, cancel: cancel})
-	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(margin)))
+	expectOpening(t, pair.client, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	write(t, pair.client, answers)
-	got := call.result(t, time.Now().Add(testrun.Patient(margin)))
+	got := call.result(t, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if got.err != nil || got.outcome != telnet.Answered {
 		t.Fatalf("setting up: Open returned (%v, %v), want Answered", got.outcome, got.err)
 	}
 	if replies, _ := freshReading().readAll(answers); len(replies) > 0 {
-		readExactly(t, pair.client, len(replies), time.Now().Add(testrun.Patient(margin)))
+		readExactly(t, pair.client, len(replies), time.Now().Add(testrun.Patient(testrun.HangBound)))
 	}
 	return pair, got.line
 }
