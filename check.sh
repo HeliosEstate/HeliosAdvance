@@ -1280,10 +1280,15 @@ if [ -n "$pkgs" ]; then
     # The run on a diff stays at the repository root (.): gremlins matches a package path to no
     # diff entry. MUTATE names whole packages instead (a QA change to existing rows, a
     # milestone), each mutated in full.
+    # One test process at a time, as the test pass above runs: -p=1 for gremlins' coverage pass,
+    # one go test over every package, and --workers 1 for its mutants, each of which runs its
+    # package's tests again. Two at once collided on the places a machine has only one of, such as
+    # /run/secrets, and the timed rows' margins hold only one at a time. A mutant's time limit is
+    # three times the coverage pass, so a mutant that hangs holds the whole run that long.
     if [ -n "${MUTATE:-}" ]; then read -ra targets <<< "$MUTATE"; diffarg=(); else targets=(.); diffarg=(--diff "$BASE"); fi
     mutants=
     for target in "${targets[@]}"; do
-      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1" "$mutator" unleash "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
+      out=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.context GIT_CONFIG_VALUE_0=0 GOFLAGS="${GOFLAGS:+$GOFLAGS }-count=1 -p=1" "$mutator" unleash --workers 1 "${diffarg[@]}" --exclude-files '^(cmd|internal/testrun|tools)/' "$target" 2>&1) || { echo "$out"; fail "mutation testing: gremlins failed on $target"; }
       echo "$out"
       grep -qE 'Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' <<< "$out" || fail "mutation testing: no result lines for $target, so there is nothing to report"
       mutants+="$out"$'\n'
