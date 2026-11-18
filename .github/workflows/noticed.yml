@@ -39,7 +39,10 @@ jobs:
       (github.event_name == 'issues' && contains(fromJSON('["Paswaru", "helios-aegle[bot]", "helios-aetheria[bot]", "helios-lampetia[bot]", "helios-phaethusa[bot]"]'), github.event.sender.login))
     runs-on: ubuntu-latest
     steps:
+      # gh carries the token itself; the clone does not keep it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

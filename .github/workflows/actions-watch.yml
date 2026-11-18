@@ -56,7 +56,8 @@ jobs:
             echo "$unpinned"
             exit 1
           fi
-          pins=$({ grep -hoE "$pin" "${files[@]}" || true; } | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
+          # grep answers 1 for no match, which the next line judges; more is a file it could not read.
+          pins=$({ grep -hoE "$pin" "${files[@]}" || [ $? = 1 ]; } | sed -E 's|uses: ([^/]+/[^/@]+)[^@]*@[0-9a-f]{40} # v(.*)|\1 \2|' | sort -u)
           [ -n "$pins" ] || { echo "::error::no pinned action found, so nothing was checked"; exit 1; }
           # Fields joined by the unit separator, which is not whitespace, so an empty one keeps its
           # place; line breaks and backticks in a summary are flattened, since it goes in a code block.
@@ -65,8 +66,7 @@ jobs:
             found=$(gh api "advisories?ecosystem=actions&affects=$action@$version&is_withdrawn=false&per_page=100" --jq "$fields")
             if [ -z "$found" ]; then echo "no advisory: $action $version"; continue; fi
             while IFS=$'\x1f' read -r ghsa severity summary url; do
-              # The backticks are the code block's fence, written as they are, not a command.
-              # shellcheck disable=SC2016
+              # shellcheck disable=SC2016 # the backticks are the code block's fence, written as they are
               body=$(printf 'The advisory database names %s %s, which the workflows pin: %s (%s).\n\nIts summary, as written:\n\n```text\n%s\n```\n\nDecide the update: the week'"'"'s grouped Dependabot pull request carries it, or a pull request can move the pin now.' \
                 "$action" "$version" "$ghsa" "$url" "$summary")
               open "<!-- actions-watch: $ghsa $action@$version -->" \

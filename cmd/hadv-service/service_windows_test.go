@@ -42,8 +42,6 @@ const (
 	noSuchService      = 1060 // ERROR_SERVICE_DOES_NOT_EXIST
 	serviceSpecificErr = 1066 // ERROR_SERVICE_SPECIFIC_ERROR
 	processAborted     = 1067 // ERROR_PROCESS_ABORTED
-	// noSuchImage is taskkill's exit code when no process has the image name.
-	noSuchImage = 128
 	// stoppedState is how sc.exe names a stopped service's state.
 	stoppedState = "STOPPED"
 )
@@ -359,15 +357,45 @@ func expectPort23Free(t *testing.T) {
 	}
 }
 
-// remove stops the service if it still runs, ends any process left running the row's copy of the
-// program, deletes the service and reads back that it is gone. A failure here is reported, not
-// fatal: it is the row's cleanup.
+// remove stops the service if it still runs, deletes it and reads back that it is gone, then waits
+// for any process running the row's copy of the program to exit, ending it by force only if it is
+// still there at the hang bound. Windows reports a service stopped before its process has exited,
+// and taskkill can fail on a process that is exiting, so a failed force is reported only if the
+// process is still there after it. A failure here is reported, not fatal: it is the row's cleanup.
 func (service *windowsService) remove(t *testing.T) {
 	t.Helper()
 	removeService(t)
+	if gone, _, _ := service.awaitImageGone(t); gone {
+		return
+	}
 	code, output := runBounded(t, "taskkill", "/F", "/IM", service.image)
-	if code != 0 && code != noSuchImage {
-		t.Errorf("taskkill /IM %s ended %d: %s", service.image, code, output)
+	if gone, readable, lastRead := service.awaitImageGone(t); !gone && readable {
+		t.Errorf("%s still ran %v after taskkill /F /IM, which ended %d: %s; tasklist's last read: %s",
+			service.image, testrun.Patient(testrun.HangBound), code, output, lastRead)
+	}
+}
+
+// awaitImageGone waits, up to the hang bound, until no process runs the row's copy of the program.
+// It says whether the copy was read as gone and whether tasklist could be read, and gives
+// tasklist's last answer. A tasklist that fails is reported and ends the wait.
+func (service *windowsService) awaitImageGone(t *testing.T) (gone, readable bool, lastRead string) {
+	t.Helper()
+	giveUp := time.Now().Add(testrun.Patient(testrun.HangBound))
+	for {
+		code, output := runBounded(t, "tasklist", "/FI", "IMAGENAME eq "+service.image, "/FO", "CSV", "/NH")
+		if code != 0 {
+			t.Errorf("tasklist ended %d: %s", code, output)
+			return false, false, output
+		}
+		// tasklist ends 0 whether or not a process matches; the CSV form quotes each image name it
+		// lists, so the quoted name appears only when a process runs the copy.
+		if !strings.Contains(strings.ToLower(output), `"`+service.image+`"`) {
+			return true, true, output
+		}
+		if time.Now().After(giveUp) {
+			return false, true, output
+		}
+		pause(t, statePoll)
 	}
 }
 

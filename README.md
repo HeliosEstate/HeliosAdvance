@@ -27,9 +27,12 @@ Questions about the project, and about how AI is used in it: [docs/faq.md](docs/
   bootstrap file with. On Windows, put its folder after the one holding the system's C compiler on
   the `PATH`: it carries an old `gcc` of its own, which ahead of the system's breaks race builds.
 - **On Linux, `setfacl`** (the `acl` package), for the key file's access-list rows.
-- **Nothing for the gate tools:** `check.sh` installs `golangci-lint`, `govulncheck` and
-  `go-licenses` itself, each at the version pinned in `.github/tool-versions`, into a folder of
-  its own under the `GOPATH`, and never runs a copy on the `PATH`.
+- **Nothing for the gate tools:** `check.sh` installs `golangci-lint`, `govulncheck`,
+  `go-licenses` and `actionlint` itself, each at the version pinned in `.github/tool-versions`,
+  into a folder of its own under the `GOPATH`, and never runs a copy on the `PATH`. `shellcheck`
+  and `zizmor`, which are no Go tools, it downloads from their GitHub releases, each checked
+  against the SHA-256 pinned there for Linux on x86-64 or Arm, or Windows; it needs `curl` and
+  `sha256sum`, with `tar` on Linux and `unzip` on Windows.
 
 The machine needs the IPv6 loopback address (`::1`) working, since the engine listens on it. On
 Linux, run as an ordinary user, not root, where `sudo` needs no password (the rows named
