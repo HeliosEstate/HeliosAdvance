@@ -96,8 +96,9 @@ jobs:
           echo "bin=$(dirname "$(printf '%s\n' /usr/lib/postgresql/*/bin/initdb | sort -V | tail -n 1)")" >> "$GITHUB_OUTPUT"
       # The gates are the required check's, so they are skipped here.
       # The run is held in one control group of at most 12 GiB of memory, out of the runner's 16.
-      # A mutant can make its tests grow memory without bound, and several run at once: unheld,
-      # they took the whole runner down, and no report came. When the group is full, the kernel
+      # A mutant can make its tests grow memory without bound: unheld, when several ran at once,
+      # they took the whole runner down, and no report came. check.sh now runs them one at a time,
+      # and the limit still holds a single runaway test. When the group is full, the kernel
       # stops one process in it, by its own score, which favors the one using the most memory.
       # Which process it stops is the kernel's choice and is not pinned here. In a trial run the
       # limit stopped one process and the run finished; the log does not say which. If it stops
