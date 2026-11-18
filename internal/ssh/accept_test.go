@@ -153,7 +153,7 @@ func TestAccept(t *testing.T) {
 			client.sendPacket(message(messageIgnore).text("strict").data)
 			exchange := curveExchange(t, "curve25519-sha256")
 			client.sendPacket(message(messageKexInit30).bytesValue(exchange.initial).data)
-			payload, err := client.nextIgnoring(time.Now().Add(testrun.Patient(margin + time.Second)))
+			payload, err := client.nextIgnoring(time.Now().Add(testrun.Patient(testrun.HangBound)))
 			return results, payload, err
 		}
 		t.Run("an IGNORE between the caller's KEXINIT and its key exchange, strict offered: the connection ends, no reply", func(t *testing.T) {

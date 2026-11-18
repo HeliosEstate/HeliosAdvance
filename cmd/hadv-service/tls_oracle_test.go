@@ -677,7 +677,7 @@ func expectTLSServedOnceFreed(t *testing.T, address string) {
 		cancel()
 		if err == nil {
 			call := tlsCaller{raw: raw, tap: tapped, tls: connection, lastFlight: tapped.lastWrite()}
-			call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
+			call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			return
 		}
 		if !isEnd(err) {

@@ -309,9 +309,9 @@ func acceptedCaller(t *testing.T, version uint16) (pair, tlsCaller, *telnet.Line
 	connection := connect(t)
 	done := acceptOn(t.Context(), connection.server, readCertificate(t, goodFiles(t, ecdsaP256)))
 	call := handshake(t, connection.client, clientConfig(version))
-	call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
+	call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	call.send(t, answers)
-	got := waitAccepted(t, done, time.Now().Add(testrun.Patient(margin)))
+	got := waitAccepted(t, done, time.Now().Add(testrun.Patient(testrun.HangBound)))
 	if got.err != nil || got.line == nil {
 		t.Fatalf("Accept gave %v and %v, want a Line", got.line, got.err)
 	}
@@ -354,7 +354,7 @@ func expectNotClosed(t *testing.T, connection pair) {
 	if _, err := connection.server.Write([]byte("z")); err != nil {
 		t.Fatalf("a write to the server's end failed, so something closed it: %v", err)
 	}
-	_ = connection.client.SetReadDeadline(time.Now().Add(testrun.Patient(margin)))
+	_ = connection.client.SetReadDeadline(time.Now().Add(testrun.Patient(testrun.HangBound)))
 	for {
 		buffer := make([]byte, 64)
 		got, err := connection.client.Read(buffer)

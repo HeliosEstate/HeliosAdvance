@@ -98,11 +98,12 @@ func (call caller) send(t *testing.T, data []byte) {
 	}
 }
 
-// expectServed dials the address and checks the engine sends the opening by the margin.
+// expectServed dials the address and checks the engine sends the opening. No line names a time
+// for the opening, so the wait is the hang bound: only an opening that never comes fails here.
 func expectServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, opening, call.connected.Add(testrun.Patient(margin)))
+	call.readExactly(t, opening, call.connected.Add(testrun.Patient(testrun.HangBound)))
 	return call
 }
 

@@ -242,7 +242,7 @@ func TestCall(t *testing.T) {
 			expectClosingMessages(t, client, "")
 			client.expectStream(asked + helloTo("bob"))
 			client.sendPacket(message(messageChannelClose).uint32Value(client.engineChannel).data)
-			if kinds, _ := client.expectEnd(time.Now().Add(closingWait + testrun.Patient(margin+time.Second))); len(kinds) != 0 {
+			if kinds, _ := client.expectEnd(time.Now().Add(closingWait + testrun.Patient(testrun.HangBound))); len(kinds) != 0 {
 				t.Fatalf("after the close the engine sent messages %v, want none", kinds)
 			}
 		})
@@ -403,7 +403,7 @@ func TestCall(t *testing.T) {
 			client.sendPacket(message(messageIgnore).text("strict").data)
 			exchange := curveExchange(t, "curve25519-sha256")
 			client.sendPacket(message(messageKexInit30).bytesValue(exchange.initial).data)
-			return client.nextIgnoring(time.Now().Add(testrun.Patient(margin + time.Second)))
+			return client.nextIgnoring(time.Now().Add(testrun.Patient(testrun.HangBound)))
 		}
 		t.Run("strict offered, an IGNORE before the key exchange's first message: the connection ends with no reply", func(t *testing.T) {
 			t.Parallel()

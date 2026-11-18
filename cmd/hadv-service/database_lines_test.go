@@ -169,7 +169,7 @@ func waitingCaller(t *testing.T, address string) caller {
 	t.Helper()
 	call := expectServed(t, address)
 	call.send(t, answers)
-	call.readExactly(t, []byte(greeting+prompt), time.Now().Add(testrun.Patient(margin)))
+	call.readExactly(t, []byte(greeting+prompt), time.Now().Add(testrun.Patient(testrun.HangBound)))
 	return call
 }
 

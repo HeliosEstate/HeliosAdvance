@@ -819,7 +819,7 @@ func TestTLSProgram(t *testing.T) {
 			t.Parallel()
 			_, telnets := startTLS(t, goodTLSFiles(t, tlsP256))
 			call := dialTLS(t, telnets[0], tlsConfig(tls.VersionTLS12))
-			call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
+			call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			answered := time.Now()
 			call.send(t, answers)
 			call.readExactly(t, []byte(greeting+prompt), time.Now().Add(testrun.Patient(margin)))
@@ -938,7 +938,7 @@ func TestTLSProgram(t *testing.T) {
 				_, telnets := startTLS(t, goodTLSFiles(t, tlsP256))
 				call := answeredTLS(t, telnets[0], version.id)
 				call.send(t, []byte("Ca"))
-				call.readExactly(t, []byte("Ca"), time.Now().Add(testrun.Patient(margin)))
+				call.readExactly(t, []byte("Ca"), time.Now().Add(testrun.Patient(testrun.HangBound)))
 				if err := call.tls.CloseWrite(); err != nil {
 					t.Fatalf("the caller's close_notify failed: %v", err)
 				}
@@ -1047,9 +1047,9 @@ func TestTLSProgram(t *testing.T) {
 			config.ServerName = canary + ".test"
 			config.NextProtos = []string{canary}
 			call := dialTLS(t, telnets[0], config)
-			call.readExactly(t, opening, time.Now().Add(testrun.Patient(margin)))
+			call.readExactly(t, opening, time.Now().Add(testrun.Patient(testrun.HangBound)))
 			call.send(t, answers)
-			call.readExactly(t, []byte(greeting+prompt), time.Now().Add(testrun.Patient(margin)))
+			call.readExactly(t, []byte(greeting+prompt), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			call.send(t, []byte(typedName+"\r"))
 			call.readExactly(t, echoedName(typedName), time.Now().Add(testrun.Patient(margin)))
 			call.expectClosedInChannel(t, time.Now().Add(testrun.Patient(margin)))
@@ -1103,7 +1103,7 @@ func TestTLSProgram(t *testing.T) {
 			program, telnets := startTLS(t, files)
 			call := answeredTLS(t, telnets[0], 0)
 			call.send(t, []byte(typedName+"\r"))
-			call.readExactly(t, echoedName(typedName), time.Now().Add(testrun.Patient(margin)))
+			call.readExactly(t, echoedName(typedName), time.Now().Add(testrun.Patient(testrun.HangBound)))
 			_, sentBy := send(t, program)
 			program.exit(t, sentBy.Add(testrun.Patient(margin)))
 			expectNoKeyInLog(t, program.text(), files.key)
@@ -1118,7 +1118,7 @@ func TestTLSProgram(t *testing.T) {
 				_, telnets := startTLS(t, goodTLSFiles(t, tlsP256))
 				call := answeredTLS(t, telnets[0], 0)
 				call.send(t, []byte{'a', iac, code})
-				call.readExactly(t, []byte{'a', iac, dataMark}, time.Now().Add(testrun.Patient(margin)))
+				call.readExactly(t, []byte{'a', iac, dataMark}, time.Now().Add(testrun.Patient(testrun.HangBound)))
 				call.send(t, []byte("b\r"))
 				call.readExactly(t, []byte("b\r\n"+reply+"ab\r\n"), time.Now().Add(testrun.Patient(margin)))
 				call.expectClosedInChannel(t, time.Now().Add(testrun.Patient(margin)))

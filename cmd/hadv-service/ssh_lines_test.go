@@ -51,11 +51,12 @@ func makeKey(t *testing.T, keyType, passphrase string, extra ...string) string {
 	return path
 }
 
-// expectSSHServed dials the address and checks it sends the version line by the margin.
+// expectSSHServed dials the address and checks it sends the version line. No line names a time
+// for it, so the wait is the hang bound: only a version line that never comes fails here.
 func expectSSHServed(t *testing.T, address string) caller {
 	t.Helper()
 	call := dial(t, address)
-	call.readExactly(t, []byte(sshVersionLine), call.connected.Add(testrun.Patient(margin)))
+	call.readExactly(t, []byte(sshVersionLine), call.connected.Add(testrun.Patient(testrun.HangBound)))
 	return call
 }
 
