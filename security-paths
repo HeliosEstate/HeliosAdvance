@@ -1,8 +1,9 @@
 # Security paths: packages that take untrusted input. A pull request that touches one gets a
-# security review before the developer signs off. A package joins when its contract lists an
-# untrusted input, in the same pull request as that contract. One pattern a line, a shell glob
-# that is also a git pathspec.
+# security review before the developer signs off. A package joins when its contract has an
+# "Untrusted input" section, in the same pull request as that contract. One pattern a line, a
+# shell glob that is also a git pathspec.
 internal/telnet/*
+internal/telnets/*
 internal/listener/*
 internal/session/*
 internal/textio/*
@@ -10,3 +11,4 @@ internal/ssh/*
 internal/database/*
 internal/language/*
 internal/bootstrap/*
+internal/servicemanager/*
