@@ -23,7 +23,8 @@ permissions:
 jobs:
   # One Linux runner reads the change set and runs the cheap gates, which run no Go tests. A
   # docs-only change set stops here: only Markdown, files under docs/, the three list files
-  # (developer-owned-paths, security-paths, loop-identities, which the cheap gates read), and
+  # (developer-owned-paths and loop-identities, which the cheap gates read, and security-paths,
+  # which the review labels read), and
   # files under .github/ other than this one and .github/tool-versions. Anything else, a file
   # nobody listed included, starts the full matrix below. A change to this file or to the tool
   # pins always runs in full, since it is the CI being changed.
