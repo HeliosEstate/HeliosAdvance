@@ -1,8 +1,8 @@
-# Closes the issue a merged PR names. GitHub's own "Closes #n" acts only on a merge into the
-# default branch; while that was not development, work merged into development left its issue
-# open until the loop next started, as it did in an earlier attempt. With development the
-# default branch this is a backstop: it acts only on an issue still open. The PR body is
-# trusted because a merge into development needs the developer's signoff.
+# Closes the issues a merged pull request is linked to, when GitHub has not. GitHub closes each
+# issue a pull request links once it merges into the default branch, development. Once it did
+# not. An issue left open keeps its ready label, and the loop would build it again. So this reads
+# the pull request's linked issues as GitHub lists them, never the pull request's text, and closes
+# any of this repository's that are still open. An issue in another repository is left to GitHub.
 name: close-issues
 
 on:
@@ -21,11 +21,16 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          BODY: ${{ github.event.pull_request.body }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          for n in $(printf '%s' "$BODY" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | grep -oE '[0-9]+$' | sort -u); do
-            if [ "$(gh issue view "$n" --json state -q .state)" = OPEN ]; then
-              gh issue close "$n" --comment "Merged in #$PR into development; closed by the close-issues workflow, since a merge into a non-default branch does not close an issue by itself."
-            fi
+          # A failed query fails the run, rather than reading as nothing to close.
+          # shellcheck disable=SC2016 # the dollar signs are the query's own variables, not the shell's
+          open=$(gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+                closingIssuesReferences(first: 100) { nodes { number state repository { nameWithOwner } } } } } }' \
+            -q '.data.repository.pullRequest.closingIssuesReferences.nodes[]
+              | select(.repository.nameWithOwner == env.GH_REPO and .state == "OPEN") | .number')
+          for n in $open; do
+            gh issue close "$n" --comment "Closed by the close-issues workflow: the pull request linked to it merged into development, and GitHub had not closed it."
           done
