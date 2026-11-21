@@ -1,0 +1,93 @@
+# A probe, never merged: checks on a real runner, with the runner's own token, the script that
+# close-issues would run. Each job runs the script as close-issues would, apart from the pull request
+# it is pointed at, and prints what it got.
+name: probe-close-issues
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [development]
+
+jobs:
+  without-pull-request-read:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: '181'
+        run: |
+          set +e
+          # shellcheck disable=SC2016 # the dollar signs are the query's own variables, not the shell's
+          gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+                closingIssuesReferences(first: 100) { nodes { number state repository { nameWithOwner } } } } } }'
+          echo "raw query, issues: write alone, exit $?"
+
+  other-repository:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: '33'
+        run: |
+          set +e
+          # shellcheck disable=SC2016 # the dollar signs are the query's own variables, not the shell's
+          gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+                closingIssuesReferences(first: 100) { nodes { number state repository { nameWithOwner } } } } } }'
+          echo "raw query, a pull request that closed another repository's issue, exit $?"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: '33'
+        run: |
+          # A failed query fails the run, rather than reading as nothing to close.
+          # shellcheck disable=SC2016 # the dollar signs are the query's own variables, not the shell's
+          open=$(gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+                closingIssuesReferences(first: 100) { nodes { number state repository { nameWithOwner } } } } } }' \
+            -q '.data.repository.pullRequest.closingIssuesReferences.nodes[]
+              | select(.repository.nameWithOwner == env.GH_REPO and .state == "OPEN") | .number')
+          echo "would close: [$open]"
+
+  close-path:
+    needs: [without-pull-request-read, other-repository]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh --version
+          # A failed query fails the run, rather than reading as nothing to close.
+          # shellcheck disable=SC2016 # the dollar signs are the query's own variables, not the shell's
+          open=$(gh api graphql -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+                closingIssuesReferences(first: 100) { nodes { number state repository { nameWithOwner } } } } } }' \
+            -q '.data.repository.pullRequest.closingIssuesReferences.nodes[]
+              | select(.repository.nameWithOwner == env.GH_REPO and .state == "OPEN") | .number')
+          echo "closing: [$open]"
+          for n in $open; do
+            gh issue close "$n" --comment "Closed by the close-issues workflow: the pull request linked to it merged into development, and GitHub had not closed it."
+          done
+          for n in $open; do
+            gh issue view "$n" --json state,stateReason -q '"after: \(.state) \(.stateReason)"'
+            gh issue close "$n" --comment "a second close, which should post nothing"
+            echo "second close exit $?"
+          done
