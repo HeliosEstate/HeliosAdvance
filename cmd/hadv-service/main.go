@@ -66,8 +66,10 @@ func start() int {
 		}
 	}
 	// Registered before anything listens: a stop sent as soon as the started line is read must
-	// not take the default action and kill the process without closing connections.
-	stopContext, release := signal.NotifyContext(context.Background(), stopSignals()...)
+	// not take the default action and kill the process without closing connections. SIGTERM is
+	// asked for on Windows too: a console close arrives as SIGTERM there, and without it Windows
+	// ends the process before its stop runs.
+	stopContext, release := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer release()
 	return run(os.Args[1:], os.Stdout, stopContext, servicemanager.NotifySystemdReady, false)
 }
@@ -278,13 +280,6 @@ func urls(kind string, addresses []string) []string {
 		named[index] = kind + "://" + address
 	}
 	return named
-}
-
-func stopSignals() []os.Signal {
-	if runtime.GOOS == "windows" {
-		return []os.Signal{os.Interrupt}
-	}
-	return []os.Signal{os.Interrupt, syscall.SIGTERM}
 }
 
 // listen opens each loopback address on its own network. One address failing is not a failure
