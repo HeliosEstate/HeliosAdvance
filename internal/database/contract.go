@@ -63,6 +63,8 @@
 //   - The database package shall take where it connects, its login and its password from the
 //     Connection alone, whatever PostgreSQL's environment variables, password file or service
 //     file give.
+//   - Before it first connects, the database package shall remove from its own process's
+//     environment every variable whose name starts with PG, whatever its case.
 //   - If a message from the database is longer than ReplyMostBytes, then the database package
 //     shall treat the connection as failed, ErrUnreachable at a take, without reading the rest.
 //   - The database package shall import nothing outside the Go standard library,
