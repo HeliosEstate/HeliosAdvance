@@ -331,8 +331,8 @@ linters:
           msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
           msg: read into a fixed-size buffer with io.ReadFull; no read drains a reader, bounded or not
-        # The calls that read one variable of the environment or the whole list: os's, syscall's
-        # and the Windows system package's, a Windows token's, and a command's from os/exec.
+        # A backstop against settings or secrets read from the environment: the calls code reaches
+        # for to read one variable or the whole list. It is not every way there is.
         - pattern: ^(os\.(Getenv|LookupEnv|Environ|ExpandEnv)|(syscall|windows)\.(Getenv|Environ|GetEnvironmentVariable|GetEnvironmentStrings|ExpandEnvironmentStrings)|windows\.Token\.Environ|exec\.Cmd\.Environ)$
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
