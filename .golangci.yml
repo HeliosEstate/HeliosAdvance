@@ -331,9 +331,9 @@ linters:
           msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
           msg: read into a fixed-size buffer with io.ReadFull; no read drains a reader, bounded or not
-        # Every way into the environment, not only the two common ones: syscall and the Windows
-        # and Unix system packages can also read one variable or the whole list.
-        - pattern: ^(os\.(Getenv|LookupEnv|Environ|ExpandEnv)|(syscall|windows|unix)\.(Getenv|Environ))$
+        # The calls that read one variable of the environment or the whole list: os's, syscall's
+        # and the Windows system package's, a Windows token's, and a command's from os/exec.
+        - pattern: ^(os\.(Getenv|LookupEnv|Environ|ExpandEnv)|(syscall|windows)\.(Getenv|Environ|GetEnvironmentVariable|GetEnvironmentStrings|ExpandEnvironmentStrings)|windows\.Token\.Environ|exec\.Cmd\.Environ)$
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
@@ -396,7 +396,7 @@ linters:
       # The database package lists the environment only to remove PostgreSQL's own variables,
       # every name starting with PG, before the library parses its settings. Otherwise the
       # library reads them during its parse, and it has no setting that turns this off.
-      - path: internal/database/connect\.go
+      - path: ^internal/database/connect\.go$
         linters: [forbidigo]
         text: os\.Environ
       # A test's child process reports to the test through its standard output; the console
