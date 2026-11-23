@@ -13,7 +13,7 @@ most advanced models feel well short of how they're marketed. At their best, the
 like a capable high school senior or first-year college student. They had all the information they
 needed, yet in my experience they consistently took the quickest, easiest path and didn't think
 through the long-term consequences. When they weren't at their best, the decision-making felt
-closer to a pre-teen's or a teenager's: silently dropping work, then, when called out, trying to
+closer to a pre-teen's or a teenager's, silently dropping work, then, when called out, trying to
 cover it up.
 
 Attempt four started out well. The EARS requirements, contracts and mechanical checks seemed to fix
