@@ -8,41 +8,24 @@ Nothing runs yet. `bash check.sh` is the only definition of green; see `CLAUDE.m
 
 Questions about the project, and about how AI is used in it: [docs/faq.md](docs/faq.md).
 
-## Running the tests
+After four attempts at agentic programming I'm abandoning this project for now. Even Anthropic's
+most advanced models feel well short of how they're marketed. At their best they reasoned to me
+like a capable high school senior or a first year college student. They had all the information
+they needed, yet in my experience they consistently took the quickest and easiest path and never
+thought through the long term consequences. When they weren't at their best the decision making
+felt more like a pre-teen or a teenager, silently dropping work and then trying to cover it up when
+called out.
 
-`bash check.sh` runs every check and every test, as CI does, in a clone whose `origin` remote has
-`development` fetched (or with `BASE` naming the commit to judge from). It needs these on the
-`PATH`:
+Attempt four started out well. The EARS requirements, contracts and mechanical checks seemed to fix
+the cheating that sank attempts one to three. This time the failure was in reasoning. About a week
+ago, for no reason I can find, the model's reasoning plummeted. I've always kept myself in the
+middle so I can control the shape of the work and be a check on the model. But I've spent the last
+week fighting the model just to get it to apply the most basic of reasoning instead of spitting out
+an answer in under 30 seconds. Nothing I've tried fixes it. I removed its memory, removed
+CLAUDE.md, checked every setting, added new rules and new checks, and even had another model try to
+refute the primary one. It's stuck in this mode and nothing gets it out. So every session is me
+walking it through one step at a time, even when I tell it to make a plan. In this state the model
+is, to me, fundamentally broken and useless. I even had Opus and Fable read the session logs. They
+could measure the failures, but neither could find a cause, and nothing they suggested fixed it.
 
-- **Go**: the version in `go.mod`, or an older Go that downloads it.
-- **PostgreSQL 16 or later**: its `initdb`, `pg_ctl`, `postgres` and `psql`. The tests make their
-  own throwaway servers from these programs, so no PostgreSQL service needs to run. On Linux, a
-  distribution's own package may be older than 16; PostgreSQL's own package repository has every
-  supported version. On Windows, use the PostgreSQL project's signed installer for Windows; its
-  service can stay stopped. On either, add the folder holding `initdb` to the `PATH`.
-- **An OpenSSH client** (`ssh` and `ssh-keygen`) and **Plink**, from PuTTY: the outside clients
-  the SSH and Telnet tests connect with.
-- **On Linux, a `telnet` client**, for the Telnet test only Linux runs.
-- **Free Pascal 3.2.2** (`fpc`), which builds the bootstrap file oracle the tests make every
-  bootstrap file with. On Windows, put its folder after the one holding the system's C compiler on
-  the `PATH`: it carries an old `gcc` of its own, which ahead of the system's breaks race builds.
-- **On Linux, `setfacl`** (the `acl` package), for the key file's access-list rows.
-- **Nothing for the gate tools:** `check.sh` installs `golangci-lint`, `govulncheck`,
-  `go-licenses` and `actionlint` itself, each at the version pinned in `.github/tool-versions`,
-  into a folder of its own under the `GOPATH`, and never runs a copy on the `PATH`. `shellcheck`
-  and `zizmor`, which are no Go tools, it downloads from their GitHub releases, each checked
-  against the SHA-256 pinned there for Linux on x86-64 or Arm, or Windows; it needs `curl` and
-  `sha256sum`, with `tar` on Linux and `unzip` on Windows.
-
-The machine needs the IPv6 loopback address (`::1`) working, since the engine listens on it. On
-Linux, run as an ordinary user, not root, where `sudo` needs no password (the rows named
-`TestLinuxRoot…` use it) and ports below 1024 stay closed to ordinary users, as they are by
-default.
-
-On Windows, run `bash check.sh` from Git for Windows' bash, which brings the `ssh` and
-`ssh-keygen` the tests run; the tests that need Linux are skipped there, and so are the rows named
-`TestWindowsElevated…` unless bash runs elevated (as administrator), with a line saying so.
-
-`bash check.sh --mutation` also runs mutation testing on what changed since `origin/development`.
-It installs `gremlins` the same way, at the version in `.github/tool-versions`, and runs on Linux
-only.
+I may make an attempt five at some point, but not until I see major improvements in the models.
