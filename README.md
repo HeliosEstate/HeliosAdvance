@@ -8,7 +8,7 @@ Nothing runs yet. `bash check.sh` is the only definition of green; see `CLAUDE.m
 
 Questions about the project, and about how AI is used in it: [docs/faq.md](docs/faq.md).
 
-After four attempts at agentic programming I'm abandoning this project for now. Even Anthropic's
+After four attempts at agentic programming I'm pausing this project for now. Even Anthropic's
 most advanced models feel well short of how they're marketed. At their best they reasoned to me
 like a capable high school senior or a first year college student. They had all the information
 they needed, yet in my experience they consistently took the quickest and easiest path and never
