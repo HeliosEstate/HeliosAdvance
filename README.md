@@ -28,4 +28,4 @@ walking it through one step at a time, even when I tell it to make a plan. In th
 is, to me, fundamentally broken and useless. I even had Opus and Fable read the session logs. They
 could measure the failures, but neither could find a cause, and nothing they suggested fixed it.
 
-I may make an attempt five at some point, but not until I see major improvements in the models.
+I will pick it back up at some point, but not until I see major improvements in the models.
