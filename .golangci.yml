@@ -331,9 +331,9 @@ linters:
           msg: use log/slog, structured
         - pattern: ^io\.ReadAll$
           msg: read into a fixed-size buffer with io.ReadFull; no read drains a reader, bounded or not
-        # Every way into the environment, not the two common ones alone: syscall's own read and
-        # the whole list reach it as well.
-        - pattern: ^(os\.(Getenv|LookupEnv|Environ|ExpandEnv)|syscall\.Getenv)$
+        # A backstop against settings or secrets read from the environment: the calls code reaches
+        # for to read one variable or the whole list. It is not every way there is.
+        - pattern: ^(os\.(Getenv|LookupEnv|Environ|ExpandEnv)|(syscall|windows)\.(Getenv|Environ|GetEnvironmentVariable|GetEnvironmentStrings|ExpandEnvironmentStrings)|windows\.Token\.Environ|exec\.Cmd\.Environ)$
           msg: settings come from the settings store and secrets from the shared secrets subsystem, never the environment
         - pattern: ^time\.Sleep$
           msg: tests synchronise on events or the fake clock, never on a sleep
@@ -393,6 +393,12 @@ linters:
       - path: internal/bootstrap/credential_linux\.go
         linters: [forbidigo]
         text: os\.LookupEnv
+      # The database package lists the environment only to remove PostgreSQL's own variables,
+      # every name starting with PG, before the library parses its settings. Otherwise the
+      # library reads them during its parse, and it has no setting that turns this off.
+      - path: ^internal/database/connect\.go$
+        linters: [forbidigo]
+        text: os\.Environ
       # A test's child process reports to the test through its standard output; the console
       # rule is for the engine's log.
       - path: _test\.go
